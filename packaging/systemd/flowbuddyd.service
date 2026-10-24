@@ -1,0 +1,16 @@
+[Unit]
+Description=Flow Buddy: local coaching for your tools
+Documentation=https://github.com/AbdelrahmanWM/Flow-Buddy
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/flowbuddyd
+Restart=on-failure
+RestartSec=2
+# Privacy: no network access at all, only Unix sockets (IPC, D-Bus).
+RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=true
+
+[Install]
+WantedBy=graphical-session.target

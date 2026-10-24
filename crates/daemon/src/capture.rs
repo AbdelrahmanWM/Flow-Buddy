@@ -4,7 +4,7 @@
 //! blocks input. Hotplug is handled by watching `/dev/input` with inotify,
 //! which avoids a dependency on libudev.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
@@ -32,6 +32,8 @@ pub enum CaptureEvent {
     /// A mouse button was pressed. Only the fact is reported (no position);
     /// it tells mode inference that the editor may have changed mode.
     PointerClick,
+    /// Number of keyboards currently being read.
+    Keyboards(usize),
 }
 
 /// Keys every real keyboard has. Power buttons, media remotes and
@@ -89,7 +91,7 @@ fn open_node(path: &Path) -> io::Result<Option<(Device, DeviceKind)>> {
     Ok(device_kind(&dev).map(|kind| (dev, kind)))
 }
 
-pub fn scan(skip: &HashSet<PathBuf>) -> io::Result<Scan> {
+pub fn scan(skip: &HashSet<&PathBuf>) -> io::Result<Scan> {
     let mut scan = Scan::default();
     for entry in std::fs::read_dir(INPUT_DIR)? {
         let path = entry?.path();
@@ -109,7 +111,7 @@ pub fn scan(skip: &HashSet<PathBuf>) -> io::Result<Scan> {
 /// Run capture until `tx` is closed. Spawns one reader task per device.
 pub async fn run(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
     let (gone_tx, mut gone_rx) = mpsc::unbounded_channel::<PathBuf>();
-    let mut active: HashSet<PathBuf> = HashSet::new();
+    let mut active: HashMap<PathBuf, DeviceKind> = HashMap::new();
 
     let inotify = Inotify::init()?;
     inotify
@@ -117,7 +119,7 @@ pub async fn run(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
         .add(INPUT_DIR, WatchMask::CREATE | WatchMask::ATTRIB)?;
     let mut changes = inotify.into_event_stream([0u8; 1024])?;
 
-    let initial = scan(&active)?;
+    let initial = scan(&active.keys().collect())?;
     if initial
         .opened
         .iter()
@@ -128,7 +130,7 @@ pub async fn run(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
             "no readable keyboard found; see docs/privacy.md#keyboard-access"
         );
     }
-    spawn_readers(initial, &mut active, &tx, &gone_tx);
+    spawn_readers(initial, &mut active, &tx, &gone_tx).await;
 
     loop {
         tokio::select! {
@@ -138,13 +140,14 @@ pub async fn run(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                 }
                 // udev sets permissions shortly after the node appears.
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                if let Ok(found) = scan(&active) {
-                    spawn_readers(found, &mut active, &tx, &gone_tx);
+                if let Ok(found) = scan(&active.keys().collect()) {
+                    spawn_readers(found, &mut active, &tx, &gone_tx).await;
                 }
             }
             Some(path) = gone_rx.recv() => {
                 info!(path = %path.display(), "input device removed");
                 active.remove(&path);
+                let _ = tx.send(CaptureEvent::Keyboards(keyboards(&active))).await;
             }
             _ = tx.closed() => break,
         }
@@ -152,12 +155,22 @@ pub async fn run(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn spawn_readers(
+fn keyboards(active: &HashMap<PathBuf, DeviceKind>) -> usize {
+    active
+        .values()
+        .filter(|k| **k == DeviceKind::Keyboard)
+        .count()
+}
+
+async fn spawn_readers(
     scan: Scan,
-    active: &mut HashSet<PathBuf>,
+    active: &mut HashMap<PathBuf, DeviceKind>,
     tx: &mpsc::Sender<CaptureEvent>,
     gone: &mpsc::UnboundedSender<PathBuf>,
 ) {
+    if scan.opened.is_empty() {
+        return;
+    }
     for (path, dev, kind) in scan.opened {
         info!(
             path = %path.display(),
@@ -165,7 +178,7 @@ fn spawn_readers(
             ?kind,
             "reading input device"
         );
-        active.insert(path.clone());
+        active.insert(path.clone(), kind);
         let (tx, gone) = (tx.clone(), gone.clone());
         tokio::spawn(async move {
             if let Err(e) = read_device(dev, kind, &tx).await {
@@ -174,6 +187,7 @@ fn spawn_readers(
             let _ = gone.send(path);
         });
     }
+    let _ = tx.send(CaptureEvent::Keyboards(keyboards(active))).await;
 }
 
 async fn read_device(

@@ -1,7 +1,10 @@
 //! Shared types and policy for Flow Buddy: events, context model, rules, coaching modes.
 
 pub mod context;
+pub mod ipc;
 pub mod key;
+pub mod paths;
+pub mod policy;
 
 /// Crate version, shared by the daemon and CLI.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

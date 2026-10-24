@@ -68,6 +68,8 @@ pub enum InsertKey {
     CtrlU,
     /// Ctrl-r: register insert in Vim, reverse history search in bash.
     CtrlR,
+    /// Ctrl-o: run one Normal-mode command (Vim).
+    CtrlO,
     Arrow(Sym),
     Enter,
     Other,
@@ -231,7 +233,7 @@ impl Tracker {
         } else if key.is_ctrl('o') && self.flavor == Flavor::Vim {
             self.mode = VimMode::Normal;
             self.insert_once = true;
-            InsertKey::Other
+            InsertKey::CtrlO
         } else if key.is_arrow() {
             InsertKey::Arrow(key.sym)
         } else {

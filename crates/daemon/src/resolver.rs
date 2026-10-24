@@ -130,6 +130,10 @@ impl Resolver {
         }
     }
 
+    pub fn set_ids(&mut self, ids: AppIds) {
+        self.ids = ids;
+    }
+
     pub fn set_focus(&mut self, app_id: Option<String>, pid: Option<u32>) {
         self.focus = Focus { app_id, pid };
     }

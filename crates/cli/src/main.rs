@@ -1,7 +1,7 @@
 mod client;
 
 use clap::{Parser, Subcommand};
-use flowbuddy_core::ipc::{ClientKind, ClientMsg, Command, CtxEvent, Status};
+use flowbuddy_core::ipc::{ClientKind, ClientMsg, Command, CtxEvent, RuleAction, RuleInfo, Status};
 
 use crate::client::Client;
 
@@ -17,6 +17,11 @@ struct Args {
 enum Cmd {
     /// Show whether the daemon is running and what it sees (no key data).
     Status,
+    /// List rules, or enable/disable/mute one.
+    Rules {
+        #[command(subcommand)]
+        action: Option<RulesCmd>,
+    },
     /// Report shell state to the daemon. Used by shell/flowbuddy.bash.
     #[command(hide = true)]
     Ctx {
@@ -26,6 +31,27 @@ enum Cmd {
         shell_pid: Option<u32>,
         #[arg(long, global = true)]
         tty: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum RulesCmd {
+    /// List rules (the default).
+    List,
+    /// Turn a rule back on.
+    Enable {
+        rule: String,
+    },
+    /// Stop a rule from running at all.
+    Disable {
+        rule: String,
+    },
+    /// Keep counting, but never nudge for this rule.
+    Mute {
+        rule: String,
+    },
+    Unmute {
+        rule: String,
     },
 }
 
@@ -44,6 +70,7 @@ fn main() {
     let args = Args::parse();
     let result = match args.command {
         Cmd::Status => status(),
+        Cmd::Rules { action } => rules(action.unwrap_or(RulesCmd::List)),
         Cmd::Ctx {
             event,
             shell_pid,
@@ -101,6 +128,41 @@ fn status() -> anyhow::Result<()> {
             clients.join(", ")
         }
     );
+    Ok(())
+}
+
+fn rules(cmd: RulesCmd) -> anyhow::Result<()> {
+    let mut client = Client::connect(ClientKind::Cli)?;
+    let (rule_id, action) = match cmd {
+        RulesCmd::List => {
+            let infos: Vec<RuleInfo> = serde_json::from_value(client.query(Command::Rules)?)?;
+            for r in infos {
+                let state = match (r.enabled, r.muted) {
+                    (false, _) => "disabled",
+                    (true, true) => "muted",
+                    (true, false) => "on",
+                };
+                let threshold = r.threshold.map(|n| format!(" (≥{n})")).unwrap_or_default();
+                println!("{:<22} {:<9} {}{threshold}", r.id, state, r.description);
+            }
+            return Ok(());
+        }
+        RulesCmd::Enable { rule } => (rule, RuleAction::Enable),
+        RulesCmd::Disable { rule } => (rule, RuleAction::Disable),
+        RulesCmd::Mute { rule } => (rule, RuleAction::Mute),
+        RulesCmd::Unmute { rule } => (rule, RuleAction::Unmute),
+    };
+    client.command(Command::Rule {
+        rule_id: rule_id.clone(),
+        action,
+    })?;
+    let done = match action {
+        RuleAction::Enable => "enabled",
+        RuleAction::Disable => "disabled",
+        RuleAction::Mute => "muted",
+        RuleAction::Unmute => "unmuted",
+    };
+    println!("{rule_id}: {done}");
     Ok(())
 }
 

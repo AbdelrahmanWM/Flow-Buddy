@@ -4,6 +4,7 @@ description = "Flow Buddy background daemon: capture, context, rules, nudges"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 repository.workspace = true
 
 [[bin]]

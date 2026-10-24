@@ -139,9 +139,9 @@ The first message on every connection is `hello`. Short-lived clients (the CLI, 
 
 **`focus`**: the focused window changed. Sent by the extension.
 ```json
-{"v":0,"type":"focus","app_id":"code_code","title":"main.rs - Flow-Buddy - Visual Studio Code","pid":41230}
+{"v":0,"type":"focus","app_id":"code_code","pid":41230}
 ```
-`title` is used only for classification and is never stored. When nothing is focused, `app_id` is `null`.
+When nothing is focused, `app_id` is `null`. The protocol accepts an optional `title`, but the extension doesn't send it. Titles often contain file names, and the resolver doesn't need them.
 
 **`ctx`**: report from the shell hook. Sent once when a command starts and once when the prompt returns.
 ```json

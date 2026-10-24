@@ -62,7 +62,6 @@ impl KeyBuffer {
     pub fn is_empty(&self) -> bool {
         self.keys.is_empty()
     }
-
 }
 
 impl Drop for KeyBuffer {

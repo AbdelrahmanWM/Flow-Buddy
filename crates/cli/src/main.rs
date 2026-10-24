@@ -1,7 +1,7 @@
 mod client;
 
 use clap::{Parser, Subcommand};
-use flowbuddy_core::ipc::{ClientKind, Command, Status};
+use flowbuddy_core::ipc::{ClientKind, ClientMsg, Command, CtxEvent, Status};
 
 use crate::client::Client;
 
@@ -17,12 +17,38 @@ struct Args {
 enum Cmd {
     /// Show whether the daemon is running and what it sees (no key data).
     Status,
+    /// Report shell state to the daemon. Used by shell/flowbuddy.bash.
+    #[command(hide = true)]
+    Ctx {
+        #[command(subcommand)]
+        event: CtxCmd,
+        #[arg(long, global = true)]
+        shell_pid: Option<u32>,
+        #[arg(long, global = true)]
+        tty: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CtxCmd {
+    /// A command started; pass only its name.
+    Fg { command: String },
+    /// The prompt is back.
+    Prompt {
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = false)]
+        vi_mode: bool,
+    },
 }
 
 fn main() {
     let args = Args::parse();
     let result = match args.command {
         Cmd::Status => status(),
+        Cmd::Ctx {
+            event,
+            shell_pid,
+            tty,
+        } => ctx(event, shell_pid, tty),
     };
     if let Err(e) = result {
         eprintln!("flowbuddy: {e:#}");
@@ -76,6 +102,32 @@ fn status() -> anyhow::Result<()> {
         }
     );
     Ok(())
+}
+
+fn ctx(event: CtxCmd, shell_pid: Option<u32>, tty: Option<String>) -> anyhow::Result<()> {
+    let shell_pid = shell_pid.unwrap_or_else(parent_pid);
+    let msg = match event {
+        CtxCmd::Fg { command } => ClientMsg::Ctx {
+            event: CtxEvent::Fg,
+            // Defence in depth: only ever send a basename.
+            command: Some(command.rsplit('/').next().unwrap_or_default().to_string()),
+            vi_mode: None,
+            shell_pid,
+            tty,
+        },
+        CtxCmd::Prompt { vi_mode } => ClientMsg::Ctx {
+            event: CtxEvent::Prompt,
+            command: None,
+            vi_mode: Some(vi_mode),
+            shell_pid,
+            tty,
+        },
+    };
+    Client::connect(ClientKind::BashHook)?.send(&msg)
+}
+
+fn parent_pid() -> u32 {
+    std::os::unix::process::parent_id()
 }
 
 /// Local HH:MM for a unix timestamp, via `date` to avoid a timezone dependency.

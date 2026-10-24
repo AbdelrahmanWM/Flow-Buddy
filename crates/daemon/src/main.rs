@@ -4,6 +4,7 @@ mod capture;
 mod config_watch;
 mod ipc_server;
 mod keymap;
+mod notify;
 mod resolver;
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -74,7 +75,8 @@ async fn main() -> anyhow::Result<()> {
     let options = KeymapOptions::from_xkb(xkb_options.iter().map(String::as_str));
     let mut keymap: Box<dyn Keymap> = Box::new(UsKeymap::new(options));
     let resolver = Resolver::new(app::app_ids(&config), Box::new(Procfs));
-    let mut app = App::new(config, state, resolver).with_state_path(state_path);
+    let mut app =
+        App::new(config, state, resolver, Box::new(notify::NotifySend)).with_state_path(state_path);
     let (cfg_tx, mut cfg_rx) = mpsc::channel::<()>(4);
     let watcher = tokio::spawn(config_watch::run(config_path.clone(), cfg_tx));
     let mut ticker = tokio::time::interval(Duration::from_secs(1));

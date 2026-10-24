@@ -24,6 +24,7 @@ futures-util = "0.3.34"
 serde_json.workspace = true
 serde.workspace = true
 xkbcommon = { version = "0.9", default-features = false, optional = true }
+chrono = "0.4.45"
 
 [lints]
 workspace = true

@@ -3,24 +3,27 @@
 //! `App` is synchronous and takes the current time as input, so the whole
 //! pipeline can be tested without sockets or devices.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
 use flowbuddy_core::config::{self, Config, State};
 use flowbuddy_core::context::{ContextKind, VimMode};
 use flowbuddy_core::engine::Engine;
 use flowbuddy_core::ipc::{
-    ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, RuleAction, RuleInfo, ServerMsg, Status,
+    ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, Nudge, NudgeAction, RuleAction, RuleInfo,
+    ServerMsg, Status,
 };
 use flowbuddy_core::key::{Key, KeyStroke, Sym};
-use flowbuddy_core::policy::CoachingMode;
-use flowbuddy_core::rule::RuleEvent;
+use flowbuddy_core::learning::Stage;
+use flowbuddy_core::policy::{Coach, CoachingMode, Gate, PolicyConfig, RuleFacts};
+use flowbuddy_core::rule::{Finding, RuleEvent};
 use flowbuddy_core::vim::{Flavor, Tracker};
 use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::buffer::{ClearReason, KeyBuffer};
 use crate::ipc_server::{ConnEvent, ConnId};
+use crate::notify::Notifier;
 use crate::resolver::{AppIds, Resolved, Resolver, ShellState};
 
 struct Client {
@@ -43,7 +46,16 @@ pub struct App {
     state: State,
     /// Where to persist `state`; `None` in tests.
     state_path: Option<PathBuf>,
+    coach: Coach,
+    notifier: Box<dyn Notifier>,
+    /// Recent nudges (id, rule), newest last, for responses and reports.
+    nudges: VecDeque<(String, &'static str)>,
+    nudge_seq: u64,
+    /// Learning stage per rule. Loaded from the mistake memory.
+    stages: HashMap<String, Stage>,
 }
+
+const NUDGE_HISTORY: usize = 20;
 
 /// App ids from the config, falling back to the built-in lists.
 pub fn app_ids(config: &Config) -> AppIds {
@@ -77,7 +89,12 @@ fn is_vscode_ui_shortcut(key: &Key) -> bool {
 }
 
 impl App {
-    pub fn new(config: Config, state: State, resolver: Resolver) -> Self {
+    pub fn new(
+        config: Config,
+        state: State,
+        resolver: Resolver,
+        notifier: Box<dyn Notifier>,
+    ) -> Self {
         let resolved = resolver.resolve();
         let mut engine = Engine::standard();
         engine.apply(&config::rule_settings(&config, &state));
@@ -91,9 +108,76 @@ impl App {
             tracker: Tracker::new(Flavor::Vim),
             buffer: KeyBuffer::default(),
             engine,
+            coach: Coach::new(PolicyConfig::from(&config.coaching)),
             config,
             state,
             state_path: None,
+            notifier,
+            nudges: VecDeque::new(),
+            nudge_seq: 0,
+            stages: HashMap::new(),
+        }
+    }
+
+    fn gate(&self, now_ms: u64) -> Gate {
+        use chrono::Timelike;
+        let local = chrono::Local::now();
+        Gate {
+            mode: self.mode,
+            paused: !self.capturing(now_ms) && self.mode != CoachingMode::Off,
+            local_minute: local.hour() * 60 + local.minute(),
+        }
+    }
+
+    fn stage(&self, rule_id: &str) -> Stage {
+        self.stages.get(rule_id).copied().unwrap_or_default()
+    }
+
+    fn extension_connected(&self) -> bool {
+        self.clients
+            .values()
+            .any(|c| c.kind == Some(ClientKind::GnomeExtension))
+    }
+
+    /// Show a nudge: in the top bar if the extension is there, otherwise
+    /// as a desktop notification.
+    fn deliver(&mut self, f: &Finding, now_ms: u64) {
+        self.nudge_seq += 1;
+        let nudge = Nudge {
+            nudge_id: format!("n-{now_ms}-{}", self.nudge_seq),
+            rule_id: f.rule_id.into(),
+            title: f.title.into(),
+            text: f.text.clone(),
+            ttl_ms: u64::from(self.config.coaching.nudge_seconds) * 1000,
+        };
+        if self.extension_connected() {
+            self.broadcast(ServerMsg::Nudge(nudge.clone()));
+        } else {
+            self.notifier
+                .notify(&nudge.title, &nudge.text, nudge.ttl_ms);
+        }
+        if self.nudges.len() == NUDGE_HISTORY {
+            self.nudges.pop_front();
+        }
+        self.nudges.push_back((nudge.nudge_id, f.rule_id));
+        if self.stage(f.rule_id) == Stage::New {
+            self.stages.insert(f.rule_id.into(), Stage::Nudged);
+        }
+    }
+
+    fn nudge_rule(&self, nudge_id: &str) -> Option<&'static str> {
+        self.nudges
+            .iter()
+            .find(|(id, _)| id == nudge_id)
+            .map(|(_, rule)| *rule)
+    }
+
+    fn on_nudge_response(&mut self, nudge_id: &str, action: NudgeAction) {
+        let Some(rule_id) = self.nudge_rule(nudge_id) else {
+            return;
+        };
+        if action == NudgeAction::MuteRule {
+            self.set_rule(rule_id, RuleAction::Mute);
         }
     }
 
@@ -117,16 +201,26 @@ impl App {
         self.engine
             .apply(&config::rule_settings(&config, &self.state));
         self.resolver.set_ids(app_ids(&config));
+        self.coach.set_config(PolicyConfig::from(&config.coaching));
         self.config = config;
         tracing::info!("config reloaded");
     }
 
     /// Findings and adoptions go here: coaching policy and storage hook in
     /// at this point.
-    fn on_rule_events(&mut self, events: &[RuleEvent], _now_ms: u64) {
+    fn on_rule_events(&mut self, events: &[RuleEvent], now_ms: u64) {
+        let gate = self.gate(now_ms);
+        let muted = self.state.muted();
         for ev in events {
             if let RuleEvent::Finding(f) = ev {
                 tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
+                let facts = RuleFacts {
+                    muted: muted.contains(f.rule_id),
+                    stage: self.stage(f.rule_id),
+                };
+                if let Some(f) = self.coach.on_finding(f, facts, &gate, now_ms) {
+                    self.deliver(&f, now_ms);
+                }
             }
         }
     }
@@ -134,8 +228,17 @@ impl App {
     /// Called about once a second: ends streaks that stopped without
     /// another key.
     pub fn tick(&mut self, now_ms: u64) {
+        if self.paused_until.is_some_and(|t| t * 1000 <= now_ms) {
+            self.paused_until = None;
+            self.mode_changed();
+            self.save_state();
+        }
         let events = self.engine.tick(self.resolved.kind, now_ms);
         self.on_rule_events(&events, now_ms);
+        let gate = self.gate(now_ms);
+        for f in self.coach.on_tick(&gate, now_ms) {
+            self.deliver(&f, now_ms);
+        }
     }
 
     fn capturing(&self, now_ms: u64) -> bool {
@@ -267,7 +370,9 @@ impl App {
                 self.resolver.shell_report(shell_pid, state, now_ms);
                 self.update_context(Some((shell_pid, known)), now_ms);
             }
-            ClientMsg::NudgeResponse { .. } => {}
+            ClientMsg::NudgeResponse { nudge_id, action } => {
+                self.on_nudge_response(&nudge_id, action);
+            }
             ClientMsg::Command { id, command } => {
                 let reply = self.on_command(id, command, now_ms);
                 self.reply(conn, reply);
@@ -311,7 +416,18 @@ impl App {
                 data: json!(self.rule_infos()),
             },
             Command::Rule { rule_id, action } => self.rule_command(id, &rule_id, action),
-            Command::ReportFalsePositive => ServerMsg::Ack { id },
+            Command::ReportFalsePositive => match self.nudges.back() {
+                Some((nudge_id, _)) => {
+                    let nudge_id = nudge_id.clone();
+                    self.on_nudge_response(&nudge_id, NudgeAction::FalsePositive);
+                    ServerMsg::Ack { id }
+                }
+                None => ServerMsg::Error {
+                    id,
+                    code: ErrorCode::BadRequest,
+                    message: "no recent nudge to report".into(),
+                },
+            },
         }
     }
 
@@ -337,6 +453,11 @@ impl App {
                 message: format!("no rule named {rule_id}"),
             };
         }
+        self.set_rule(rule_id, action);
+        ServerMsg::Ack { id }
+    }
+
+    fn set_rule(&mut self, rule_id: &str, action: RuleAction) {
         let entry = self.state.rules.entry(rule_id.to_string()).or_default();
         match action {
             RuleAction::Enable => entry.enabled = Some(true),
@@ -347,7 +468,6 @@ impl App {
         self.engine
             .apply(&config::rule_settings(&self.config, &self.state));
         self.save_state();
-        ServerMsg::Ack { id }
     }
 
     fn mode_changed(&self) {
@@ -386,7 +506,12 @@ pub(crate) mod tests {
             mode: Some(mode),
             ..Default::default()
         };
-        App::new(Config::default(), state, test_resolver())
+        App::new(
+            Config::default(),
+            state,
+            test_resolver(),
+            Box::new(crate::notify::fake::Recorder::default()),
+        )
     }
 
     pub(crate) fn test_resolver() -> Resolver {
@@ -463,6 +588,8 @@ pub(crate) mod tests {
         send(&mut app, 1, pause, 1_000_000);
         assert_eq!(app.status(1_000).paused_until, Some(1_060));
         assert_eq!(app.status(1_061).paused_until, None);
+        app.tick(1_061_000);
+        assert_eq!(app.paused_until, None, "expired pause is cleared");
     }
 
     fn focus(app: &mut App, app_id: &str, pid: u32) {
@@ -650,5 +777,99 @@ pub(crate) mod tests {
         focus(&mut app, "code_code", 500);
         let events = keys(&mut app, "<Esc>jjjjjjjw");
         assert!(!has_finding(&events, "vim.repeat-jk"));
+    }
+
+    fn ext_hello(app: &mut App, id: ConnId) -> UnboundedReceiver<ServerMsg> {
+        let mut rx = connect(app, id);
+        send(app, id, hello(ClientKind::GnomeExtension), 0);
+        rx.try_recv().unwrap();
+        rx
+    }
+
+    fn nudges(rx: &mut UnboundedReceiver<ServerMsg>) -> Vec<Nudge> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|m| match m {
+                ServerMsg::Nudge(n) => Some(n),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn active_mode_nudges_the_extension() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        keys(&mut app, "<Esc>jjjjjjjw");
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].rule_id, "vim.repeat-jk");
+        assert!(n[0].text.contains("7j"));
+    }
+
+    #[test]
+    fn without_extension_nudges_become_notifications() {
+        let recorder = crate::notify::fake::Recorder::default();
+        let state = State {
+            mode: Some(CoachingMode::Active),
+            ..Default::default()
+        };
+        let mut app = App::new(
+            Config::default(),
+            state,
+            test_resolver(),
+            Box::new(recorder.clone()),
+        );
+        let _cli = connect(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        keys(&mut app, "<Esc>xxxxxw");
+        assert_eq!(recorder.0.borrow().len(), 1);
+        assert_eq!(recorder.0.borrow()[0].0, "Delete by word");
+    }
+
+    #[test]
+    fn passive_mode_never_nudges() {
+        let mut app = test_app(CoachingMode::Passive);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        keys(&mut app, "<Esc>jjjjjjjw");
+        app.tick(2 * 60 * 60 * 1000);
+        assert!(nudges(&mut ext).is_empty());
+    }
+
+    #[test]
+    fn balanced_mode_sends_a_batch_later() {
+        let mut app = test_app(CoachingMode::Balanced);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        app.tick(0);
+        keys(&mut app, "<Esc>jjjjjjjw");
+        assert!(nudges(&mut ext).is_empty(), "nothing in the moment");
+        app.tick(31 * 60 * 1000);
+        assert_eq!(nudges(&mut ext).len(), 1);
+    }
+
+    #[test]
+    fn mute_from_the_indicator_stops_that_rule() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        keys(&mut app, "<Esc>jjjjjjjw");
+        let n = nudges(&mut ext).remove(0);
+        send(
+            &mut app,
+            1,
+            ClientMsg::NudgeResponse {
+                nudge_id: n.nudge_id,
+                action: NudgeAction::MuteRule,
+            },
+            0,
+        );
+        assert!(app.state.muted().contains("vim.repeat-jk"));
+        let later = 60 * 60 * 1000;
+        for s in strokes("<Esc>jjjjjjjw", later) {
+            app.on_key(s, s.at_ms);
+        }
+        assert!(nudges(&mut ext).is_empty());
     }
 }

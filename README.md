@@ -35,6 +35,8 @@ Flow Buddy is a local companion that helps you get better at your tools continuo
 - **Coaching modes:** `off`, `passive` (summaries only), `balanced` (occasional batched tips) and `active` (real-time nudges).
 - **Mistake memory:** remembers which patterns you repeat and how each habit is progressing (new → improving → mastered), so coaching adapts over time.
 
+Details, including the IPC protocol and the context model, are in [docs/architecture.md](docs/architecture.md).
+
 ## MVP scope
 
 The first rule pack covers Vim in VS Code (vscodevim), Vim in the terminal, and bash vi-mode. Example nudges:

@@ -1,0 +1,18 @@
+[package]
+name = "flowbuddy-daemon"
+description = "Flow Buddy background daemon: capture, context, rules, nudges"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "flowbuddyd"
+path = "src/main.rs"
+
+[dependencies]
+flowbuddy-core.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

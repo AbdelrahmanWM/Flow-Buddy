@@ -1,0 +1,18 @@
+[package]
+name = "flowbuddy-cli"
+description = "Flow Buddy command-line interface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "flowbuddy"
+path = "src/main.rs"
+
+[dependencies]
+flowbuddy-core.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

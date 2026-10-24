@@ -5,6 +5,7 @@ pub mod ipc;
 pub mod key;
 pub mod paths;
 pub mod policy;
+pub mod vim;
 
 /// Crate version, shared by the daemon and CLI.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

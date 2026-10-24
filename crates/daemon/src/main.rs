@@ -1,23 +1,22 @@
 mod app;
-#[allow(dead_code)] // wired up by the context resolver (#13)
 mod buffer;
 mod capture;
 mod ipc_server;
 mod keymap;
+mod resolver;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
-use flowbuddy_core::context::ContextKind;
 use flowbuddy_core::key::KeyStroke;
 use flowbuddy_core::policy::CoachingMode;
 use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::app::App;
-use crate::buffer::{ClearReason, KeyBuffer};
 use crate::capture::CaptureEvent;
 use crate::keymap::{Keymap, KeymapOptions, UsKeymap};
+use crate::resolver::{AppIds, Procfs, Resolver};
 
 /// Flow Buddy daemon: watches how you work and coaches you locally.
 #[derive(Parser)]
@@ -58,10 +57,8 @@ async fn main() -> anyhow::Result<()> {
     let xkb_options = keymap::gnome_xkb_options();
     let options = KeymapOptions::from_xkb(xkb_options.iter().map(String::as_str));
     let mut keymap: Box<dyn Keymap> = Box::new(UsKeymap::new(options));
-    let mut buffer = KeyBuffer::default();
-    // Until the context resolver lands (#13), every key is dropped.
-    let context = ContextKind::Unsupported;
-    let mut app = App::new(CoachingMode::default());
+    let resolver = Resolver::new(AppIds::default(), Box::new(Procfs));
+    let mut app = App::new(CoachingMode::default(), resolver);
 
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
@@ -76,9 +73,9 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("key {key}");
                     }
                     let stroke = KeyStroke { key, repeat: raw.value == 2, at_ms: raw.at_ms };
-                    buffer.push(stroke, context);
+                    let _step = app.on_key(stroke, now_ms());
                 }
-                Some(CaptureEvent::PointerClick) => {}
+                Some(CaptureEvent::PointerClick) => app.on_pointer_click(),
                 Some(CaptureEvent::Keyboards(n)) => app.set_keyboards(n),
                 None => break,
             },
@@ -89,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-    buffer.clear(ClearReason::Shutdown);
+    drop(app); // clears the key buffer
     capture.abort();
     server.abort();
     Ok(())

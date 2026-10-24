@@ -53,18 +53,16 @@ impl KeyBuffer {
         self.keys.clear();
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.keys.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.keys.is_empty()
     }
 
-    /// Most recent keys, oldest first.
-    pub fn iter(&self) -> impl Iterator<Item = &KeyStroke> {
-        self.keys.iter()
-    }
 }
 
 impl Drop for KeyBuffer {

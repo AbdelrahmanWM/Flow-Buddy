@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(keymap::gnome_xkb_options);
     let options = KeymapOptions::from_xkb(xkb_options.iter().map(String::as_str));
-    let mut keymap: Box<dyn Keymap> = Box::new(UsKeymap::new(options));
+    let mut keymap = make_keymap(&config, &xkb_options, options);
     let resolver = Resolver::new(app::app_ids(&config), Box::new(Procfs));
     let mut app =
         App::new(config, state, resolver, Box::new(notify::NotifySend)).with_state_path(state_path);
@@ -125,6 +125,23 @@ async fn main() -> anyhow::Result<()> {
     server.abort();
     watcher.abort();
     Ok(())
+}
+
+#[cfg(feature = "xkb")]
+fn make_keymap(config: &Config, xkb_options: &[String], options: KeymapOptions) -> Box<dyn Keymap> {
+    let layout = config.keyboard.xkb_layout.as_deref().unwrap_or("us");
+    match keymap::xkb::XkbKeymap::new(layout, "", xkb_options) {
+        Ok(k) => Box::new(k),
+        Err(e) => {
+            warn!(error = %e, "xkb keymap failed, using the built-in US keymap");
+            Box::new(UsKeymap::new(options))
+        }
+    }
+}
+
+#[cfg(not(feature = "xkb"))]
+fn make_keymap(_: &Config, _: &[String], options: KeymapOptions) -> Box<dyn Keymap> {
+    Box::new(UsKeymap::new(options))
 }
 
 async fn shutdown_signal() {

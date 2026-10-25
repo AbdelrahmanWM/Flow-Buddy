@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Flow Buddy bash integration.
 #
 # Add to ~/.bashrc (after any other PROMPT_COMMAND setup):

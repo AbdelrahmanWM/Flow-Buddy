@@ -29,6 +29,8 @@ jobs:
         run: |
           sudo apt-get install -yq gjs
           gjs vscode-extension/test/facts.test.js
+      - name: Test the GNOME extension's tip markup
+        run: gjs -m gnome-extension/test/markup.test.js
       - name: Test the Vim plugin's motion facts
         run: |
           command -v vim >/dev/null || sudo apt-get install -yq vim

@@ -10,6 +10,7 @@ use flowbuddy_core::config::{self, Config, State};
 use flowbuddy_core::context::{ContextKind, VimMode};
 use flowbuddy_core::editor::{EditorKind, Motion};
 use flowbuddy_core::engine::Engine;
+use flowbuddy_core::glossary;
 use flowbuddy_core::ipc::{
     ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, Nudge, NudgeAction, NudgeStyle,
     RuleAction, RuleInfo, ServerMsg, Status,
@@ -270,12 +271,19 @@ impl App {
                 CoachingMode::Active => NudgeStyle::Card,
                 _ => NudgeStyle::Bar,
             }),
+            explain: glossary::explain(&f.text, f.mode == VimMode::Insert),
         };
         if self.extension_connected() {
             self.broadcast(ServerMsg::Nudge(nudge.clone()));
         } else {
-            self.notifier
-                .notify(&nudge.title, &nudge.text, nudge.ttl_ms);
+            // Plain notifications show no markup: drop the markers and put
+            // the explanation underneath.
+            let mut body = glossary::plain(&nudge.text);
+            for line in &nudge.explain {
+                body.push('\n');
+                body.push_str(&glossary::plain(line));
+            }
+            self.notifier.notify(&nudge.title, &body, nudge.ttl_ms);
         }
         if self.nudges.len() == NUDGE_HISTORY {
             self.nudges.pop_front();
@@ -1166,6 +1174,10 @@ pub(crate) mod tests {
         keys(&mut app, "<Esc>xxxxxw");
         assert_eq!(recorder.0.borrow().len(), 1);
         assert_eq!(recorder.0.borrow()[0].0, "Delete by word");
+        // No markers in a plain notification, and the commands explained.
+        let body = &recorder.0.borrow()[0].1;
+        assert!(!body.contains('`'), "{body}");
+        assert!(body.contains("\nd: delete\nw: "), "{body}");
     }
 
     #[test]
@@ -1636,8 +1648,12 @@ pub(crate) mod tests {
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].rule_id, "motion.paragraph");
         assert_eq!(
-            n[0].text,
+            glossary::plain(&n[0].text),
             "That took 7 keys. } gets there in 1, or 7j in 2."
+        );
+        assert_eq!(
+            n[0].explain[0],
+            "`}`: down to the next blank line (end of the paragraph)"
         );
     }
 
@@ -1667,7 +1683,7 @@ pub(crate) mod tests {
         let n = nudges(&mut ext);
         assert_eq!(n.len(), 1);
         assert_eq!(
-            n[0].text,
+            glossary::plain(&n[0].text),
             "That took 6 keys. di( does it from anywhere inside, in 3."
         );
     }

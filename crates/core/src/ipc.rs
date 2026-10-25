@@ -171,6 +171,11 @@ pub struct Nudge {
     /// Added after v0 shipped; older extensions ignore it.
     #[serde(default)]
     pub style: NudgeStyle,
+    /// What the tip's commands do, one line each, for an optional
+    /// "what does it do?" section. Commands in `text` and here are marked
+    /// with backticks (see `glossary`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub explain: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

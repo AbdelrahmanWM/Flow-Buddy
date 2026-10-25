@@ -5,6 +5,7 @@
 //! `df<char>`, and inserted text only ever counts as a number.
 
 use crate::context::{ContextKind, VimMode};
+use crate::glossary;
 use crate::key::Key;
 use crate::rule::{Finding, Rule, RuleEvent, Shape};
 use crate::rules::repeat::{RepeatRule, RepeatSpec};
@@ -159,23 +160,27 @@ impl Rule for DeleteThenInsert {
         let (shape, text) = match (d, c.single().and_then(|k| k.plain_char())) {
             (Deleted::Chars(None), Some('i')) => (
                 "x then i",
-                "x then i is s: substitute the character.".to_string(),
+                "`x` then `i` is `s`: substitute the character.".to_string(),
             ),
             (Deleted::Chars(Some(n)), Some('i')) => (
                 "x then i",
-                format!("{n}x then i is {n}s: substitute {n} characters."),
+                format!("`{n}x` then `i` is `{n}s`: substitute {n} characters."),
             ),
             (Deleted::Motion(m), Some('i')) => (
                 "d{motion} then i",
-                format!("d{m} then i is c{m}: change deletes and starts Insert."),
+                format!(
+                    "{} then `i` is {}: change deletes and starts Insert.",
+                    glossary::mark(&format!("d{m}")),
+                    glossary::mark(&format!("c{m}"))
+                ),
             ),
             (Deleted::ToEnd, Some('a')) => (
                 "D then a",
-                "D then a is C: change to the end of the line.".to_string(),
+                "`D` then `a` is `C`: change to the end of the line.".to_string(),
             ),
             (Deleted::Line, Some('O')) => (
                 "dd then O",
-                "dd then O is cc (or S): change the whole line.".to_string(),
+                "`dd` then `O` is `cc` (or `S`): change the whole line.".to_string(),
             ),
             _ => return,
         };
@@ -243,7 +248,7 @@ impl Rule for Shorthand {
             out.push(finding(
                 Self::ID,
                 "One key does it",
-                format!("{long} is {short}."),
+                format!("`{long}` is `{short}`."),
                 Shape::fixed(long),
                 step,
             ));
@@ -257,10 +262,16 @@ impl Rule for Shorthand {
             .filter(|(_, at)| step.at_ms.saturating_sub(*at) <= GESTURE_MS)
             .zip(this)
             .and_then(|((p, _), t)| match (p, t) {
-                ('$', 'a') => Some(("$ then a", "$ then a is A: append at the end of the line.")),
-                ('^', 'i') => Some(("^ then i", "^ then i is I: insert at the first non-blank.")),
-                ('k', 'o') => Some(("k then o", "k then o is O: open a line above.")),
-                ('j', 'O') => Some(("j then O", "j then O is o: open a line below.")),
+                ('$', 'a') => Some((
+                    "$ then a",
+                    "`$` then `a` is `A`: append at the end of the line.",
+                )),
+                ('^', 'i') => Some((
+                    "^ then i",
+                    "`^` then `i` is `I`: insert at the first non-blank.",
+                )),
+                ('k', 'o') => Some(("k then o", "`k` then `o` is `O`: open a line above.")),
+                ('j', 'O') => Some(("j then O", "`j` then `O` is `o`: open a line below.")),
                 _ => None,
             });
         if let Some((shape, text)) = pair {
@@ -390,7 +401,8 @@ impl Rule for VisualOperator {
             };
             if used > cost {
                 let text = format!(
-                    "That selection took {used} keys. {better} does it in {cost}, without Visual mode."
+                    "That selection took {used} keys. {} does it in {cost}, without Visual mode.",
+                    glossary::mark(&better)
                 );
                 out.push(finding(
                     Self::ID,
@@ -471,7 +483,7 @@ impl DotRepeat {
             self.times += 1;
             if self.times == 2 && cost >= 3 {
                 let text = format!(
-                    "That change again took {cost} keys. . repeats the last change in one."
+                    "That change again took {cost} keys. `.` repeats the last change in one."
                 );
                 out.push(finding(
                     Self::ID,
@@ -596,7 +608,7 @@ pub fn repeat_indent() -> RepeatRule {
         },
         message: |unit, n| {
             format!(
-                "{unit} {n} times. Try {n}{unit}, or {} with a motion such as >ip.",
+                "`{unit}` {n} times. Try `{n}{unit}`, or `{}` with a motion such as `>ip`.",
                 &unit[..1]
             )
         },
@@ -612,7 +624,7 @@ pub fn repeat_join() -> RepeatRule {
         threshold: 3,
         unit: |s| uncounted_is(s, &["J"]),
         adopted: |s| counted_is(s, &["J"]),
-        message: |_, n| format!("J {n} times. {}J joins those lines at once.", n + 1),
+        message: |_, n| format!("`J` {n} times. `{}J` joins those lines at once.", n + 1),
     })
 }
 
@@ -625,7 +637,7 @@ pub fn repeat_paste() -> RepeatRule {
         threshold: 3,
         unit: |s| uncounted_is(s, &["p", "P"]),
         adopted: |s| counted_is(s, &["p", "P"]),
-        message: |unit, n| format!("{unit} {n} times. {n}{unit} pastes it {n} times."),
+        message: |unit, n| format!("`{unit}` {n} times. `{n}{unit}` pastes it {n} times."),
     })
 }
 
@@ -691,7 +703,7 @@ impl Macro {
                     Self::ID,
                     "Record a macro",
                     format!(
-                        "The same {keys}-key edit {n} times in a row. Record it once with qq … q, then replay it with @q and @@."
+                        "The same {keys}-key edit {n} times in a row. Record it once with `qq` … `q`, then replay it with `@q` and `@@`."
                     ),
                     Shape::repeat("same edit per line", n),
                     step,
@@ -794,7 +806,11 @@ mod tests {
     }
 
     fn texts(ev: &[RuleEvent]) -> Vec<String> {
-        findings(ev).iter().map(|f| f.text.clone()).collect()
+        // Compared without the command markers; see glossary::plain.
+        findings(ev)
+            .iter()
+            .map(|f| glossary::plain(&f.text))
+            .collect()
     }
 
     #[test]

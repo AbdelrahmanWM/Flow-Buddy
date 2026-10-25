@@ -36,6 +36,13 @@ enum Cmd {
     ReportFp,
     /// The one habit worth working on now.
     Next,
+    /// What Vim keys do, piece by piece: `flowbuddy explain 'ci"'`.
+    Explain {
+        keys: String,
+        /// Insert-mode meanings (Ctrl-w, Ctrl-u, Ctrl-o).
+        #[arg(long)]
+        insert: bool,
+    },
     /// How you did today (or this week) compared with before.
     Summary {
         /// The last 7 days instead of today.
@@ -126,6 +133,10 @@ fn main() {
         Cmd::Mode { mode } => set_mode(mode),
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),
+        Cmd::Explain { keys, insert } => {
+            explain(&keys, insert);
+            Ok(())
+        }
         Cmd::Memory { action } => memory(action.unwrap_or(MemoryCmd::Show)),
         Cmd::Pause { duration } => pause(&duration),
         Cmd::Resume => simple(Command::Resume, "resumed"),
@@ -244,6 +255,21 @@ fn summary(week: bool) -> anyhow::Result<()> {
     };
     print!("{}", report::summary(&store, now_ms(), period)?);
     Ok(())
+}
+
+fn explain(keys: &str, insert: bool) {
+    let pieces = flowbuddy_core::glossary::explain_keys(keys, insert);
+    if pieces.is_empty() {
+        println!("Not sure what {keys} does.");
+    }
+    let width = pieces
+        .iter()
+        .map(|(p, _)| p.chars().count())
+        .max()
+        .unwrap_or(0);
+    for (piece, meaning) in pieces {
+        println!("{piece:<width$}  {meaning}");
+    }
 }
 
 fn next() -> anyhow::Result<()> {

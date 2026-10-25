@@ -464,6 +464,26 @@ pub fn is_motion(c: &Command) -> bool {
 
 const VIM: &[ContextKind] = &[ContextKind::VsCodeVim, ContextKind::TerminalVim];
 
+/// A plan's keys with each command marked: `Ctrl-d`×10 then `7k`.
+fn marked(keys: &str) -> String {
+    keys.split(' ')
+        .map(|word| {
+            if matches!(word, "then" | "") {
+                return word.to_string();
+            }
+            let (word, comma) = match word.strip_suffix(',') {
+                Some(w) => (w, ","),
+                None => (word, ""),
+            };
+            match word.split_once('×') {
+                Some((cmd, times)) => format!("{}×{times}{comma}", crate::glossary::mark(cmd)),
+                None => format!("{}{comma}", crate::glossary::mark(word)),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// One rule per [`Category`]: nudges when the cheapest plan is of its kind
 /// and saves at least `min_saving` keys.
 pub struct MotionRule {
@@ -535,11 +555,15 @@ impl Rule for MotionRule {
                 text: match alt {
                     Some(alt) => format!(
                         "That took {used} keys. {} gets there in {}, or {} in {}.",
-                        plan.keys, plan.cost, alt.keys, alt.cost
+                        marked(&plan.keys),
+                        plan.cost,
+                        marked(&alt.keys),
+                        alt.cost
                     ),
                     None => format!(
                         "That took {used} keys. {} gets there in {}.",
-                        plan.keys, plan.cost
+                        marked(&plan.keys),
+                        plan.cost
                     ),
                 },
                 shape: Shape::repeat(self.category.shape_token(), used),
@@ -620,7 +644,7 @@ impl Rule for ScrollRule {
             rule_id: Self::ID,
             title: "Scroll without moving",
             text: format!(
-                "That took {used} keys to scroll {v} lines and come back. {key} scrolls a line without moving the cursor; zt, zz and zb put this line at the top, middle or bottom."
+                "That took {used} keys to scroll {v} lines and come back. `{key}` scrolls a line without moving the cursor; `zt`, `zz` and `zb` put this line at the top, middle or bottom."
             ),
             shape: Shape::repeat("keys to scroll", used),
             mode: m.mode.vim_mode().unwrap_or(VimMode::Normal),
@@ -690,7 +714,7 @@ impl Rule for MarkRule {
             rule_id: Self::ID,
             title: "Set a mark",
             text: format!(
-                "Back to this line for the {} time, {used} keys this trip. Mark it with ma once, then 'a jumps here in 2 (`a for the exact spot).",
+                "Back to this line for the {} time, {used} keys this trip. Mark it with `ma` once, then `'a` jumps here in 2 (`` `a `` for the exact spot).",
                 ordinal(visits + 1)
             ),
             shape: Shape::repeat("keys back to a line", used),
@@ -766,7 +790,7 @@ impl Rule for TextObjectRule {
         if used < cost + Self::MIN_SAVING {
             return;
         }
-        let better = format!("{}{}", ev.report.op.key(), object.keys());
+        let better = crate::glossary::mark(&format!("{}{}", ev.report.op.key(), object.keys()));
         out.push(RuleEvent::Finding(Finding {
             rule_id: Self::ID,
             title: "Use a text object",
@@ -940,6 +964,52 @@ mod tests {
     }
 
     #[test]
+    fn every_plan_is_explained() {
+        let facts = MotionFacts {
+            paragraph_hops: Some(3),
+            screen: Some(ScreenPos::Top),
+            window_lines: Some(40),
+            file_start: true,
+            word_hops: Some(12),
+            word_end_hops: Some(2),
+            bigword_hops: Some(1),
+            find_hops: Some(12),
+            till_hops: Some(2),
+            line_start: true,
+            first_nonblank: true,
+            line_end: true,
+            bracket_match: true,
+            star_hops: Some(2),
+            jump_back: true,
+            search_hops: Some(3),
+            ..Default::default()
+        };
+        let mut checked = 0;
+        for (lines, cols) in [
+            (193, 0),
+            (-193, 0),
+            (-30, 0),
+            (5, 3),
+            (0, 14),
+            (0, -14),
+            (-2, -5),
+        ] {
+            for p in plans(&motion(lines, cols, facts.clone())) {
+                for span in crate::glossary::code_spans(&marked(&p.keys)) {
+                    checked += 1;
+                    assert!(
+                        !crate::glossary::explain_keys(span, false).is_empty(),
+                        "`{span}` from {:?} has no explanation",
+                        p.keys
+                    );
+                }
+            }
+        }
+        assert!(checked > 40, "{checked}");
+        assert_eq!(marked("Ctrl-d×10 then 7k"), "`Ctrl-d`×10 then `7k`");
+    }
+
+    #[test]
     fn half_pages_and_search() {
         let f = MotionFacts {
             window_lines: Some(40),
@@ -987,7 +1057,7 @@ mod tests {
         };
         assert_eq!(finding.rule_id, "motion.paragraph");
         assert_eq!(
-            finding.text,
+            crate::glossary::plain(&finding.text),
             "That took 7 keys. } gets there in 1, or 7j in 2."
         );
         assert_eq!(finding.shape.to_string(), "keys for }×7");
@@ -1047,7 +1117,7 @@ mod tests {
             panic!("{out:?}")
         };
         assert_eq!(
-            f.text,
+            crate::glossary::plain(&f.text),
             "That took 6 keys. di( does it from anywhere inside, in 3."
         );
         // Already short, or no text object matched.
@@ -1071,7 +1141,7 @@ mod tests {
             panic!("{out:?}")
         };
         assert_eq!(
-            f.text,
+            crate::glossary::plain(&f.text),
             "That took 39 keys to scroll 12 lines and come back. Ctrl-e scrolls a line without moving the cursor; zt, zz and zb put this line at the top, middle or bottom."
         );
         // Going somewhere else isn't scrolling.
@@ -1099,7 +1169,7 @@ mod tests {
             panic!("{out:?}")
         };
         assert_eq!(
-            f.text,
+            crate::glossary::plain(&f.text),
             "Back to this line for the 3rd time, 14 keys this trip. Mark it with ma once, then 'a jumps here in 2 (`a for the exact spot)."
         );
         // A short trip is fine.

@@ -95,6 +95,7 @@ flowbuddy mode balanced           # off | passive | balanced | active
 flowbuddy pause 1h                # or 30m, until-tomorrow; `flowbuddy resume`
 flowbuddy summary [--week]        # how you're doing vs. before
 flowbuddy next                    # the one habit worth working on now
+flowbuddy explain 'ci"'            # what keys do, piece by piece
 flowbuddy rules                   # list; `rules mute|disable|enable|reset <id>`
 flowbuddy memory show             # the mistake memory; `memory export`, `memory forget`
 flowbuddy report-fp               # the last nudge was wrong

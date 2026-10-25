@@ -4,6 +4,7 @@ pub mod config;
 pub mod context;
 pub mod editor;
 pub mod engine;
+pub mod glossary;
 pub mod ipc;
 pub mod key;
 pub mod learning;

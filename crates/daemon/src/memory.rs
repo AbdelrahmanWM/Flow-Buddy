@@ -23,6 +23,8 @@ pub struct Memory {
     last_maintenance_ms: Option<u64>,
     learning: LearningConfig,
     retention_days: u32,
+    /// The habit worth working on now (`flowbuddy next`), updated hourly.
+    focus: Option<String>,
 }
 
 impl Memory {
@@ -39,7 +41,12 @@ impl Memory {
             last_maintenance_ms: None,
             learning: config.learning,
             retention_days: config.memory.episode_retention_days,
+            focus: None,
         }
+    }
+
+    pub fn is_focus(&self, rule_id: &str) -> bool {
+        self.focus.as_deref() == Some(rule_id)
     }
 
     pub fn set_config(&mut self, config: &Config) {
@@ -133,8 +140,9 @@ impl Memory {
         }
         self.last_maintenance_ms = Some(now_ms);
         if let Some(store) = &self.store {
-            if let Err(e) = self.update_stages(store, now_ms) {
-                tracing::warn!(error = %e, "could not update learning stages");
+            match self.update_stages(store, now_ms) {
+                Ok(focus) => self.focus = focus,
+                Err(e) => tracing::warn!(error = %e, "could not update learning stages"),
             }
             let cutoff = (now_ms / 1000).saturating_sub(u64::from(self.retention_days) * 86_400);
             match store.prune_episodes(cutoff) {
@@ -146,9 +154,11 @@ impl Memory {
         self.refresh_stages();
     }
 
-    fn update_stages(&self, store: &Store, now_ms: u64) -> flowbuddy_store::Result<()> {
+    /// Returns the habit to focus on, scored with the new stages.
+    fn update_stages(&self, store: &Store, now_ms: u64) -> flowbuddy_store::Result<Option<String>> {
         let week = days::range(now_ms, 7, 0);
         let fortnight = days::range(now_ms, 14, 0);
+        let mut focus: Option<(f64, String)> = None;
         for p in store.patterns()? {
             let w7 = store.window(&p.rule_id, &p.context, &week.0, &week.1)?;
             let w14 = store.window(&p.rule_id, &p.context, &fortnight.0, &fortnight.1)?;
@@ -157,8 +167,12 @@ impl Memory {
                 tracing::info!(rule = %p.rule_id, context = %p.context, from = p.stage.as_str(), to = next.as_str(), "learning stage changed");
                 store.set_stage(&p.rule_id, &p.context, next, now_ms / 1000)?;
             }
+            let score = learning::priority(next, w7.hits, p.false_positives);
+            if score > 0.0 && focus.as_ref().is_none_or(|(best, _)| score > *best) {
+                focus = Some((score, p.rule_id));
+            }
         }
-        Ok(())
+        Ok(focus.map(|(_, id)| id))
     }
 
     fn refresh_stages(&mut self) {

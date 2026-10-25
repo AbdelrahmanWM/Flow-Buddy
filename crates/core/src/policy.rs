@@ -88,12 +88,15 @@ pub struct Gate {
 pub struct RuleFacts {
     pub muted: bool,
     pub stage: Stage,
+    /// The habit picked to work on now; balanced batches favour it.
+    pub focus: bool,
 }
 
 struct Queued {
     finding: Finding,
     count: u32,
     stage: Stage,
+    focus: bool,
 }
 
 /// Decides whether, when and which findings become nudges.
@@ -164,10 +167,12 @@ impl Coach {
                     finding: finding.clone(),
                     count: 0,
                     stage: facts.stage,
+                    focus: facts.focus,
                 });
                 q.count += 1;
                 q.finding = finding.clone();
                 q.stage = facts.stage;
+                q.focus = facts.focus;
                 None
             }
             _ => None,
@@ -201,9 +206,10 @@ impl Coach {
 }
 
 /// How much a queued finding deserves a tip: how often it happened,
-/// weighted by where the habit stands.
+/// weighted by where the habit stands, doubled for the focus habit.
 fn score(q: &Queued) -> f64 {
-    f64::from(q.count) * q.stage.nudge_weight()
+    let focus = if q.focus { 2.0 } else { 1.0 };
+    f64::from(q.count) * q.stage.nudge_weight() * focus
 }
 
 #[cfg(test)]
@@ -238,6 +244,7 @@ mod tests {
     const NEW: RuleFacts = RuleFacts {
         muted: false,
         stage: Stage::New,
+        focus: false,
     };
 
     #[test]
@@ -293,10 +300,12 @@ mod tests {
         let muted = RuleFacts {
             muted: true,
             stage: Stage::New,
+            focus: false,
         };
         let mastered = RuleFacts {
             muted: false,
             stage: Stage::Mastered,
+            focus: false,
         };
         assert!(c.on_finding(&finding("a"), muted, &g, 0).is_none());
         assert!(c.on_finding(&finding("a"), mastered, &g, 0).is_none());
@@ -322,6 +331,7 @@ mod tests {
             let improving = RuleFacts {
                 muted: false,
                 stage: Stage::Improving,
+                focus: false,
             };
             c.on_finding(&finding("improving"), improving, &g, MINUTE_MS);
         }
@@ -336,6 +346,29 @@ mod tests {
             c.on_tick(&g, 61 * MINUTE_MS).is_empty(),
             "queue was drained"
         );
+    }
+
+    #[test]
+    fn balanced_puts_the_focus_habit_first() {
+        let mut c = Coach::new(PolicyConfig {
+            batch_size: 1,
+            ..cfg()
+        });
+        let g = gate(CoachingMode::Balanced);
+        c.on_tick(&g, 0);
+        for _ in 0..4 {
+            c.on_finding(&finding("other"), NEW, &g, MINUTE_MS);
+        }
+        let focus = RuleFacts { focus: true, ..NEW };
+        for _ in 0..3 {
+            c.on_finding(&finding("focus"), focus, &g, MINUTE_MS);
+        }
+        let batch: Vec<_> = c
+            .on_tick(&g, 30 * MINUTE_MS)
+            .iter()
+            .map(|f| f.rule_id)
+            .collect();
+        assert_eq!(batch, ["focus"]);
     }
 
     #[test]

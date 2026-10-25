@@ -290,6 +290,7 @@ impl App {
                     let facts = RuleFacts {
                         muted: muted.contains(f.rule_id),
                         stage: self.memory.stage(f.rule_id, ctx),
+                        focus: self.memory.is_focus(f.rule_id),
                     };
                     if let Some(f) = self.coach.on_finding(f, facts, &gate, now_ms) {
                         self.deliver(&f, now_ms);

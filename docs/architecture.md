@@ -122,6 +122,7 @@ These apply in every mode:
 - `pause <duration>`
 - muting individual rules
 - no nudges for patterns the mistake memory marks as `mastered`
+- in `balanced` mode, the habit picked to work on next (`flowbuddy next`) counts double when choosing a batch's tips
 
 Nudges come back once a pattern `regressed`.
 

@@ -61,6 +61,9 @@ pub struct App {
 
 const NUDGE_HISTORY: usize = 20;
 
+/// The most a threshold is raised after "not helpful" reports.
+const MAX_RAISE: u32 = 3;
+
 /// Commands remembered for counting the keys behind a movement.
 const COMMAND_HISTORY: usize = 256;
 
@@ -279,6 +282,37 @@ impl App {
         self.memory.response(rule_id, action, now_ms);
         if action == NudgeAction::MuteRule {
             self.set_rule(rule_id, RuleAction::Mute);
+        }
+        if action == NudgeAction::FalsePositive {
+            self.raise_threshold(rule_id, now_ms);
+        }
+    }
+
+    /// Every two "not helpful" reports in two weeks raise a rule's threshold
+    /// by one, up to [`MAX_RAISE`] above its default. Never when the config
+    /// sets a threshold: that's the user's call.
+    fn raise_threshold(&mut self, rule_id: &'static str, now_ms: u64) {
+        if self
+            .config
+            .rules
+            .get(rule_id)
+            .is_some_and(|r| r.threshold.is_some())
+            || self.engine.default_threshold(rule_id).is_none()
+        {
+            return;
+        }
+        let reports = self.memory.recent_false_positives(rule_id, now_ms);
+        let entry = self.state.rules.entry(rule_id.to_string()).or_default();
+        if entry.raised < MAX_RAISE && reports >= 2 * u64::from(entry.raised + 1) {
+            entry.raised += 1;
+            tracing::info!(
+                rule = rule_id,
+                raised = entry.raised,
+                "threshold raised after not-helpful reports"
+            );
+            self.engine
+                .apply(&config::rule_settings(&self.config, &self.state));
+            self.save_state();
         }
     }
 
@@ -652,6 +686,7 @@ impl App {
                 enabled: self.engine.is_enabled(r.id()),
                 muted: muted.contains(r.id()),
                 threshold: r.threshold(),
+                raised: self.state.rules.get(r.id()).map_or(0, |s| s.raised),
             })
             .collect()
     }
@@ -675,6 +710,7 @@ impl App {
             RuleAction::Disable => entry.enabled = Some(false),
             RuleAction::Mute => entry.muted = true,
             RuleAction::Unmute => entry.muted = false,
+            RuleAction::Reset => entry.raised = 0,
         }
         self.engine
             .apply(&config::rule_settings(&self.config, &self.state));
@@ -1285,6 +1321,70 @@ pub(crate) mod tests {
         let sent = recorder.0.borrow();
         assert_eq!(sent.len(), 1, "exactly once");
         assert!(sent[0].1.contains("1 habits spotted"), "{}", sent[0].1);
+    }
+
+    fn threshold(app: &App, id: &str) -> Option<u32> {
+        app.engine.rules().find(|r| r.id() == id)?.threshold()
+    }
+
+    #[test]
+    fn not_helpful_reports_raise_the_threshold() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let _ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>xxxxxw", 1_000);
+        let report = |app: &mut App| {
+            send(
+                app,
+                1,
+                ClientMsg::Command {
+                    id: None,
+                    command: Command::ReportFalsePositive,
+                },
+                5_000,
+            )
+        };
+        assert_eq!(threshold(&app, "vim.repeat-x"), Some(4));
+        report(&mut app);
+        assert_eq!(
+            threshold(&app, "vim.repeat-x"),
+            Some(4),
+            "one report isn't enough"
+        );
+        report(&mut app);
+        assert_eq!(threshold(&app, "vim.repeat-x"), Some(5));
+        assert_eq!(app.state.rules["vim.repeat-x"].raised, 1);
+        app.set_rule("vim.repeat-x", RuleAction::Reset);
+        assert_eq!(threshold(&app, "vim.repeat-x"), Some(4));
+    }
+
+    #[test]
+    fn a_configured_threshold_is_never_raised() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        app.config.rules.insert(
+            "vim.repeat-x".into(),
+            config::RuleConfig {
+                enabled: None,
+                threshold: Some(6),
+            },
+        );
+        app.engine
+            .apply(&config::rule_settings(&app.config, &app.state));
+        let _ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>xxxxxxxw", 1_000);
+        for _ in 0..4 {
+            send(
+                &mut app,
+                1,
+                ClientMsg::Command {
+                    id: None,
+                    command: Command::ReportFalsePositive,
+                },
+                5_000,
+            );
+        }
+        assert_eq!(threshold(&app, "vim.repeat-x"), Some(6));
     }
 
     #[test]

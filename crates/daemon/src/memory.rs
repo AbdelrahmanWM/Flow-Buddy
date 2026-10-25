@@ -51,6 +51,19 @@ impl Memory {
         }
     }
 
+    /// "Not helpful" reports for a rule in the last 14 days, all contexts.
+    pub fn recent_false_positives(&self, rule_id: &str, now_ms: u64) -> u64 {
+        let Some(store) = &self.store else { return 0 };
+        let (from, to) = days::range(now_ms, 14, 0);
+        store
+            .daily(&from, &to)
+            .unwrap_or_default()
+            .iter()
+            .filter(|r| r.rule_id == rule_id)
+            .map(|r| r.false_positives)
+            .sum()
+    }
+
     pub fn check_in_due(&self, rule_id: &str, ctx: ContextKind) -> bool {
         self.check_ins
             .contains(&(rule_id.to_string(), ctx.as_str().to_string()))

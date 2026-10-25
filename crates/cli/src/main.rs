@@ -101,6 +101,10 @@ enum RulesCmd {
     Unmute {
         rule: String,
     },
+    /// Undo threshold raises made after "not helpful" reports.
+    Reset {
+        rule: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -378,7 +382,13 @@ fn rules(cmd: RulesCmd) -> anyhow::Result<()> {
                     (true, true) => "muted",
                     (true, false) => "on",
                 };
-                let threshold = r.threshold.map(|n| format!(" (≥{n})")).unwrap_or_default();
+                let threshold = match (r.threshold, r.raised) {
+                    (Some(n), 0) => format!(" (≥{n})"),
+                    (Some(n), up) => {
+                        format!(" (≥{n}, raised by {up} after \"not helpful\" reports)")
+                    }
+                    (None, _) => String::new(),
+                };
                 println!("{:<22} {:<9} {}{threshold}", r.id, state, r.description);
             }
             return Ok(());
@@ -387,6 +397,7 @@ fn rules(cmd: RulesCmd) -> anyhow::Result<()> {
         RulesCmd::Disable { rule } => (rule, RuleAction::Disable),
         RulesCmd::Mute { rule } => (rule, RuleAction::Mute),
         RulesCmd::Unmute { rule } => (rule, RuleAction::Unmute),
+        RulesCmd::Reset { rule } => (rule, RuleAction::Reset),
     };
     client.command(Command::Rule {
         rule_id: rule_id.clone(),
@@ -397,6 +408,7 @@ fn rules(cmd: RulesCmd) -> anyhow::Result<()> {
         RuleAction::Disable => "disabled",
         RuleAction::Mute => "muted",
         RuleAction::Unmute => "unmuted",
+        RuleAction::Reset => "threshold back to its default",
     };
     println!("{rule_id}: {done}");
     Ok(())

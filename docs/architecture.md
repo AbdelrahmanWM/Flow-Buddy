@@ -117,6 +117,8 @@ The app ids are defaults and can be overridden in the config. The exact values r
 | `balanced` (default) | Yes | Batched: up to 1–2 tips every N minutes (default 30) | On demand |
 | `active` | Yes | Real time, with a cooldown per rule and a cap per hour | On demand |
 
+Rules learn from "not helpful" reports: every two in two weeks raise that rule's threshold by one, at most three above its default. A threshold set in `config.toml` is never changed, and `flowbuddy rules reset <id>` undoes the raises.
+
 Once a week, in every mode but `off`, one notification sums up progress: how often you used the better way, habits that showed up less than the week before, habits mastered, and what to work on next. It is sent at `summary_time`, outside quiet hours and pauses.
 
 These apply in every mode:

@@ -46,6 +46,8 @@ pub enum RuleAction {
     Disable,
     Mute,
     Unmute,
+    /// Undo threshold raises made after "not helpful" reports.
+    Reset,
 }
 
 /// Requests from the CLI or the indicator menu.
@@ -224,6 +226,9 @@ pub struct RuleInfo {
     pub enabled: bool,
     pub muted: bool,
     pub threshold: Option<u32>,
+    /// How much of `threshold` was added after "not helpful" reports.
+    #[serde(default)]
+    pub raised: u32,
 }
 
 #[derive(Serialize)]

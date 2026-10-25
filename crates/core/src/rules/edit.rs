@@ -613,8 +613,146 @@ pub fn repeat_paste() -> RepeatRule {
     })
 }
 
+// Macros -------------------------------------------------------------------
+
+#[derive(Clone, PartialEq)]
+enum Piece {
+    Command(Vec<Key>),
+    /// Characters typed in Insert mode; only the number.
+    Typed(u32),
+}
+
+/// The same edit done line after line where a macro would replay it.
+#[derive(Default)]
+pub struct Macro {
+    unit: Vec<Piece>,
+    /// Insert mode used keys other than text: not a replayable unit.
+    broken: bool,
+    last: Option<Vec<Piece>>,
+    times: u32,
+}
+
+impl Macro {
+    const ID: &'static str = "vim.macro";
+    /// Repeats of the same unit before suggesting a macro.
+    const TIMES: u32 = 3;
+
+    /// Moves that go on to the next place to edit.
+    fn is_next(c: &Command) -> bool {
+        c.count.is_none() && ["j", "+", "n", "N", "*", "#", ";"].iter().any(|s| c.is(s))
+    }
+
+    fn keys(unit: &[Piece]) -> u32 {
+        unit.iter()
+            .map(|p| match p {
+                Piece::Command(k) => k.len() as u32,
+                // The text, plus Esc to leave Insert mode.
+                Piece::Typed(n) => n + 1,
+            })
+            .sum()
+    }
+
+    fn close(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        let unit = std::mem::take(&mut self.unit);
+        let broken = std::mem::take(&mut self.broken);
+        let edits = unit
+            .iter()
+            .filter(|p| match p {
+                Piece::Command(k) => !k.is_empty() && !is_motion_keys(k),
+                Piece::Typed(_) => true,
+            })
+            .count();
+        if broken || edits == 0 || Self::keys(&unit) < 4 {
+            self.last = None;
+            return;
+        }
+        if self.last.as_ref() == Some(&unit) {
+            self.times += 1;
+            if self.times == Self::TIMES {
+                let n = self.times;
+                let keys = Self::keys(&unit);
+                out.push(finding(
+                    Self::ID,
+                    "Record a macro",
+                    format!(
+                        "The same {keys}-key edit {n} times in a row. Record it once with qq … q, then replay it with @q and @@."
+                    ),
+                    Shape::repeat("same edit per line", n),
+                    step,
+                ));
+            }
+        } else {
+            self.last = Some(unit);
+            self.times = 1;
+        }
+    }
+}
+
+fn is_motion_keys(keys: &[Key]) -> bool {
+    crate::motion::is_motion(&Command {
+        count: None,
+        keys: keys.to_vec(),
+    })
+}
+
+impl Rule for Macro {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Doing the same multi-key edit on line after line where a macro replays it"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if step.before == VimMode::Insert {
+            match (insert_key(step), &step.event) {
+                (Some(InsertKey::Text), _) => match self.unit.last_mut() {
+                    Some(Piece::Typed(n)) => *n += 1,
+                    _ => self.unit.push(Piece::Typed(1)),
+                },
+                (_, Some(VimEvent::Escape) | None) => {}
+                _ => self.broken = true,
+            }
+            return;
+        }
+        let Some(c) = command(step) else {
+            if !matches!(step.event, None | Some(VimEvent::Escape)) {
+                self.broken = true;
+            }
+            return;
+        };
+        if c.head().is_some_and(|h| h == 'q' || h == '@') {
+            out.push(adoption(Self::ID, step));
+            self.reset();
+            return;
+        }
+        let mut keys = c.keys.clone();
+        if let Some(n) = c.count {
+            // Keep counts as part of the shape: 3x and 2x differ.
+            keys.extend(n.to_string().chars().map(Key::ch));
+        }
+        self.unit.push(Piece::Command(keys));
+        if Self::is_next(c) {
+            self.close(step, out);
+        }
+    }
+
+    fn reset(&mut self) {
+        self.unit.clear();
+        self.broken = false;
+        self.last = None;
+        self.times = 0;
+    }
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
     vec![
+        Box::new(Macro::default()),
         Box::new(DeleteThenInsert::default()),
         Box::new(Shorthand::default()),
         Box::new(VisualOperator::default()),
@@ -756,6 +894,25 @@ mod tests {
         );
         assert!(findings(&vim(repeat_join(), "JJ<Esc>")).is_empty());
         assert_eq!(adoptions(&vim(repeat_paste(), "3p")), 1);
+    }
+
+    #[test]
+    fn macro_for_the_same_edit_on_each_line() {
+        let r = || Macro::default();
+        let line = "0cwnew<Esc>j";
+        let ev = vim(r(), &line.repeat(3));
+        assert_eq!(
+            texts(&ev),
+            [
+                "The same 8-key edit 3 times in a row. Record it once with qq … q, then replay it with @q and @@."
+            ]
+        );
+        // Twice isn't a habit yet; a different edit breaks the run.
+        assert!(findings(&vim(r(), &line.repeat(2))).is_empty());
+        assert!(findings(&vim(r(), "0cwnew<Esc>j0cwab<Esc>j0cwnew<Esc>j")).is_empty());
+        // Just moving isn't an edit.
+        assert!(findings(&vim(r(), "wwjwwjwwj")).is_empty());
+        assert_eq!(adoptions(&vim(r(), "qq0cwnew<Esc>jq@q@@")), 3);
     }
 
     #[test]

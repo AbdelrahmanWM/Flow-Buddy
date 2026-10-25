@@ -117,6 +117,17 @@ pub enum ErrorCode {
     Internal,
 }
 
+/// How the extension shows a nudge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NudgeStyle {
+    /// A short label next to the top-bar icon.
+    #[default]
+    Bar,
+    /// A card at the top centre of the screen that fades out.
+    Card,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Nudge {
     pub nudge_id: String,
@@ -124,6 +135,9 @@ pub struct Nudge {
     pub title: String,
     pub text: String,
     pub ttl_ms: u64,
+    /// Added after v0 shipped; older extensions ignore it.
+    #[serde(default)]
+    pub style: NudgeStyle,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -295,6 +309,7 @@ mod tests {
             r#"{"v":0,"type":"result","id":7,"data":{"running":true}}"#,
             r#"{"v":0,"type":"error","id":11,"code":"unknown_rule","message":"no rule named vim.repeat-jk"}"#,
             r#"{"v":0,"type":"nudge","nudge_id":"n-1729740000-3","rule_id":"vim.repeat-jk","title":"Try a count","text":"You pressed j 7 times. Try 7j, } or Ctrl-d.","ttl_ms":6000}"#,
+            r#"{"v":0,"type":"nudge","nudge_id":"n-1729740000-4","rule_id":"vim.repeat-x","title":"Delete by word","text":"x","ttl_ms":6000,"style":"card"}"#,
             r#"{"v":0,"type":"mode_changed","mode":"active","paused_until":null}"#,
         ];
         for line in examples {

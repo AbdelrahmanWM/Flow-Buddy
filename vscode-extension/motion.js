@@ -8,7 +8,7 @@
 'use strict';
 
 const vscode = require('vscode');
-const {computeFacts} = require('./facts');
+const {computeFacts, rested} = require('./facts');
 
 const REST_MS = 1000;
 // Visual Block has a selection per line and no single cursor to follow.
@@ -29,6 +29,12 @@ function cursorOf(editor, mode) {
         return {line: a.line, col: empty ? 0 : null};
     }
     return {line: a.line, col: a.character};
+}
+
+// The first visible line, or null when it can't be told.
+function topLine(editor) {
+    const ranges = editor.visibleRanges;
+    return ranges.length ? ranges[0].start.line : null;
 }
 
 function samePos(a, b) {
@@ -59,6 +65,8 @@ class MotionTracker {
         this._version = null;
         this._segment = null;
         this._restId = null;
+        this._top = null;
+        this._rests = [];
     }
 
     enable(subscriptions) {
@@ -111,11 +119,13 @@ class MotionTracker {
             return;
         }
         const from = this._pos;
+        const top = this._top;
         this._pos = pos;
+        this._top = topLine(editor);
         if (!from || samePos(from, pos))
             return;
         const now = Date.now();
-        this._segment ??= {mode, start: from, startMs: now, moves: 0};
+        this._segment ??= {mode, start: from, startMs: now, moves: 0, top};
         this._segment.moves++;
         this._segment.end = pos;
         this._segment.endMs = now;
@@ -152,6 +162,12 @@ class MotionTracker {
         } catch (e) {
             console.warn(`flowbuddy: motion facts failed: ${e}`);
         }
+        const top = topLine(editor);
+        if (seg.top !== null && top !== null)
+            facts.view_scrolled = top - seg.top;
+        const visits = rested(this._rests, seg.end.line, Date.now());
+        if (visits)
+            facts.revisits = visits;
         this._link.send({
             type: 'motion',
             start_ms: seg.startMs,

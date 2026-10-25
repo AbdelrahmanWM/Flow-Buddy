@@ -551,11 +551,169 @@ impl Rule for MotionRule {
     fn reset(&mut self) {}
 }
 
+/// Moving the cursor away and back just to scroll the view.
+#[derive(Default)]
+pub struct ScrollRule {
+    /// The previous movement: (lines, scrolled, keys, end).
+    last: Option<(i64, i64, u32, u64)>,
+}
+
+impl ScrollRule {
+    const ID: &'static str = "motion.scroll";
+    /// Two movements this close together are one gesture.
+    const GESTURE_MS: u64 = 5000;
+}
+
+impl Rule for ScrollRule {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Moving the cursor away and back just to scroll the view"
+    }
+
+    fn title(&self) -> &'static str {
+        "Scroll without moving"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn needs_editor(&self) -> bool {
+        true
+    }
+
+    fn on_step(&mut self, _step: &Step, _out: &mut Vec<RuleEvent>) {}
+
+    fn on_motion(&mut self, ev: &MotionEvent, out: &mut Vec<RuleEvent>) {
+        let m = &ev.motion;
+        let scrolled = m.facts.view_scrolled.unwrap_or(0);
+        let last = self
+            .last
+            .replace((m.lines, scrolled, ev.keys_used, m.end_ms));
+        let Some((lines, prev_scrolled, prev_keys, end)) = last else {
+            return;
+        };
+        let view = prev_scrolled + scrolled;
+        let there_and_back = lines.signum() == -m.lines.signum() && (lines + m.lines).abs() <= 3;
+        let used = prev_keys + ev.keys_used;
+        if m.start_ms.saturating_sub(end) > Self::GESTURE_MS
+            || !there_and_back
+            || view.abs() < 3
+            || used < 6
+        {
+            return;
+        }
+        self.last = None;
+        let v = view.unsigned_abs();
+        let key = if view > 0 { "Ctrl-e" } else { "Ctrl-y" };
+        out.push(RuleEvent::Finding(Finding {
+            rule_id: Self::ID,
+            title: "Scroll without moving",
+            text: format!(
+                "That took {used} keys to scroll {v} lines and come back. {key} scrolls a line without moving the cursor; zt, zz and zb put this line at the top, middle or bottom."
+            ),
+            shape: Shape::repeat("keys to scroll", used),
+            mode: m.mode.vim_mode().unwrap_or(VimMode::Normal),
+            at_ms: m.end_ms,
+        }));
+    }
+
+    fn reset(&mut self) {
+        self.last = None;
+    }
+}
+
+/// Walking back to the same line again and again where a mark jumps.
+#[derive(Default)]
+pub struct MarkRule;
+
+impl MarkRule {
+    const ID: &'static str = "motion.mark";
+    /// This many earlier visits make it a habit worth a mark.
+    const VISITS: u32 = 2;
+}
+
+impl Rule for MarkRule {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Moving back to the same line again and again without a mark"
+    }
+
+    fn title(&self) -> &'static str {
+        "Set a mark"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn needs_editor(&self) -> bool {
+        true
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        // Jumping to a mark: ' or ` and a letter.
+        if crate::rules::vim::command(step)
+            .is_some_and(|c| c.keys.len() == 2 && c.head().is_some_and(|h| h == '\'' || h == '`'))
+        {
+            out.push(RuleEvent::Adoption {
+                rule_id: Self::ID,
+                at_ms: step.at_ms,
+            });
+        }
+    }
+
+    fn on_motion(&mut self, ev: &MotionEvent, out: &mut Vec<RuleEvent>) {
+        let m = &ev.motion;
+        let Some(visits) = m.facts.revisits.filter(|v| *v >= Self::VISITS) else {
+            return;
+        };
+        // A jump that's already short (a mark, '', Ctrl-o) is fine.
+        if ev.keys_used < 5 || m.lines.unsigned_abs() < 5 {
+            return;
+        }
+        let used = ev.keys_used;
+        out.push(RuleEvent::Finding(Finding {
+            rule_id: Self::ID,
+            title: "Set a mark",
+            text: format!(
+                "Back to this line for the {} time, {used} keys this trip. Mark it with ma once, then 'a jumps here in 2 (`a for the exact spot).",
+                ordinal(visits + 1)
+            ),
+            shape: Shape::repeat("keys back to a line", used),
+            mode: m.mode.vim_mode().unwrap_or(VimMode::Normal),
+            at_ms: m.end_ms,
+        }));
+    }
+
+    fn reset(&mut self) {}
+}
+
+fn ordinal(n: u32) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
-    Category::ALL
+    let mut rules: Vec<Box<dyn Rule>> = Category::ALL
         .into_iter()
         .map(|c| Box::new(MotionRule::new(c)) as Box<dyn Rule>)
-        .collect()
+        .collect();
+    rules.push(Box::new(ScrollRule::default()));
+    rules.push(Box::new(MarkRule));
+    rules
 }
 
 #[cfg(test)]
@@ -775,6 +933,72 @@ mod tests {
         );
         // A single j is just a single j.
         assert!(run(1, 1, 0, MotionFacts::default()).is_empty());
+    }
+
+    fn ev(keys_used: u32, lines: i64, start_ms: u64, facts: MotionFacts) -> MotionEvent {
+        MotionEvent {
+            motion: Motion {
+                start_ms,
+                end_ms: start_ms + 800,
+                moves: 1,
+                mode: EditorMode::Normal,
+                lines,
+                cols: 0,
+                facts,
+            },
+            keys_used,
+        }
+    }
+
+    #[test]
+    fn scrolling_by_moving_away_and_back() {
+        let mut r = ScrollRule::default();
+        let mut out = Vec::new();
+        let scrolled = |v| MotionFacts {
+            view_scrolled: Some(v),
+            ..Default::default()
+        };
+        r.on_motion(&ev(20, 20, 0, scrolled(12)), &mut out);
+        r.on_motion(&ev(19, -19, 1500, scrolled(0)), &mut out);
+        let RuleEvent::Finding(f) = &out[0] else {
+            panic!("{out:?}")
+        };
+        assert_eq!(
+            f.text,
+            "That took 39 keys to scroll 12 lines and come back. Ctrl-e scrolls a line without moving the cursor; zt, zz and zb put this line at the top, middle or bottom."
+        );
+        // Going somewhere else isn't scrolling.
+        let mut out = Vec::new();
+        let mut r = ScrollRule::default();
+        r.on_motion(&ev(20, 20, 0, scrolled(12)), &mut out);
+        r.on_motion(&ev(5, 5, 1500, scrolled(5)), &mut out);
+        assert!(out.is_empty());
+        // Nor is coming back much later.
+        r.on_motion(&ev(25, -25, 60_000, scrolled(-5)), &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn marks_for_lines_you_keep_coming_back_to() {
+        let mut out = Vec::new();
+        let revisits = |n| MotionFacts {
+            revisits: Some(n),
+            ..Default::default()
+        };
+        MarkRule.on_motion(&ev(14, -14, 0, revisits(1)), &mut out);
+        assert!(out.is_empty(), "the second visit isn't a habit yet");
+        MarkRule.on_motion(&ev(14, -14, 0, revisits(2)), &mut out);
+        let RuleEvent::Finding(f) = &out[0] else {
+            panic!("{out:?}")
+        };
+        assert_eq!(
+            f.text,
+            "Back to this line for the 3rd time, 14 keys this trip. Mark it with ma once, then 'a jumps here in 2 (`a for the exact spot)."
+        );
+        // A short trip is fine.
+        let mut out = Vec::new();
+        MarkRule.on_motion(&ev(2, -30, 0, revisits(4)), &mut out);
+        assert!(out.is_empty());
     }
 
     #[test]

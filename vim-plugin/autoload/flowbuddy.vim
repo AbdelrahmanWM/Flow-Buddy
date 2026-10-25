@@ -15,7 +15,11 @@ let s:reconnect_timer = -1
 let s:epoch_base_ms = 0
 let s:started = []
 let s:last = []
+let s:last_top = 0
 let s:seg = {}
+" Lines the cursor rested on lately, as [line, ms], for revisits. Never sent.
+let s:rests = []
+let s:REST_HISTORY_MS = 600000
 let s:rest_timer = -1
 let s:simulating = 0
 
@@ -112,6 +116,7 @@ function! flowbuddy#start() abort
     let s:epoch_base_ms = str2nr(trim(system('date +%s%3N')))
   endif
   let s:last = getpos('.')[1:2]
+  let s:last_top = line('w0')
   call s:open()
   let s:reconnect_timer = timer_start(s:RECONNECT_MS, function('s:retry'), {'repeat': -1})
 endfunction
@@ -179,15 +184,17 @@ function! flowbuddy#on_cursor() abort
   let pos = getpos('.')[1:2]
   if !s:moving_mode(mode(1)) || empty(s:last)
     let s:last = pos
+    let s:last_top = line('w0')
     return
   endif
   if empty(s:seg)
     let s:seg = {'start': s:last, 'start_ms': s:now_ms(), 'moves': 0,
-          \ 'mode': s:mode_name(mode(1)), 'jump': getpos("''")[1:2]}
+          \ 'mode': s:mode_name(mode(1)), 'jump': getpos("''")[1:2], 'top': s:last_top}
   endif
   let s:seg.moves += 1
   let s:seg.end_ms = s:now_ms()
   let s:last = pos
+  let s:last_top = line('w0')
   call timer_stop(s:rest_timer)
   let s:rest_timer = timer_start(get(g:, 'flowbuddy_rest_ms', 1000), function('s:rested'))
 endfunction
@@ -216,9 +223,26 @@ function! s:finish() abort
   endif
   " Facts run motions, which would change a Visual selection.
   let facts = mode(1) ==# 'n' ? flowbuddy#facts(seg.start, end, seg.jump) : {}
+  let facts.view_scrolled = line('w0') - seg.top
+  let visits = flowbuddy#rested(end[0], s:now_ms())
+  if visits
+    let facts.revisits = visits
+  endif
   call s:send({'type': 'motion', 'start_ms': seg.start_ms, 'end_ms': seg.end_ms,
         \ 'moves': seg.moves, 'mode': seg.mode, 'lines': end[0] - seg.start[0],
         \ 'cols': end[1] - seg.start[1], 'facts': facts})
+endfunction
+
+" Count earlier rests on `line` in the last few minutes, then remember this
+" one. Lines shift with edits; that's fine for spotting a habit.
+function! flowbuddy#rested(line, now) abort
+  call filter(s:rests, {_, r -> a:now - r[1] < s:REST_HISTORY_MS})
+  let visits = len(filter(copy(s:rests), {_, r -> r[0] == a:line}))
+  call add(s:rests, [a:line, a:now])
+  if len(s:rests) > 100
+    call remove(s:rests, 0)
+  endif
+  return visits
 endfunction
 
 " Facts ---------------------------------------------------------------------

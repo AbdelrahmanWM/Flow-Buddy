@@ -131,6 +131,12 @@ pub struct MotionFacts {
     pub search_hops: Option<u32>,
     /// 'relativenumber' is on, so line counts on screen can be read off.
     pub relative_numbers: bool,
+    /// How many lines the view scrolled during the movement (the top
+    /// visible line's delta; positive is further into the file).
+    pub view_scrolled: Option<i64>,
+    /// How many times recently (about 10 minutes) the cursor rested on the
+    /// end line before. The editor keeps the history; only the count is sent.
+    pub revisits: Option<u32>,
 }
 
 #[cfg(test)]

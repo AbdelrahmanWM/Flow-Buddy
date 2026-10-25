@@ -496,9 +496,29 @@ function computeFacts(lines, start, end, opts = {}) {
     return facts;
 }
 
+// How long rests on a line count towards `revisits`.
+const REST_HISTORY_MS = 600000;
+
+/**
+ * Count earlier rests on `line` in the last ten minutes, then remember
+ * this one. `rests` stays in the extension; only the count is sent.
+ *
+ * @param {{line: number, ms: number}[]} rests updated in place
+ */
+function rested(rests, line, now) {
+    while (rests.length && now - rests[0].ms >= REST_HISTORY_MS)
+        rests.shift();
+    const visits = rests.filter(r => r.line === line).length;
+    rests.push({line, ms: now});
+    if (rests.length > 100)
+        rests.shift();
+    return visits;
+}
+
 if (typeof module !== 'undefined') {
     module.exports = {
         computeFacts,
+        rested,
         // For the tests.
         wordForward, wordBackward, wordEndForward, wordEndBackward, Cursor,
     };

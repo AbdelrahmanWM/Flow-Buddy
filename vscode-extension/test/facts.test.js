@@ -16,14 +16,14 @@ function load() {
     return module.exports;
 }
 
-const {computeFacts, Cursor, wordForward, wordBackward, wordEndForward} = load();
+const {computeFacts, rested, Cursor, wordForward, wordBackward, wordEndForward} = load();
 
 // Every field of MotionFacts; the daemon rejects anything else.
 const FIELDS = [
     'paragraph_hops', 'screen', 'window_lines', 'file_start', 'file_end',
     'word_hops', 'word_end_hops', 'bigword_hops', 'find_hops', 'till_hops',
     'line_start', 'first_nonblank', 'line_end', 'bracket_match', 'star_hops',
-    'jump_back', 'search_hops', 'relative_numbers',
+    'jump_back', 'search_hops', 'relative_numbers', 'view_scrolled', 'revisits',
 ];
 
 let failed = 0;
@@ -159,6 +159,16 @@ facts('relative numbers on', words, [0, 0], [0, 4], {relativeNumbers: true},
     {relative_numbers: true}, ['relative_numbers']);
 facts('relative numbers off', words, [0, 0], [0, 4], {},
     {}, ['relative_numbers']);
+
+// Revisits: earlier rests on the same line in the last ten minutes.
+{
+    const rests = [];
+    check('first rest', {visits: rested(rests, 40, 1000)}, {visits: 0});
+    rested(rests, 12, 2000);
+    check('back again', {visits: rested(rests, 40, 3000)}, {visits: 1});
+    check('and again', {visits: rested(rests, 40, 4000)}, {visits: 2});
+    check('forgotten after ten minutes', {visits: rested(rests, 40, 604000)}, {visits: 0});
+}
 
 // Nothing at all for a move that goes nowhere.
 facts('no move', words, [0, 3], [0, 3], {}, {});

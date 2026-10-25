@@ -96,6 +96,15 @@ function! Test_relative_numbers() abort
   set norelativenumber
 endfunction
 
+function! Test_revisits() abort
+  call assert_equal(0, flowbuddy#rested(40, 1000))
+  call assert_equal(0, flowbuddy#rested(12, 2000))
+  call assert_equal(1, flowbuddy#rested(40, 3000))
+  call assert_equal(2, flowbuddy#rested(40, 4000))
+  " Forgotten after ten minutes.
+  call assert_equal(0, flowbuddy#rested(40, 4000 + 600000))
+endfunction
+
 function! Test_facts_leave_no_trace() abort
   call s:buf(['a', '', 'b', '', 'c'])
   call cursor(1, 1)

@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn vim_plugin_motion_parses() {
         // Captured from vim-plugin/ sending to a test socket.
-        let line = r#"{"start_ms":1792942695843,"moves":1,"lines":6,"facts":{"line_start":true,"line_end":false,"file_start":false,"file_end":false,"jump_back":false,"first_nonblank":false,"window_lines":23,"paragraph_hops":2},"v":0,"mode":"normal","type":"motion","end_ms":1792942695843,"cols":0}"#;
+        let line = r#"{"start_ms":1792969179805,"moves":1,"lines":6,"facts":{"relative_numbers":false,"file_start":false,"file_end":false,"jump_back":false,"view_scrolled":0,"window_lines":23,"paragraph_hops":2},"v":0,"mode":"normal","type":"motion","end_ms":1792969179805,"cols":0}"#;
         match decode_client(line).unwrap() {
             ClientMsg::Motion(m) => assert_eq!(m.facts.paragraph_hops, Some(2)),
             other => panic!("{other:?}"),

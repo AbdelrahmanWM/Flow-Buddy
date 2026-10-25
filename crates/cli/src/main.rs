@@ -1,4 +1,5 @@
 mod client;
+mod report;
 
 use clap::{Parser, Subcommand};
 use flowbuddy_core::ipc::{ClientKind, ClientMsg, Command, CtxEvent, RuleAction, RuleInfo, Status};
@@ -29,6 +30,17 @@ enum Cmd {
     Resume,
     /// Mark the last nudge as wrong, to help tune the rules.
     ReportFp,
+    /// How you did today (or this week) compared with before.
+    Summary {
+        /// The last 7 days instead of today.
+        #[arg(long)]
+        week: bool,
+    },
+    /// Inspect, export or delete the mistake memory.
+    Memory {
+        #[command(subcommand)]
+        action: Option<MemoryCmd>,
+    },
     /// List rules, or enable/disable/mute one.
     Rules {
         #[command(subcommand)]
@@ -43,6 +55,24 @@ enum Cmd {
         shell_pid: Option<u32>,
         #[arg(long, global = true)]
         tty: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MemoryCmd {
+    /// Every remembered pattern with its stage and history (the default).
+    Show,
+    /// Print the memory as versioned JSON (see docs/memory.md).
+    Export,
+    /// Delete what is remembered about one rule, or everything.
+    Forget {
+        /// Rule id, e.g. vim.repeat-jk.
+        rule: Option<String>,
+        #[arg(long, conflicts_with = "rule")]
+        all: bool,
+        /// Don't ask for confirmation.
+        #[arg(long, short)]
+        yes: bool,
     },
 }
 
@@ -84,6 +114,8 @@ fn main() {
         Cmd::Status => status(),
         Cmd::Rules { action } => rules(action.unwrap_or(RulesCmd::List)),
         Cmd::Mode { mode } => set_mode(mode),
+        Cmd::Summary { week } => summary(week),
+        Cmd::Memory { action } => memory(action.unwrap_or(MemoryCmd::Show)),
         Cmd::Pause { duration } => pause(&duration),
         Cmd::Resume => simple(Command::Resume, "resumed"),
         Cmd::ReportFp => simple(
@@ -148,6 +180,90 @@ fn status() -> anyhow::Result<()> {
         }
     );
     Ok(())
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Open the database read-only; `None` if nothing was ever recorded.
+fn open_db() -> anyhow::Result<Option<flowbuddy_store::Store>> {
+    let path = flowbuddy_core::paths::database();
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(flowbuddy_store::Store::open_read_only(&path)?))
+}
+
+fn summary(week: bool) -> anyhow::Result<()> {
+    let Some(store) = open_db()? else {
+        println!("Nothing recorded yet. Is flowbuddyd running? Try `flowbuddy status`.");
+        return Ok(());
+    };
+    let period = if week {
+        report::Period::Week
+    } else {
+        report::Period::Today
+    };
+    print!("{}", report::summary(&store, now_ms(), period)?);
+    Ok(())
+}
+
+fn memory(cmd: MemoryCmd) -> anyhow::Result<()> {
+    match cmd {
+        MemoryCmd::Show => match open_db()? {
+            Some(store) => print!("{}", report::memory_show(&store, now_ms())?),
+            None => println!("The mistake memory is empty."),
+        },
+        MemoryCmd::Export => {
+            let store = match open_db()? {
+                Some(s) => s,
+                None => flowbuddy_store::Store::open_in_memory()?,
+            };
+            let now = now_ms();
+            let week = flowbuddy_store::days::range(now, 7, 0);
+            let describe = |id: &str| Some(report::describe(id));
+            let export =
+                flowbuddy_store::Export::build(&store, &describe, (&week.0, &week.1), now / 1000)?;
+            println!("{}", serde_json::to_string_pretty(&export)?);
+        }
+        MemoryCmd::Forget { rule, all, yes } => {
+            let what = match (&rule, all) {
+                (Some(r), false) => format!("everything remembered about {r}"),
+                (None, true) => "ALL stats and the whole mistake memory".to_string(),
+                _ => anyhow::bail!("name a rule, or pass --all"),
+            };
+            let path = flowbuddy_core::paths::database();
+            if !path.exists() {
+                println!("Nothing to forget.");
+                return Ok(());
+            }
+            if !yes && !confirm(&format!("Delete {what}? This can't be undone. [y/N] "))? {
+                println!("Kept.");
+                return Ok(());
+            }
+            let store = flowbuddy_store::Store::open(&path)?;
+            match rule {
+                Some(r) => {
+                    store.forget_rule(&r)?;
+                }
+                None => store.forget_all()?,
+            }
+            println!("Deleted {what}.");
+        }
+    }
+    Ok(())
+}
+
+fn confirm(prompt: &str) -> anyhow::Result<bool> {
+    use std::io::Write;
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 
 fn simple(command: Command, done: &str) -> anyhow::Result<()> {

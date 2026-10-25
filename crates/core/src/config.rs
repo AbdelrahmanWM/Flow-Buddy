@@ -10,6 +10,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::RuleSettings;
+use crate::learning::LearningConfig;
 use crate::policy::CoachingMode;
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -21,6 +22,7 @@ pub struct Config {
     /// `[rules."vim.repeat-jk"] enabled = false, threshold = 8`
     pub rules: BTreeMap<String, RuleConfig>,
     pub memory: MemoryConfig,
+    pub learning: LearningConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]

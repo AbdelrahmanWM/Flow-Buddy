@@ -4,6 +4,7 @@ mod capture;
 mod config_watch;
 mod ipc_server;
 mod keymap;
+mod memory;
 mod notify;
 mod resolver;
 
@@ -77,6 +78,13 @@ async fn main() -> anyhow::Result<()> {
     let resolver = Resolver::new(app::app_ids(&config), Box::new(Procfs));
     let mut app =
         App::new(config, state, resolver, Box::new(notify::NotifySend)).with_state_path(state_path);
+    let db = paths::database();
+    match flowbuddy_store::Store::open(&db) {
+        Ok(store) => app = app.with_store(store),
+        Err(e) => {
+            warn!(path = %db.display(), error = %e, "stats disabled: could not open database")
+        }
+    }
     let (cfg_tx, mut cfg_rx) = mpsc::channel::<()>(4);
     let watcher = tokio::spawn(config_watch::run(config_path.clone(), cfg_tx));
     let mut ticker = tokio::time::interval(Duration::from_secs(1));

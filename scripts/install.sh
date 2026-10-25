@@ -73,7 +73,7 @@ elif ask "Add Flow Buddy (and 'set -o vi') to the end of ~/.bashrc?"; then
     block=$(printf '%s\n%s\n%s\n%s\n' "$marker_begin" "set -o vi" \
         "[[ -f \"$share_dir/flowbuddy.bash\" ]] && source \"$share_dir/flowbuddy.bash\"" "$marker_end")
     if ((dry_run)); then
-        printf '    + append to %s:\n%s\n' "$bashrc" "$(sed 's/^/        /' <<<"$block")"
+        printf '    + append to %s:\n        %s\n' "$bashrc" "${block//$'\n'/$'\n'        }"
     else
         printf '\n%s\n' "$block" >>"$bashrc"
     fi

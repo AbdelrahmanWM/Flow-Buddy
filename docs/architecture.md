@@ -88,7 +88,7 @@ struct Context {
 | Terminal emulator | other foreground command, or no report | `Unsupported` |
 | Anything else | — | `Unsupported` |
 
-The app ids are defaults and can be overridden in the config. The exact values reported on GNOME 50 are checked in #5.
+The app ids are defaults and can be overridden in the config. The values seen on GNOME 50 are in [spikes/gnome-focus.md](spikes/gnome-focus.md).
 
 **Matching a terminal window to a shell.** The extension reports the focused window's PID, and each hook report carries the shell's `$$` and TTY. The daemon walks the shell's parent processes until it reaches the window PID.
 
@@ -98,7 +98,7 @@ The app ids are defaults and can be overridden in the config. The exact values r
 - A Vim plugin that isn't a child of the terminal (inside tmux) counts when it has said it has focus.
 - An editor's reported mode replaces the guess, and stays known after clicks.
 
-**Open question for #5:** GNOME Terminal and Ptyxis run one server process for all their windows, so several shells can match the same window. Until there's a better signal, the daemon uses the shell that reported most recently.
+**One server for many windows.** GNOME Terminal and Ptyxis run one server process for all their windows, so several shells can match the same window. The daemon uses the shell that reported most recently; editor plugins that report focus settle it for Vim.
 
 ### Mode inference and confidence
 

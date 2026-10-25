@@ -10,7 +10,7 @@ const VIM: &[ContextKind] = &[ContextKind::TerminalVim, ContextKind::VsCodeVim];
 
 /// The command, if this step completed a Normal/Visual-mode command.
 /// Operator commands such as `dw` complete from OpPending.
-fn command(step: &Step) -> Option<&Command> {
+pub(crate) fn command(step: &Step) -> Option<&Command> {
     let from_normal = matches!(step.before, VimMode::Normal | VimMode::OpPending);
     match &step.event {
         Some(VimEvent::Command(c)) if from_normal || step.before.is_visual() => Some(c),
@@ -18,7 +18,7 @@ fn command(step: &Step) -> Option<&Command> {
     }
 }
 
-fn insert_key(step: &Step) -> Option<InsertKey> {
+pub(crate) fn insert_key(step: &Step) -> Option<InsertKey> {
     match step.event {
         Some(VimEvent::Insert(k)) if step.before == VimMode::Insert => Some(k),
         _ => None,
@@ -26,7 +26,7 @@ fn insert_key(step: &Step) -> Option<InsertKey> {
 }
 
 /// An uncounted single-key command that is one of `chars`.
-fn uncounted<'a>(step: &'a Step, chars: &[char]) -> Option<&'a Command> {
+pub(crate) fn uncounted<'a>(step: &'a Step, chars: &[char]) -> Option<&'a Command> {
     command(step).filter(|c| {
         c.count.is_none()
             && c.single()

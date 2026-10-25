@@ -105,6 +105,39 @@ function! Test_revisits() abort
   call assert_equal(0, flowbuddy#rested(40, 4000 + 600000))
 endfunction
 
+function! Test_char_objects() abort
+  call assert_equal(['iw', 'iW'], flowbuddy#char_objects('foo', ' ', ' '))
+  call assert_equal(['iw'], flowbuddy#char_objects('foo', '(', ','))
+  call assert_equal(['aw', 'aW'], flowbuddy#char_objects('foo ', '', 'b'))
+  call assert_equal(['i('], flowbuddy#char_objects('foo, (bar)', '(', ')'))
+  call assert_equal(['a('], flowbuddy#char_objects('(a, b)', 'f', ';'))
+  " Unbalanced: not the inside of the brackets.
+  call assert_equal([], flowbuddy#char_objects('a), (b', '(', ')'))
+  call assert_equal(['i"'], flowbuddy#char_objects('hello there', '"', '"'))
+  call assert_equal(['a"'], flowbuddy#char_objects('"hi"', '=', ';'))
+  call assert_equal([], flowbuddy#char_objects('oo', 'f', ' '))
+endfunction
+
+function! Test_line_objects() abort
+  call assert_equal(['ip'], flowbuddy#line_objects(['a', 'b'], 1, 1))
+  call assert_equal(['ap'], flowbuddy#line_objects(['a', 'b', ''], 1, 0))
+  call assert_equal([], flowbuddy#line_objects(['a', 'b'], 0, 1))
+  call assert_equal([], flowbuddy#line_objects(['a', '', 'b'], 1, 1))
+endfunction
+
+function! Test_operator_reports_from_vim() abort
+  " TextYankPost runs before the text goes, so the buffer still has it.
+  let got = []
+  call s:buf(['call(foo, bar)'])
+  call cursor(1, 6)
+  let [l1, c1, l2, c2] = [1, 6, 1, 13]
+  let before = matchstr(strpart(getline(l1), 0, c1 - 1), '.$')
+  let last = matchstr(getline(l2), '\%' . c2 . 'c.')
+  let after = matchstr(strpart(getline(l2), c2 - 1 + strlen(last)), '^.')
+  call assert_equal(['(', ')'], [before, after])
+  call assert_equal(['i('], flowbuddy#char_objects('foo, bar', before, after))
+endfunction
+
 function! Test_facts_leave_no_trace() abort
   call s:buf(['a', '', 'b', '', 'c'])
   call cursor(1, 1)
@@ -128,7 +161,11 @@ endfunction
 let s:failed = 0
 for s:name in sort(filter(map(split(execute('function /^Test_'), "\n"), {_, l -> matchstr(l, 'Test_\w\+')}), '!empty(v:val)'))
   let v:errors = []
-  call call(s:name, [])
+  try
+    call call(s:name, [])
+  catch
+    call add(v:errors, v:throwpoint . ': ' . v:exception)
+  endtry
   if empty(v:errors)
     call writefile(['ok   ' . s:name], $OUT, 'a')
   else

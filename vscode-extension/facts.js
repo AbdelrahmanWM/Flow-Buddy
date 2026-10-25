@@ -496,6 +496,86 @@ function computeFacts(lines, start, end, opts = {}) {
     return facts;
 }
 
+// Text objects an operator's range was exactly, mirroring
+// vim-plugin/autoload/flowbuddy.vim: char_objects and line_objects.
+
+const PAIRS = [['(', ')'], ['[', ']'], ['{', '}'], ['<', '>']];
+const QUOTES = ['"', "'", '`'];
+const KEYWORD = /^[A-Za-z0-9_\u00C0-\u00FF]$/;
+
+function isKeywordChar(c) {
+    return KEYWORD.test(c);
+}
+
+function edgeOrSpace(c) {
+    return c === '' || /^\s$/.test(c);
+}
+
+function balanced(text, open, close) {
+    let depth = 0;
+    for (const ch of text) {
+        depth += ch === open ? 1 : ch === close ? -1 : 0;
+        if (depth < 0)
+            return false;
+    }
+    return depth === 0;
+}
+
+/**
+ * Text objects a charwise range is exactly, best first.
+ *
+ * @param {string} text what the range covered (lines joined by "\n")
+ * @param {string} before the character just before it, '' at a line start
+ * @param {string} after the character just after it, '' at a line end
+ */
+function charObjects(text, before, after) {
+    const found = [];
+    if (!text)
+        return found;
+    const word = /^[A-Za-z0-9_\u00C0-\u00FF]+$/;
+    if (word.test(text) && !isKeywordChar(before) && !isKeywordChar(after))
+        found.push('iw');
+    if (/^[A-Za-z0-9_\u00C0-\u00FF]+\s+$/.test(text) && !isKeywordChar(before) && !/^\s$/.test(after))
+        found.push('aw');
+    if (/^\S+$/.test(text) && edgeOrSpace(before) && edgeOrSpace(after))
+        found.push('iW');
+    if (/^\S+\s+$/.test(text) && edgeOrSpace(before) && !/^\s$/.test(after))
+        found.push('aW');
+    for (const [open, close] of PAIRS) {
+        if (before === open && after === close && balanced(text, open, close))
+            found.push(`i${open}`);
+        if (text.length >= 2 && text[0] === open && text[text.length - 1] === close &&
+            balanced(text.slice(1, -1), open, close))
+            found.push(`a${open}`);
+    }
+    if (!text.includes('\n')) {
+        for (const q of QUOTES) {
+            if (before === q && after === q && !text.includes(q))
+                found.push(`i${q}`);
+            if (text.length >= 2 && text[0] === q && text[text.length - 1] === q &&
+                !text.slice(1, -1).includes(q))
+                found.push(`a${q}`);
+        }
+    }
+    return found;
+}
+
+/**
+ * Text objects whole lines are, given whether the lines around them are
+ * blank (or missing).
+ */
+function lineObjects(lines, blankBefore, blankAfter) {
+    const filled = lines.filter(l => /\S/.test(l)).length;
+    if (!blankBefore || filled === 0)
+        return [];
+    if (filled === lines.length && blankAfter)
+        return ['ip'];
+    const textEnd = lines.findIndex(l => !/\S/.test(l));
+    if (textEnd > 0 && filled === textEnd && !blankAfter)
+        return ['ap'];
+    return [];
+}
+
 // How long rests on a line count towards `revisits`.
 const REST_HISTORY_MS = 600000;
 
@@ -519,6 +599,8 @@ if (typeof module !== 'undefined') {
     module.exports = {
         computeFacts,
         rested,
+        charObjects,
+        lineObjects,
         // For the tests.
         wordForward, wordBackward, wordEndForward, wordEndBackward, Cursor,
     };

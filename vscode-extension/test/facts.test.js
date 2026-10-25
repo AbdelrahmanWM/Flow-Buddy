@@ -16,7 +16,7 @@ function load() {
     return module.exports;
 }
 
-const {computeFacts, rested, Cursor, wordForward, wordBackward, wordEndForward} = load();
+const {computeFacts, rested, charObjects, lineObjects, Cursor, wordForward, wordBackward, wordEndForward} = load();
 
 // Every field of MotionFacts; the daemon rejects anything else.
 const FIELDS = [
@@ -168,6 +168,32 @@ facts('relative numbers off', words, [0, 0], [0, 4], {},
     check('back again', {visits: rested(rests, 40, 3000)}, {visits: 1});
     check('and again', {visits: rested(rests, 40, 4000)}, {visits: 2});
     check('forgotten after ten minutes', {visits: rested(rests, 40, 604000)}, {visits: 0});
+}
+
+// Text objects, mirroring the Vim plugin's tests.
+const objs = (name, got, want) => check(name, {got}, {got: want});
+objs('word between spaces', charObjects('foo', ' ', ' '), ['iw', 'iW']);
+objs('word after a bracket', charObjects('foo', '(', ','), ['iw']);
+objs('word and its space', charObjects('foo ', '', 'b'), ['aw', 'aW']);
+objs('inside brackets', charObjects('foo, (bar)', '(', ')'), ['i(']);
+objs('around brackets', charObjects('(a, b)', 'f', ';'), ['a(']);
+objs('unbalanced', charObjects('a), (b', '(', ')'), []);
+objs('inside quotes', charObjects('hello there', '"', '"'), ['i"']);
+objs('around quotes', charObjects('"hi"', '=', ';'), ['a"']);
+objs('part of a word', charObjects('oo', 'f', ' '), []);
+objs('a paragraph', lineObjects(['a', 'b'], true, true), ['ip']);
+objs('a paragraph and its blank line', lineObjects(['a', 'b', ''], true, false), ['ap']);
+objs('not from the top of a paragraph', lineObjects(['a', 'b'], false, true), []);
+objs('two paragraphs', lineObjects(['a', '', 'b'], true, true), []);
+
+// A second top-level function with the same name silently replaces the
+// first in JavaScript; catch that here.
+{
+    const dir = GLib.path_get_dirname(GLib.path_get_dirname(System.programPath));
+    const [, src] = GLib.file_get_contents(GLib.build_filenamev([dir, 'facts.js']));
+    const names = [...new TextDecoder().decode(src).matchAll(/^function (\w+)/gm)].map(m => m[1]);
+    const dupes = names.filter((n, i) => names.indexOf(n) !== i);
+    check('no duplicate function names', {dupes}, {dupes: []});
 }
 
 // Nothing at all for a move that goes nowhere.

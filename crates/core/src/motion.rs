@@ -7,10 +7,17 @@
 //! and the motion rules nudge when it would have saved enough keys.
 
 use crate::context::{ContextKind, VimMode};
-use crate::editor::{Motion, MotionFacts, ScreenPos};
+use crate::editor::{Motion, MotionFacts, OperatorReport, ScreenPos};
 use crate::key::Sym;
 use crate::rule::{Finding, Rule, RuleEvent, Shape};
 use crate::vim::{Command, Step};
+
+/// An operator plus the keys the user pressed for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OperatorEvent {
+    pub report: OperatorReport,
+    pub keys_used: u32,
+}
 
 /// A movement plus the keys the user pressed to make it.
 #[derive(Clone, Debug, PartialEq)]
@@ -706,6 +713,75 @@ fn ordinal(n: u32) -> String {
     format!("{n}{suffix}")
 }
 
+/// Positioning and then operating where a text object does both.
+#[derive(Default)]
+pub struct TextObjectRule;
+
+impl TextObjectRule {
+    const ID: &'static str = "motion.text-object";
+    const MIN_SAVING: u32 = 2;
+}
+
+impl Rule for TextObjectRule {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Moving into place and then operating where a text object (iw, i(, ip) does it from anywhere inside"
+    }
+
+    fn title(&self) -> &'static str {
+        "Use a text object"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn needs_editor(&self) -> bool {
+        true
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        // An operator with a text object: d, c or y, then i or a and one key.
+        if crate::rules::vim::command(step).is_some_and(|c| {
+            c.keys.len() == 3
+                && c.head().is_some_and(|h| matches!(h, 'd' | 'c' | 'y'))
+                && c.keys[1].plain_char().is_some_and(|k| k == 'i' || k == 'a')
+        }) {
+            out.push(RuleEvent::Adoption {
+                rule_id: Self::ID,
+                at_ms: step.at_ms,
+            });
+        }
+    }
+
+    fn on_operator(&mut self, ev: &OperatorEvent, out: &mut Vec<RuleEvent>) {
+        let Some(object) = ev.report.objects.first() else {
+            return;
+        };
+        let cost = 1 + object.keys().len() as u32;
+        let used = ev.keys_used;
+        if used < cost + Self::MIN_SAVING {
+            return;
+        }
+        let better = format!("{}{}", ev.report.op.key(), object.keys());
+        out.push(RuleEvent::Finding(Finding {
+            rule_id: Self::ID,
+            title: "Use a text object",
+            text: format!(
+                "That took {used} keys. {better} does it from anywhere inside, in {cost}."
+            ),
+            shape: Shape::repeat("keys for a text object", used),
+            mode: VimMode::Normal,
+            at_ms: ev.report.at_ms,
+        }));
+    }
+
+    fn reset(&mut self) {}
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
     let mut rules: Vec<Box<dyn Rule>> = Category::ALL
         .into_iter()
@@ -713,6 +789,7 @@ pub fn all() -> Vec<Box<dyn Rule>> {
         .collect();
     rules.push(Box::new(ScrollRule::default()));
     rules.push(Box::new(MarkRule));
+    rules.push(Box::new(TextObjectRule));
     rules
 }
 
@@ -948,6 +1025,36 @@ mod tests {
             },
             keys_used,
         }
+    }
+
+    #[test]
+    fn text_objects_instead_of_positioning() {
+        use crate::editor::{Operator, TextObject};
+        let ev = |keys_used, objects: Vec<TextObject>| OperatorEvent {
+            report: OperatorReport {
+                op: Operator::Delete,
+                at_ms: 9,
+                objects,
+            },
+            keys_used,
+        };
+        let mut out = Vec::new();
+        TextObjectRule.on_operator(
+            &ev(6, vec![TextObject::InnerParen, TextObject::AParen]),
+            &mut out,
+        );
+        let RuleEvent::Finding(f) = &out[0] else {
+            panic!("{out:?}")
+        };
+        assert_eq!(
+            f.text,
+            "That took 6 keys. di( does it from anywhere inside, in 3."
+        );
+        // Already short, or no text object matched.
+        let mut out = Vec::new();
+        TextObjectRule.on_operator(&ev(3, vec![TextObject::InnerParen]), &mut out);
+        TextObjectRule.on_operator(&ev(9, vec![]), &mut out);
+        assert!(out.is_empty());
     }
 
     #[test]

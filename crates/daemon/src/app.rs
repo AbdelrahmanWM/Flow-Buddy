@@ -15,7 +15,7 @@ use flowbuddy_core::ipc::{
     RuleAction, RuleInfo, ServerMsg, Status,
 };
 use flowbuddy_core::key::{Key, KeyStroke, Sym};
-use flowbuddy_core::motion::{self, MotionEvent};
+use flowbuddy_core::motion::{self, MotionEvent, OperatorEvent};
 use flowbuddy_core::policy::{Coach, CoachingMode, Gate, PolicyConfig, RuleFacts};
 use flowbuddy_core::rule::{Finding, RuleEvent};
 use flowbuddy_core::vim::{Flavor, Tracker, VimEvent};
@@ -54,12 +54,28 @@ pub struct App {
     nudges: VecDeque<(String, &'static str)>,
     nudge_seq: u64,
     memory: Memory,
-    /// Recent commands as (time, keys if it was a motion): just enough to
-    /// count the keys behind a movement an editor reports. No keys are kept.
-    commands: VecDeque<(u64, Option<u32>)>,
+    /// Recent commands, just enough to count the keys behind a movement or
+    /// an operator an editor reports. No keys are kept.
+    commands: VecDeque<Cmd>,
 }
 
 const NUDGE_HISTORY: usize = 20;
+
+/// One command in the history used to count keys.
+#[derive(Clone, Copy)]
+struct Cmd {
+    at_ms: u64,
+    keys: u32,
+    kind: CmdKind,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum CmdKind {
+    Motion,
+    /// d, c or y with its motion or text object.
+    Operator,
+    Other,
+}
 
 /// The most a threshold is raised after "not helpful" reports.
 const MAX_RAISE: u32 = 3;
@@ -383,10 +399,37 @@ impl App {
         self.commands
             .iter()
             .rev()
-            .skip_while(|(at, _)| *at > to)
-            .take_while(|(at, keys)| *at >= from && keys.is_some())
-            .map(|(_, keys)| keys.unwrap_or(0))
+            .skip_while(|c| c.at_ms > to)
+            .take_while(|c| c.at_ms >= from && c.kind == CmdKind::Motion)
+            .map(|c| c.keys)
             .sum()
+    }
+
+    /// Keys pressed for an operator the editor reported: the operator
+    /// command itself, plus the motions just before it that positioned the
+    /// cursor (a text object works from anywhere inside, so it wouldn't
+    /// need them). 0 if the operator isn't in the history.
+    fn keys_for_operator(&self, at_ms: u64) -> u32 {
+        let mut recent = self
+            .commands
+            .iter()
+            .rev()
+            .skip_while(|c| c.at_ms > at_ms + MOTION_LAG_MS);
+        let Some(op) = recent.next().filter(|c| {
+            c.kind == CmdKind::Operator && at_ms.saturating_sub(c.at_ms) <= MOTION_LEAD_MS
+        }) else {
+            return 0;
+        };
+        let mut keys = op.keys;
+        let mut next_at = op.at_ms;
+        for c in recent {
+            if c.kind != CmdKind::Motion || next_at.saturating_sub(c.at_ms) > MOTION_LEAD_MS {
+                break;
+            }
+            keys += c.keys;
+            next_at = c.at_ms;
+        }
+        keys
     }
 
     /// Whether keys up to `at_ms` plausibly went to the editor. The VS Code
@@ -446,8 +489,18 @@ impl App {
             if self.commands.len() == COMMAND_HISTORY {
                 self.commands.pop_front();
             }
-            let keys = motion::is_motion(c).then(|| motion::command_keys(c));
-            self.commands.push_back((stroke.at_ms, keys));
+            let kind = if motion::is_motion(c) {
+                CmdKind::Motion
+            } else if c.keys.len() >= 2 && c.head().is_some_and(|h| matches!(h, 'd' | 'c' | 'y')) {
+                CmdKind::Operator
+            } else {
+                CmdKind::Other
+            };
+            self.commands.push_back(Cmd {
+                at_ms: stroke.at_ms,
+                keys: motion::command_keys(c),
+                kind,
+            });
         }
         let events = self.engine.on_step(kind, &step);
         self.on_rule_events(&events, now_ms);
@@ -618,6 +671,15 @@ impl App {
             }
             // From an editor that isn't the current context.
             ClientMsg::Motion(_) => {}
+            ClientMsg::Operator(report) if self.resolved.editor == Some(conn) => {
+                let ev = OperatorEvent {
+                    keys_used: self.keys_for_operator(report.at_ms),
+                    report,
+                };
+                let events = self.engine.on_operator(self.resolved.kind, &ev);
+                self.on_rule_events(&events, now_ms);
+            }
+            ClientMsg::Operator(_) => {}
             ClientMsg::Command { id, command } => {
                 let reply = self.on_command(id, command, now_ms);
                 self.reply(conn, reply);
@@ -1576,6 +1638,37 @@ pub(crate) mod tests {
         assert_eq!(
             n[0].text,
             "That took 7 keys. } gets there in 1, or 7j in 2."
+        );
+    }
+
+    #[test]
+    fn operator_reports_suggest_text_objects() {
+        use flowbuddy_core::editor::{Operator, OperatorReport, TextObject};
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        // F( and l to get inside, then dt): six keys, 100 ms apart.
+        keys(&mut app, "F(ldt)");
+        let report = OperatorReport {
+            op: Operator::Delete,
+            at_ms: 650,
+            objects: vec![TextObject::InnerParen],
+        };
+        send(&mut app, 3, ClientMsg::Operator(report), 700);
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1);
+        assert_eq!(
+            n[0].text,
+            "That took 6 keys. di( does it from anywhere inside, in 3."
         );
     }
 

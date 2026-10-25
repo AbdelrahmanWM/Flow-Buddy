@@ -4,7 +4,7 @@
 use std::fmt;
 
 use crate::context::{ContextKind, VimMode};
-use crate::motion::MotionEvent;
+use crate::motion::{MotionEvent, OperatorEvent};
 use crate::vim::Step;
 
 /// An abstract description of a mistake, e.g. `j×7` or `:w then :q`.
@@ -94,6 +94,10 @@ pub trait Rule: Send {
 
     /// A movement an editor plugin reported, with the keys pressed for it.
     fn on_motion(&mut self, _ev: &MotionEvent, _out: &mut Vec<RuleEvent>) {}
+
+    /// An operator an editor plugin reported, with the text objects its
+    /// range matched and the keys pressed for it.
+    fn on_operator(&mut self, _ev: &OperatorEvent, _out: &mut Vec<RuleEvent>) {}
 
     /// Only works with an editor plugin's motion facts.
     fn needs_editor(&self) -> bool {

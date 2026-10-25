@@ -247,6 +247,12 @@ Keystrokes alone can't show which pane of an editor has focus, what mode it's re
 ```
 `lines` and `cols` are deltas, never positions; times are Unix epoch milliseconds, so the daemon can count the keys it saw in that window. `facts` describe the end position (see `MotionFacts` in `crates/core/src/editor.rs`), for example "`}` twice lands exactly here" or "`f` plus the target character, then `;` twice". The character itself is never sent. Every editor message rejects unknown fields, so nothing text-like can be added by accident.
 
+**`operator`**: `d`, `c` or `y` ran and its range was exactly these text objects, best match first. Names come from a fixed list (`iw`, `aw`, `iW`, `aW`, `ip`, `ap`, `i(`/`a(`, `i[`/`a[`, `i{`/`a{`, `i<`/`a<`, and the quotes); the text is never sent.
+```json
+{"v":0,"type":"operator","op":"delete","at_ms":1729740000500,"objects":["i(","a("]}
+```
+The daemon adds up the keys behind it: the operator plus the motions just before it that moved the cursor into place. A text object works from anywhere inside, so `F(ldt)` (6 keys) becomes "`di(` does it from anywhere inside, in 3".
+
 These were added after v0 shipped. They are new message types and optional fields only, so the version stays 0.
 
 ## Storage layout

@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::editor::{EditorKind, EditorMode, Motion};
+use crate::editor::{EditorKind, EditorMode, Motion, OperatorReport};
 use crate::policy::CoachingMode;
 
 pub const PROTOCOL_VERSION: u32 = 0;
@@ -115,6 +115,8 @@ pub enum ClientMsg {
     EditorMode { mode: EditorMode },
     /// Editor clients: a finished movement and facts about where it ended.
     Motion(Motion),
+    /// Editor clients: an operator's range matched these text objects.
+    Operator(OperatorReport),
     Command {
         #[serde(default)]
         id: Option<u64>,
@@ -124,7 +126,7 @@ pub enum ClientMsg {
 }
 
 impl ClientMsg {
-    pub const TYPES: [&'static str; 9] = [
+    pub const TYPES: [&'static str; 10] = [
         "hello",
         "focus",
         "ctx",
@@ -133,6 +135,7 @@ impl ClientMsg {
         "editor_focus",
         "editor_mode",
         "motion",
+        "operator",
         "command",
     ];
 }
@@ -335,6 +338,7 @@ mod tests {
             r#"{"v":0,"type":"pointer_click"}"#,
             r#"{"v":0,"type":"hello","client":"editor","client_version":"0.1.0","editor":"vim","pid":61234}"#,
             r#"{"v":0,"type":"editor_focus","focused":false}"#,
+            r#"{"v":0,"type":"operator","op":"delete","at_ms":1729740000500,"objects":["i(","a("]}"#,
             r#"{"v":0,"type":"editor_mode","mode":"visual_line"}"#,
             r#"{"v":0,"type":"motion","start_ms":1729740000000,"end_ms":1729740000900,"moves":12,"mode":"normal","lines":12,"cols":0,"facts":{"paragraph_hops":2,"window_lines":40}}"#,
             r#"{"v":0,"type":"command","id":7,"name":"status"}"#,

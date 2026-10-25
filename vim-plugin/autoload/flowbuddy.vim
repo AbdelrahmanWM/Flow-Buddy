@@ -245,6 +245,110 @@ function! flowbuddy#rested(line, now) abort
   return visits
 endfunction
 
+" Operators -----------------------------------------------------------------
+
+let s:OPERATORS = {'d': 'delete', 'c': 'change', 'y': 'yank'}
+let s:PAIRS = [['(', ')'], ['[', ']'], ['{', '}'], ['<', '>']]
+let s:QUOTES = ['"', "'", '`']
+
+" d, c or y just ran (TextYankPost, before the text is removed): report
+" which text objects its range was exactly. The text stays here.
+function! flowbuddy#on_operator(event) abort
+  let op = get(s:OPERATORS, a:event.operator, '')
+  if empty(op) || !s:connected() || index(['v', 'V'], a:event.regtype) < 0
+    return
+  endif
+  let [l1, c1] = getpos("'[")[1:2]
+  let [l2, c2] = getpos("']")[1:2]
+  if a:event.regtype ==# 'V'
+    let objects = flowbuddy#line_objects(a:event.regcontents,
+          \ l1 == 1 || getline(l1 - 1) !~# '\S', l2 == line('$') || getline(l2 + 1) !~# '\S')
+  else
+    let before = matchstr(strpart(getline(l1), 0, c1 - 1), '.$')
+    " '] is where the last character starts; the one after follows it.
+    let last = matchstr(getline(l2), '\%' . c2 . 'c.')
+    let after = matchstr(strpart(getline(l2), c2 - 1 + strlen(last)), '^.')
+    let objects = flowbuddy#char_objects(join(a:event.regcontents, "\n"), before, after)
+  endif
+  if !empty(objects)
+    call s:send({'type': 'operator', 'op': op, 'at_ms': s:now_ms(), 'objects': objects})
+  endif
+endfunction
+
+function! s:edge_or_space(c) abort
+  return a:c ==# '' || a:c =~# '\s'
+endfunction
+
+function! s:balanced(text, open, close) abort
+  let depth = 0
+  for ch in split(a:text, '\zs')
+    let depth += ch ==# a:open ? 1 : ch ==# a:close ? -1 : 0
+    if depth < 0
+      return 0
+    endif
+  endfor
+  return depth == 0
+endfunction
+
+" Text objects a charwise range `text` is exactly, given the characters just
+" before and after it ('' at a line's edge). Best match first.
+function! flowbuddy#char_objects(text, before, after) abort
+  let found = []
+  if empty(a:text)
+    return found
+  endif
+  if a:text =~# '^\k\+$' && a:before !~# '\k' && a:after !~# '\k'
+    call add(found, 'iw')
+  endif
+  if a:text =~# '^\k\+\s\+$' && a:before !~# '\k' && a:after !~# '\s'
+    call add(found, 'aw')
+  endif
+  if a:text =~# '^\S\+$' && s:edge_or_space(a:before) && s:edge_or_space(a:after)
+    call add(found, 'iW')
+  endif
+  if a:text =~# '^\S\+\s\+$' && s:edge_or_space(a:before) && a:after !~# '\s'
+    call add(found, 'aW')
+  endif
+  for [open, close] in s:PAIRS
+    if a:before ==# open && a:after ==# close && s:balanced(a:text, open, close)
+      call add(found, 'i' . open)
+    endif
+    if a:text[0] ==# open && a:text[-1:] ==# close && strlen(a:text) >= 2
+          \ && s:balanced(a:text[1 : -2], open, close)
+      call add(found, 'a' . open)
+    endif
+  endfor
+  if a:text !~# "\n"
+    for q in s:QUOTES
+      if a:before ==# q && a:after ==# q && stridx(a:text, q) < 0
+        call add(found, 'i' . q)
+      endif
+      if strlen(a:text) >= 2 && a:text[0] ==# q && a:text[-1:] ==# q && stridx(a:text[1 : -2], q) < 0
+        call add(found, 'a' . q)
+      endif
+    endfor
+  endif
+  return found
+endfunction
+
+" Text objects whole lines `lines` are, given whether the lines around
+" them are blank (or missing).
+function! flowbuddy#line_objects(lines, blank_before, blank_after) abort
+  let filled = len(filter(copy(a:lines), {_, l -> l =~# '\S'}))
+  if !a:blank_before || filled == 0
+    return []
+  endif
+  if filled == len(a:lines) && a:blank_after
+    return ['ip']
+  endif
+  " A paragraph, then the blank lines after it.
+  let text_end = match(a:lines, '^\s*$')
+  if text_end > 0 && filled == text_end && !a:blank_after
+    return ['ap']
+  endif
+  return []
+endfunction
+
 " Facts ---------------------------------------------------------------------
 
 " How many presses of `keys` from `from` land exactly on `to`; `same_line`

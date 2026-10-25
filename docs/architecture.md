@@ -207,6 +207,34 @@ In `balanced` mode, one batch may contain several `nudge` messages. `style` is `
 {"v":0,"type":"mode_changed","mode":"active","paused_until":null}
 ```
 
+### Editor clients
+
+Keystrokes alone can't show which pane of an editor has focus, what mode it's really in, or where a movement was heading. Editor plugins report those, as numbers and flags only, never text, file names or paths. They connect like the extension, saying which editor they are and their process id:
+
+```json
+{"v":0,"type":"hello","client":"editor","client_version":"0.1.0","editor":"vim","pid":61234}
+```
+
+`editor` is `vscode`, `vim` or `nvim`. Then:
+
+**`editor_focus`**: whether a text editor has keyboard focus. In VS Code, `false` means the terminal, a chat or another panel; in a terminal Vim, it follows the terminal's focus events.
+```json
+{"v":0,"type":"editor_focus","focused":false}
+```
+
+**`editor_mode`**: the editor's real mode, one of `normal`, `insert`, `replace`, `visual`, `visual_line`, `visual_block`, `cmdline`, `op_pending`, `other`. It replaces the daemon's guess.
+```json
+{"v":0,"type":"editor_mode","mode":"visual_line"}
+```
+
+**`motion`**: one movement in Normal or Visual mode, from the first cursor move until it rests for about a second.
+```json
+{"v":0,"type":"motion","start_ms":1729740000000,"end_ms":1729740000900,"moves":12,"mode":"normal","lines":12,"cols":0,"facts":{"paragraph_hops":2,"window_lines":40}}
+```
+`lines` and `cols` are deltas, never positions; times are Unix epoch milliseconds, so the daemon can count the keys it saw in that window. `facts` describe the end position (see `MotionFacts` in `crates/core/src/editor.rs`), for example "`}` twice lands exactly here" or "`f` plus the target character, then `;` twice". The character itself is never sent. Every editor message rejects unknown fields, so nothing text-like can be added by accident.
+
+These were added after v0 shipped. They are new message types and optional fields only, so the version stays 0.
+
 ## Storage layout
 
 | Path | Contents |

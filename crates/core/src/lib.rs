@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod context;
+pub mod editor;
 pub mod engine;
 pub mod ipc;
 pub mod key;

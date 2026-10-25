@@ -427,6 +427,9 @@ impl App {
                 self.on_nudge_response(&nudge_id, action, now_ms);
             }
             ClientMsg::PointerClick => self.on_pointer_click(),
+            // Handled once the daemon uses editor reports (#61).
+            ClientMsg::EditorFocus { .. } | ClientMsg::EditorMode { .. } | ClientMsg::Motion(_) => {
+            }
             ClientMsg::Command { id, command } => {
                 let reply = self.on_command(id, command, now_ms);
                 self.reply(conn, reply);
@@ -588,6 +591,8 @@ pub(crate) mod tests {
         ClientMsg::Hello {
             client: kind,
             client_version: "test".into(),
+            editor: None,
+            pid: None,
         }
     }
 

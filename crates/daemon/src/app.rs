@@ -4,18 +4,24 @@
 //! pipeline can be tested without sockets or devices.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
+use flowbuddy_core::config::{self, Config, State};
 use flowbuddy_core::context::{ContextKind, VimMode};
-use flowbuddy_core::ipc::{ClientKind, ClientMsg, Command, CtxEvent, ServerMsg, Status};
+use flowbuddy_core::engine::Engine;
+use flowbuddy_core::ipc::{
+    ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, RuleAction, RuleInfo, ServerMsg, Status,
+};
 use flowbuddy_core::key::{Key, KeyStroke, Sym};
 use flowbuddy_core::policy::CoachingMode;
-use flowbuddy_core::vim::{Flavor, Step, Tracker};
+use flowbuddy_core::rule::RuleEvent;
+use flowbuddy_core::vim::{Flavor, Tracker};
 use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::buffer::{ClearReason, KeyBuffer};
 use crate::ipc_server::{ConnEvent, ConnId};
-use crate::resolver::{Resolved, Resolver, ShellState};
+use crate::resolver::{AppIds, Resolved, Resolver, ShellState};
 
 struct Client {
     kind: Option<ClientKind>,
@@ -32,6 +38,21 @@ pub struct App {
     resolved: Resolved,
     tracker: Tracker,
     buffer: KeyBuffer,
+    engine: Engine,
+    config: Config,
+    state: State,
+    /// Where to persist `state`; `None` in tests.
+    state_path: Option<PathBuf>,
+}
+
+/// App ids from the config, falling back to the built-in lists.
+pub fn app_ids(config: &Config) -> AppIds {
+    let d = AppIds::default();
+    AppIds {
+        vscode: config.apps.vscode.clone().unwrap_or(d.vscode),
+        terminals: config.apps.terminals.clone().unwrap_or(d.terminals),
+        vims: config.apps.vims.clone().unwrap_or(d.vims),
+    }
 }
 
 fn flavor(kind: ContextKind) -> Flavor {
@@ -56,44 +77,95 @@ fn is_vscode_ui_shortcut(key: &Key) -> bool {
 }
 
 impl App {
-    pub fn new(mode: CoachingMode, resolver: Resolver) -> Self {
+    pub fn new(config: Config, state: State, resolver: Resolver) -> Self {
         let resolved = resolver.resolve();
+        let mut engine = Engine::standard();
+        engine.apply(&config::rule_settings(&config, &state));
         App {
             clients: HashMap::new(),
-            mode,
-            paused_until: None,
+            mode: state.mode.unwrap_or(config.coaching.default_mode),
+            paused_until: state.paused_until,
             keyboards: 0,
             resolver,
             resolved,
             tracker: Tracker::new(Flavor::Vim),
             buffer: KeyBuffer::default(),
+            engine,
+            config,
+            state,
+            state_path: None,
         }
+    }
+
+    pub fn with_state_path(mut self, path: PathBuf) -> Self {
+        self.state_path = Some(path);
+        self
+    }
+
+    fn save_state(&mut self) {
+        self.state.mode = Some(self.mode);
+        self.state.paused_until = self.paused_until;
+        if let Some(path) = &self.state_path {
+            if let Err(e) = self.state.save(path) {
+                tracing::warn!(error = %e, "could not save state");
+            }
+        }
+    }
+
+    /// The config file changed.
+    pub fn reload_config(&mut self, config: Config) {
+        self.engine
+            .apply(&config::rule_settings(&config, &self.state));
+        self.resolver.set_ids(app_ids(&config));
+        self.config = config;
+        tracing::info!("config reloaded");
+    }
+
+    /// Findings and adoptions go here: coaching policy and storage hook in
+    /// at this point.
+    fn on_rule_events(&mut self, events: &[RuleEvent], _now_ms: u64) {
+        for ev in events {
+            if let RuleEvent::Finding(f) = ev {
+                tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
+            }
+        }
+    }
+
+    /// Called about once a second: ends streaks that stopped without
+    /// another key.
+    pub fn tick(&mut self, now_ms: u64) {
+        let events = self.engine.tick(self.resolved.kind, now_ms);
+        self.on_rule_events(&events, now_ms);
     }
 
     fn capturing(&self, now_ms: u64) -> bool {
         self.mode != CoachingMode::Off && self.paused_until.is_none_or(|t| t * 1000 <= now_ms)
     }
 
-    /// Feed one key. Returns the step for the rule engine, if the key was
-    /// in a supported context.
-    pub fn on_key(&mut self, stroke: KeyStroke, now_ms: u64) -> Option<Step> {
+    /// Feed one key; returns the rule events it caused (already handled).
+    pub fn on_key(&mut self, stroke: KeyStroke, now_ms: u64) -> Vec<RuleEvent> {
         if !self.capturing(now_ms) {
-            return None;
+            return Vec::new();
         }
         let kind = self.resolved.kind;
         if !self.buffer.push(stroke, kind) {
-            return None;
+            return Vec::new();
         }
         if kind == ContextKind::VsCodeVim && is_vscode_ui_shortcut(&stroke.key) {
             self.tracker.invalidate();
-            return None;
+            self.engine.reset();
+            return Vec::new();
         }
-        Some(self.tracker.feed(stroke))
+        let step = self.tracker.feed(stroke);
+        let events = self.engine.on_step(kind, &step);
+        self.on_rule_events(&events, now_ms);
+        events
     }
 
     /// A mouse click may have changed the editor's mode or focus.
     pub fn on_pointer_click(&mut self) {
         self.tracker.invalidate();
+        self.engine.reset();
     }
 
     #[cfg(test)]
@@ -108,7 +180,7 @@ impl App {
 
     /// Re-resolve the context. `known` is the mode we are sure of if this
     /// update was caused by the context's own shell (vim started, prompt drawn).
-    fn update_context(&mut self, known_for: Option<(u32, VimMode)>) {
+    fn update_context(&mut self, known_for: Option<(u32, VimMode)>, now_ms: u64) {
         let new = self.resolver.resolve();
         let known = known_for
             .filter(|(pid, _)| new.shell_pid == Some(*pid))
@@ -116,6 +188,8 @@ impl App {
         if new != self.resolved {
             tracing::debug!(from = ?self.resolved.kind, to = ?new.kind, "context changed");
             self.buffer.clear(ClearReason::ContextChanged);
+            let events = self.engine.context_changed(self.resolved.kind, now_ms);
+            self.on_rule_events(&events, now_ms);
             self.resolved = new;
             self.tracker = Tracker::new(flavor(new.kind));
         }
@@ -172,7 +246,7 @@ impl App {
             ClientMsg::Focus { app_id, pid, .. } => {
                 self.resolver.set_focus(app_id, pid);
                 self.resolver.prune();
-                self.update_context(None);
+                self.update_context(None, now_ms);
             }
             ClientMsg::Ctx {
                 event,
@@ -191,7 +265,7 @@ impl App {
                     ),
                 };
                 self.resolver.shell_report(shell_pid, state, now_ms);
-                self.update_context(Some((shell_pid, known)));
+                self.update_context(Some((shell_pid, known)), now_ms);
             }
             ClientMsg::NudgeResponse { .. } => {}
             ClientMsg::Command { id, command } => {
@@ -214,27 +288,66 @@ impl App {
                     self.buffer.clear(ClearReason::ModeOff);
                 }
                 self.mode_changed();
+                self.save_state();
                 ServerMsg::Ack { id }
             }
             Command::Pause { seconds } => {
                 self.paused_until = Some(now_s + seconds);
                 self.buffer.clear(ClearReason::Paused);
                 self.tracker.invalidate();
+                self.engine.reset();
                 self.mode_changed();
+                self.save_state();
                 ServerMsg::Ack { id }
             }
             Command::Resume => {
                 self.paused_until = None;
                 self.mode_changed();
+                self.save_state();
                 ServerMsg::Ack { id }
             }
-            Command::Rules | Command::Rule { .. } | Command::ReportFalsePositive => {
-                ServerMsg::Result {
-                    id,
-                    data: json!([]),
-                }
-            }
+            Command::Rules => ServerMsg::Result {
+                id,
+                data: json!(self.rule_infos()),
+            },
+            Command::Rule { rule_id, action } => self.rule_command(id, &rule_id, action),
+            Command::ReportFalsePositive => ServerMsg::Ack { id },
         }
+    }
+
+    fn rule_infos(&self) -> Vec<RuleInfo> {
+        let muted = self.state.muted();
+        self.engine
+            .rules()
+            .map(|r| RuleInfo {
+                id: r.id().into(),
+                description: r.description().into(),
+                enabled: self.engine.is_enabled(r.id()),
+                muted: muted.contains(r.id()),
+                threshold: r.threshold(),
+            })
+            .collect()
+    }
+
+    fn rule_command(&mut self, id: Option<u64>, rule_id: &str, action: RuleAction) -> ServerMsg {
+        if !self.engine.has_rule(rule_id) {
+            return ServerMsg::Error {
+                id,
+                code: ErrorCode::UnknownRule,
+                message: format!("no rule named {rule_id}"),
+            };
+        }
+        let entry = self.state.rules.entry(rule_id.to_string()).or_default();
+        match action {
+            RuleAction::Enable => entry.enabled = Some(true),
+            RuleAction::Disable => entry.enabled = Some(false),
+            RuleAction::Mute => entry.muted = true,
+            RuleAction::Unmute => entry.muted = false,
+        }
+        self.engine
+            .apply(&config::rule_settings(&self.config, &self.state));
+        self.save_state();
+        ServerMsg::Ack { id }
     }
 
     fn mode_changed(&self) {
@@ -265,9 +378,16 @@ impl App {
 pub(crate) mod tests {
     use super::*;
     use crate::resolver::AppIds;
-    use flowbuddy_core::vim::VimEvent;
     use flowbuddy_core::vim::notation::strokes;
     use tokio::sync::mpsc::UnboundedReceiver;
+
+    pub(crate) fn test_app(mode: CoachingMode) -> App {
+        let state = State {
+            mode: Some(mode),
+            ..Default::default()
+        };
+        App::new(Config::default(), state, test_resolver())
+    }
 
     pub(crate) fn test_resolver() -> Resolver {
         Resolver::new(AppIds::default(), crate::resolver::tests::tree())
@@ -292,7 +412,7 @@ pub(crate) mod tests {
 
     #[test]
     fn hello_gets_welcome_with_mode() {
-        let mut app = App::new(CoachingMode::Passive, test_resolver());
+        let mut app = test_app(CoachingMode::Passive);
         let mut rx = connect(&mut app, 1);
         send(&mut app, 1, hello(ClientKind::Cli), 0);
         assert_eq!(
@@ -306,7 +426,7 @@ pub(crate) mod tests {
 
     #[test]
     fn mode_change_is_broadcast_to_extension_only() {
-        let mut app = App::new(CoachingMode::Balanced, test_resolver());
+        let mut app = test_app(CoachingMode::Balanced);
         let mut ext = connect(&mut app, 1);
         let mut cli = connect(&mut app, 2);
         send(&mut app, 1, hello(ClientKind::GnomeExtension), 0);
@@ -334,7 +454,7 @@ pub(crate) mod tests {
 
     #[test]
     fn pause_shows_in_status_until_it_expires() {
-        let mut app = App::new(CoachingMode::Balanced, test_resolver());
+        let mut app = test_app(CoachingMode::Balanced);
         let _rx = connect(&mut app, 1);
         let pause = ClientMsg::Command {
             id: None,
@@ -373,16 +493,16 @@ pub(crate) mod tests {
         );
     }
 
-    fn keys(app: &mut App, s: &str) -> Vec<Step> {
+    fn keys(app: &mut App, s: &str) -> Vec<RuleEvent> {
         strokes(s, 0)
             .into_iter()
-            .filter_map(|k| app.on_key(k, 0))
+            .flat_map(|k| app.on_key(k, k.at_ms))
             .collect()
     }
 
     #[test]
     fn keys_outside_supported_contexts_are_dropped() {
-        let mut app = App::new(CoachingMode::Active, test_resolver());
+        let mut app = test_app(CoachingMode::Active);
         let _rx = connect(&mut app, 1);
         focus(&mut app, "firefox", 900);
         assert!(keys(&mut app, "hello").is_empty());
@@ -391,22 +511,18 @@ pub(crate) mod tests {
 
     #[test]
     fn vim_started_in_focused_terminal_is_known_normal() {
-        let mut app = App::new(CoachingMode::Active, test_resolver());
+        let mut app = test_app(CoachingMode::Active);
         let _rx = connect(&mut app, 1);
         focus(&mut app, "org.gnome.Terminal", 100);
         ctx(&mut app, CtxEvent::Fg, Some("vim"), 200);
         assert_eq!(app.context().kind, ContextKind::TerminalVim);
-        let steps = keys(&mut app, "jj");
-        assert!(
-            steps
-                .iter()
-                .all(|s| s.confident && s.before == VimMode::Normal)
-        );
+        keys(&mut app, "jj");
+        assert_eq!(app.mode_known(), (VimMode::Normal, true));
     }
 
     #[test]
     fn prompt_means_bash_insert_mode() {
-        let mut app = App::new(CoachingMode::Active, test_resolver());
+        let mut app = test_app(CoachingMode::Active);
         let _rx = connect(&mut app, 1);
         focus(&mut app, "org.gnome.Terminal", 100);
         ctx(&mut app, CtxEvent::Prompt, None, 200);
@@ -416,7 +532,7 @@ pub(crate) mod tests {
 
     #[test]
     fn context_change_clears_buffer_and_trust() {
-        let mut app = App::new(CoachingMode::Active, test_resolver());
+        let mut app = test_app(CoachingMode::Active);
         let _rx = connect(&mut app, 1);
         focus(&mut app, "code_code", 500);
         keys(&mut app, "<Esc>jj");
@@ -429,7 +545,7 @@ pub(crate) mod tests {
 
     #[test]
     fn vscode_palette_and_clicks_make_mode_uncertain() {
-        let mut app = App::new(CoachingMode::Active, test_resolver());
+        let mut app = test_app(CoachingMode::Active);
         let _rx = connect(&mut app, 1);
         focus(&mut app, "code_code", 500);
         keys(&mut app, "<Esc>");
@@ -439,7 +555,7 @@ pub(crate) mod tests {
             repeat: false,
             at_ms: 0,
         };
-        assert!(app.on_key(palette, 0).is_none());
+        assert!(app.on_key(palette, 0).is_empty());
         assert!(!app.mode_known().1);
         keys(&mut app, "<Esc>");
         app.on_pointer_click();
@@ -448,7 +564,7 @@ pub(crate) mod tests {
 
     #[test]
     fn paused_and_off_capture_nothing() {
-        let mut app = App::new(CoachingMode::Active, test_resolver());
+        let mut app = test_app(CoachingMode::Active);
         let _rx = connect(&mut app, 1);
         focus(&mut app, "code_code", 500);
         let pause = ClientMsg::Command {
@@ -456,7 +572,8 @@ pub(crate) mod tests {
             command: Command::Pause { seconds: 60 },
         };
         send(&mut app, 1, pause, 0);
-        assert!(keys(&mut app, "jj").is_empty());
+        keys(&mut app, "<Esc>jj");
+        assert!(app.buffer.is_empty(), "paused");
         let off = ClientMsg::Command {
             id: None,
             command: Command::SetMode {
@@ -473,18 +590,65 @@ pub(crate) mod tests {
             },
             0,
         );
-        assert!(keys(&mut app, "jj").is_empty());
+        keys(&mut app, "<Esc>jj");
+        assert!(app.buffer.is_empty(), "off");
+    }
+
+    fn has_finding(events: &[RuleEvent], id: &str) -> bool {
+        events
+            .iter()
+            .any(|e| matches!(e, RuleEvent::Finding(f) if f.rule_id == id))
     }
 
     #[test]
-    fn steps_carry_vim_events() {
-        let mut app = App::new(CoachingMode::Active, test_resolver());
+    fn keys_reach_the_rules() {
+        let mut app = test_app(CoachingMode::Active);
         let _rx = connect(&mut app, 1);
         focus(&mut app, "code_code", 500);
-        let steps = keys(&mut app, "<Esc>dd");
+        let events = keys(&mut app, "<Esc>jjjjjjjw");
+        assert!(has_finding(&events, "vim.repeat-jk"));
+    }
+
+    #[test]
+    fn rules_can_be_listed_disabled_and_muted() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut rx = connect(&mut app, 1);
+        let rule = |rule_id: &str, action| ClientMsg::Command {
+            id: Some(1),
+            command: Command::Rule {
+                rule_id: rule_id.into(),
+                action,
+            },
+        };
+        send(&mut app, 1, rule("vim.repeat-jk", RuleAction::Disable), 0);
+        assert_eq!(rx.try_recv().unwrap(), ServerMsg::Ack { id: Some(1) });
+        send(&mut app, 1, rule("vim.repeat-x", RuleAction::Mute), 0);
+        rx.try_recv().unwrap();
+
+        let list = ClientMsg::Command {
+            id: Some(2),
+            command: Command::Rules,
+        };
+        send(&mut app, 1, list, 0);
+        let ServerMsg::Result { data, .. } = rx.try_recv().unwrap() else {
+            panic!("expected result")
+        };
+        let infos: Vec<RuleInfo> = serde_json::from_value(data).unwrap();
+        let get = |id: &str| infos.iter().find(|r| r.id == id).unwrap();
+        assert!(!get("vim.repeat-jk").enabled);
+        assert!(get("vim.repeat-x").muted);
+
+        send(&mut app, 1, rule("nope", RuleAction::Mute), 0);
         assert!(matches!(
-            steps.last().unwrap().event,
-            Some(VimEvent::Command(_))
+            rx.try_recv().unwrap(),
+            ServerMsg::Error {
+                code: ErrorCode::UnknownRule,
+                ..
+            }
         ));
+
+        focus(&mut app, "code_code", 500);
+        let events = keys(&mut app, "<Esc>jjjjjjjw");
+        assert!(!has_finding(&events, "vim.repeat-jk"));
     }
 }

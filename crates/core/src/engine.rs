@@ -1,0 +1,191 @@
+//! Dispatch steps to the rules that apply to the current context.
+
+use std::collections::{BTreeMap, HashSet};
+
+use crate::context::ContextKind;
+use crate::rule::{Rule, RuleEvent};
+use crate::vim::Step;
+
+/// Per-rule settings from the config file and runtime overrides.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuleSettings {
+    pub disabled: HashSet<String>,
+    pub thresholds: BTreeMap<String, u32>,
+}
+
+pub struct Engine {
+    rules: Vec<Box<dyn Rule>>,
+    disabled: HashSet<String>,
+}
+
+impl Engine {
+    pub fn new(rules: Vec<Box<dyn Rule>>) -> Self {
+        Engine {
+            rules,
+            disabled: HashSet::new(),
+        }
+    }
+
+    /// All built-in rules.
+    pub fn standard() -> Self {
+        Engine::new(crate::rules::all())
+    }
+
+    pub fn rules(&self) -> impl Iterator<Item = &dyn Rule> {
+        self.rules.iter().map(|r| r.as_ref())
+    }
+
+    pub fn has_rule(&self, id: &str) -> bool {
+        self.rules.iter().any(|r| r.id() == id)
+    }
+
+    pub fn is_enabled(&self, id: &str) -> bool {
+        !self.disabled.contains(id)
+    }
+
+    pub fn apply(&mut self, settings: &RuleSettings) {
+        self.disabled = settings.disabled.clone();
+        for rule in &mut self.rules {
+            if let Some(&n) = settings.thresholds.get(rule.id()) {
+                rule.set_threshold(n);
+            }
+        }
+    }
+
+    fn active(&mut self, context: ContextKind) -> impl Iterator<Item = &mut Box<dyn Rule>> {
+        let disabled = &self.disabled;
+        self.rules
+            .iter_mut()
+            .filter(move |r| !disabled.contains(r.id()) && r.contexts().contains(&context))
+    }
+
+    /// Feed one step. Unconfident steps reset in-progress streaks instead
+    /// of feeding them: we'd rather miss a finding than invent one.
+    pub fn on_step(&mut self, context: ContextKind, step: &Step) -> Vec<RuleEvent> {
+        let mut out = Vec::new();
+        if !step.confident {
+            self.reset();
+            return out;
+        }
+        for rule in self.active(context) {
+            rule.on_step(step, &mut out);
+        }
+        out
+    }
+
+    /// Called periodically so streaks that ended without another key are
+    /// reported.
+    pub fn tick(&mut self, context: ContextKind, now_ms: u64) -> Vec<RuleEvent> {
+        let mut out = Vec::new();
+        for rule in self.active(context) {
+            rule.tick(now_ms, &mut out);
+        }
+        out
+    }
+
+    /// The context changed: report finished streaks, then forget state.
+    pub fn context_changed(&mut self, old: ContextKind, now_ms: u64) -> Vec<RuleEvent> {
+        let out = self.tick(
+            old,
+            now_ms.saturating_add(crate::rules::repeat::MAX_GAP_MS + 1),
+        );
+        self.reset();
+        out
+    }
+
+    pub fn reset(&mut self) {
+        for rule in &mut self.rules {
+            rule.reset();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::VimMode;
+    use crate::vim::notation::strokes;
+    use crate::vim::{Flavor, Tracker};
+
+    fn feed(engine: &mut Engine, ctx: ContextKind, keys: &str) -> Vec<RuleEvent> {
+        let mut t = Tracker::new(Flavor::Vim);
+        t.reset_known(VimMode::Normal);
+        let mut out = Vec::new();
+        for s in strokes(keys, 0) {
+            let step = t.feed(s);
+            out.extend(engine.on_step(ctx, &step));
+        }
+        out.extend(engine.tick(ctx, 1_000_000));
+        out
+    }
+
+    fn found(events: &[RuleEvent]) -> Vec<&'static str> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                RuleEvent::Finding(f) => Some(f.rule_id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn dispatches_by_context() {
+        let mut e = Engine::standard();
+        assert_eq!(
+            found(&feed(&mut e, ContextKind::VsCodeVim, "jjjjjj")),
+            ["vim.repeat-jk"]
+        );
+        assert!(found(&feed(&mut e, ContextKind::BashVi, "<Esc>jjjjjj")).is_empty());
+    }
+
+    #[test]
+    fn disabled_rules_do_not_run() {
+        let mut e = Engine::standard();
+        e.apply(&RuleSettings {
+            disabled: ["vim.repeat-jk".to_string()].into(),
+            ..Default::default()
+        });
+        assert!(found(&feed(&mut e, ContextKind::VsCodeVim, "jjjjjj")).is_empty());
+    }
+
+    #[test]
+    fn thresholds_apply() {
+        let mut e = Engine::standard();
+        e.apply(&RuleSettings {
+            thresholds: [("vim.repeat-jk".to_string(), 10)].into(),
+            ..Default::default()
+        });
+        assert!(found(&feed(&mut e, ContextKind::VsCodeVim, "jjjjjj")).is_empty());
+    }
+
+    #[test]
+    fn unconfident_steps_reset_streaks() {
+        let mut e = Engine::standard();
+        let mut t = Tracker::new(Flavor::Vim);
+        t.reset_known(VimMode::Normal);
+        let mut out = Vec::new();
+        for (i, s) in strokes("jjjjjjj", 0).into_iter().enumerate() {
+            if i == 3 {
+                t.invalidate();
+            }
+            let step = t.feed(s);
+            out.extend(e.on_step(ContextKind::VsCodeVim, &step));
+        }
+        out.extend(e.tick(ContextKind::VsCodeVim, 1_000_000));
+        assert!(found(&out).is_empty());
+    }
+
+    #[test]
+    fn context_change_flushes_finished_streaks() {
+        let mut e = Engine::standard();
+        let mut t = Tracker::new(Flavor::Vim);
+        t.reset_known(VimMode::Normal);
+        for s in strokes("jjjjjj", 0) {
+            let step = t.feed(s);
+            e.on_step(ContextKind::TerminalVim, &step);
+        }
+        let out = e.context_changed(ContextKind::TerminalVim, 600);
+        assert_eq!(found(&out), ["vim.repeat-jk"]);
+    }
+}

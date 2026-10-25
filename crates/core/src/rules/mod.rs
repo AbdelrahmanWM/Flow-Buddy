@@ -10,6 +10,7 @@ use crate::rule::Rule;
 pub fn all() -> Vec<Box<dyn Rule>> {
     let mut rules = vim::all();
     rules.extend(bash::all());
+    rules.extend(crate::motion::all());
     rules
 }
 

@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use crate::context::ContextKind;
+use crate::motion::MotionEvent;
 use crate::rule::{Rule, RuleEvent};
 use crate::vim::Step;
 
@@ -16,6 +17,7 @@ pub struct RuleSettings {
 pub struct Engine {
     rules: Vec<Box<dyn Rule>>,
     disabled: HashSet<String>,
+    editor_motions: bool,
 }
 
 impl Engine {
@@ -23,6 +25,7 @@ impl Engine {
         Engine {
             rules,
             disabled: HashSet::new(),
+            editor_motions: false,
         }
     }
 
@@ -52,11 +55,36 @@ impl Engine {
         }
     }
 
+    /// Whether an editor plugin reports motions in the current context:
+    /// motion rules run and the key-only rules they replace step aside.
+    pub fn set_editor_motions(&mut self, on: bool) {
+        if on != self.editor_motions {
+            self.editor_motions = on;
+            self.reset();
+        }
+    }
+
     fn active(&mut self, context: ContextKind) -> impl Iterator<Item = &mut Box<dyn Rule>> {
         let disabled = &self.disabled;
-        self.rules
-            .iter_mut()
-            .filter(move |r| !disabled.contains(r.id()) && r.contexts().contains(&context))
+        let editor = self.editor_motions;
+        self.rules.iter_mut().filter(move |r| {
+            !disabled.contains(r.id())
+                && r.contexts().contains(&context)
+                && if editor {
+                    !r.replaced_by_editor()
+                } else {
+                    !r.needs_editor()
+                }
+        })
+    }
+
+    /// A movement reported by an editor plugin.
+    pub fn on_motion(&mut self, context: ContextKind, ev: &MotionEvent) -> Vec<RuleEvent> {
+        let mut out = Vec::new();
+        for rule in self.active(context) {
+            rule.on_motion(ev, &mut out);
+        }
+        out
     }
 
     /// Feed one step. Unconfident steps reset in-progress streaks instead

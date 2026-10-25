@@ -71,6 +71,7 @@ pub fn repeat_jk() -> RepeatRule {
             format!("You pressed {unit} {n} times. Try {n}{unit}, {down} or {up}.")
         },
     })
+    .replaced_by_editor()
 }
 
 pub fn repeat_hl() -> RepeatRule {
@@ -100,6 +101,7 @@ pub fn repeat_hl() -> RepeatRule {
             format!("You pressed {unit} {n} times. Try {word}, or jump with {find}.")
         },
     })
+    .replaced_by_editor()
 }
 
 pub fn repeat_x() -> RepeatRule {

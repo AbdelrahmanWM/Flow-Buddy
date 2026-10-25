@@ -39,6 +39,7 @@ pub struct RepeatRule {
     /// The better-way step just seen and when. Repeating it (holding `j`)
     /// counts as one adoption, not hundreds.
     adopting: Option<(Same, u64)>,
+    replaced_by_editor: bool,
 }
 
 /// What makes two better-way steps "the same" for counting adoptions.
@@ -64,7 +65,14 @@ impl RepeatRule {
             spec,
             streak: None,
             adopting: None,
+            replaced_by_editor: false,
         }
+    }
+
+    /// Step aside when an editor reports motions (see [`Rule::replaced_by_editor`]).
+    pub fn replaced_by_editor(mut self) -> Self {
+        self.replaced_by_editor = true;
+        self
     }
 
     fn end(&mut self, out: &mut Vec<RuleEvent>) {
@@ -101,6 +109,10 @@ impl Rule for RepeatRule {
 
     fn set_threshold(&mut self, n: u32) {
         self.spec.threshold = n.max(2);
+    }
+
+    fn replaced_by_editor(&self) -> bool {
+        self.replaced_by_editor
     }
 
     fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {

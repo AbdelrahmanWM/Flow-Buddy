@@ -8,16 +8,17 @@ use std::path::PathBuf;
 
 use flowbuddy_core::config::{self, Config, State};
 use flowbuddy_core::context::{ContextKind, VimMode};
-use flowbuddy_core::editor::EditorKind;
+use flowbuddy_core::editor::{EditorKind, Motion};
 use flowbuddy_core::engine::Engine;
 use flowbuddy_core::ipc::{
     ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, Nudge, NudgeAction, NudgeStyle,
     RuleAction, RuleInfo, ServerMsg, Status,
 };
 use flowbuddy_core::key::{Key, KeyStroke, Sym};
+use flowbuddy_core::motion::{self, MotionEvent};
 use flowbuddy_core::policy::{Coach, CoachingMode, Gate, PolicyConfig, RuleFacts};
 use flowbuddy_core::rule::{Finding, RuleEvent};
-use flowbuddy_core::vim::{Flavor, Tracker};
+use flowbuddy_core::vim::{Flavor, Tracker, VimEvent};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -53,9 +54,20 @@ pub struct App {
     nudges: VecDeque<(String, &'static str)>,
     nudge_seq: u64,
     memory: Memory,
+    /// Recent commands as (time, keys if it was a motion): just enough to
+    /// count the keys behind a movement an editor reports. No keys are kept.
+    commands: VecDeque<(u64, Option<u32>)>,
 }
 
 const NUDGE_HISTORY: usize = 20;
+
+/// Commands remembered for counting the keys behind a movement.
+const COMMAND_HISTORY: usize = 256;
+
+/// Editors notice the first move a little after its key; count keys this
+/// long before a movement's reported start, and this long after its end.
+const MOTION_LEAD_MS: u64 = 1500;
+const MOTION_LAG_MS: u64 = 200;
 
 /// How recent VS Code editor activity must be for keys to count as typed
 /// into the editor.
@@ -120,6 +132,7 @@ impl App {
             nudges: VecDeque::new(),
             nudge_seq: 0,
             memory: Memory::new(None, &Config::default()),
+            commands: VecDeque::new(),
         }
         .with_memory_config()
     }
@@ -287,6 +300,20 @@ impl App {
         }
     }
 
+    /// Keys pressed for a movement: the motion commands just before its end,
+    /// back to its start or the last command that wasn't a motion.
+    fn keys_for(&self, m: &Motion) -> u32 {
+        let from = m.start_ms.saturating_sub(MOTION_LEAD_MS);
+        let to = m.end_ms + MOTION_LAG_MS;
+        self.commands
+            .iter()
+            .rev()
+            .skip_while(|(at, _)| *at > to)
+            .take_while(|(at, keys)| *at >= from && keys.is_some())
+            .map(|(_, keys)| keys.unwrap_or(0))
+            .sum()
+    }
+
     /// Whether keys up to `at_ms` plausibly went to the editor. The VS Code
     /// companion reports editor activity as a heartbeat; keys typed into the
     /// terminal or a chat panel come with none.
@@ -337,6 +364,15 @@ impl App {
         }
         self.memory.active(kind, now_ms);
         let step = self.tracker.feed(stroke);
+        if step.confident
+            && let Some(VimEvent::Command(c)) = &step.event
+        {
+            if self.commands.len() == COMMAND_HISTORY {
+                self.commands.pop_front();
+            }
+            let keys = motion::is_motion(c).then(|| motion::command_keys(c));
+            self.commands.push_back((stroke.at_ms, keys));
+        }
         let events = self.engine.on_step(kind, &step);
         self.on_rule_events(&events, now_ms);
         events
@@ -375,6 +411,8 @@ impl App {
             self.on_rule_events(&events, now_ms);
             self.resolved = new;
             self.tracker = Tracker::new(flavor(new.kind));
+            self.commands.clear();
+            self.engine.set_editor_motions(new.editor.is_some());
         }
         if let Some(mode) = known {
             self.tracker.reset_known(mode);
@@ -494,7 +532,15 @@ impl App {
                     self.update_context(None, now_ms);
                 }
             }
-            // Motion rules use these (#63).
+            ClientMsg::Motion(m) if self.resolved.editor == Some(conn) => {
+                let ev = MotionEvent {
+                    keys_used: self.keys_for(&m),
+                    motion: m,
+                };
+                let events = self.engine.on_motion(self.resolved.kind, &ev);
+                self.on_rule_events(&events, now_ms);
+            }
+            // From an editor that isn't the current context.
             ClientMsg::Motion(_) => {}
             ClientMsg::Command { id, command } => {
                 let reply = self.on_command(id, command, now_ms);
@@ -1199,11 +1245,11 @@ pub(crate) mod tests {
         let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
         focus(&mut app, "code_code", 500);
         // Typing in the terminal panel or a chat: no editor heartbeat.
-        keys(&mut app, "<Esc>jjjjjjjw");
+        keys(&mut app, "<Esc>xxxxx<Esc>");
         assert!(nudges(&mut ext).is_empty());
         // Back in the editor.
         send(&mut app, 2, ClientMsg::EditorFocus { focused: true }, 0);
-        keys(&mut app, "<Esc>jjjjjjjw");
+        keys(&mut app, "<Esc>xxxxx<Esc>");
         assert_eq!(nudges(&mut ext).len(), 1);
     }
 
@@ -1258,5 +1304,66 @@ pub(crate) mod tests {
         assert_eq!(app.mode_known(), (VimMode::Visual, true));
         app.on_conn(ConnEvent::Closed { id: 3 }, 0);
         assert_eq!(app.context().kind, ContextKind::Unsupported);
+    }
+
+    #[test]
+    fn editor_motions_replace_the_repeat_rules() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        // Seven j presses, 100 ms apart from t=0: the repeat rule stays quiet.
+        keys(&mut app, "jjjjjjj");
+        assert!(nudges(&mut ext).is_empty());
+        // The plugin reports where they went: a paragraph boundary.
+        let motion = Motion {
+            start_ms: 10,
+            end_ms: 610,
+            moves: 7,
+            mode: EditorMode::Normal,
+            lines: 7,
+            cols: 0,
+            facts: flowbuddy_core::editor::MotionFacts {
+                paragraph_hops: Some(1),
+                ..Default::default()
+            },
+        };
+        send(&mut app, 3, ClientMsg::Motion(motion), 700);
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].rule_id, "motion.paragraph");
+        assert_eq!(n[0].text, "That took 7 keys. } gets there in 1.");
+    }
+
+    #[test]
+    fn motions_from_other_editors_are_ignored() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 950);
+        focus(&mut app, "code_code", 500);
+        keys(&mut app, "<Esc>jjjjjjj");
+        let motion = Motion {
+            start_ms: 10,
+            end_ms: 710,
+            moves: 7,
+            mode: EditorMode::Normal,
+            lines: 7,
+            cols: 0,
+            facts: Default::default(),
+        };
+        send(&mut app, 3, ClientMsg::Motion(motion), 800);
+        assert!(
+            nudges(&mut ext)
+                .iter()
+                .all(|n| !n.rule_id.starts_with("motion."))
+        );
     }
 }

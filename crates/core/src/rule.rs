@@ -4,6 +4,7 @@
 use std::fmt;
 
 use crate::context::{ContextKind, VimMode};
+use crate::motion::MotionEvent;
 use crate::vim::Step;
 
 /// An abstract description of a mistake, e.g. `j×7` or `:w then :q`.
@@ -86,6 +87,20 @@ pub trait Rule: Send {
 
     /// Time passed without keys; finish anything that is complete.
     fn tick(&mut self, _now_ms: u64, _out: &mut Vec<RuleEvent>) {}
+
+    /// A movement an editor plugin reported, with the keys pressed for it.
+    fn on_motion(&mut self, _ev: &MotionEvent, _out: &mut Vec<RuleEvent>) {}
+
+    /// Only works with an editor plugin's motion facts.
+    fn needs_editor(&self) -> bool {
+        false
+    }
+
+    /// A key-only guess that a motion rule does better when an editor
+    /// reports motions; it steps aside then so one habit gets one nudge.
+    fn replaced_by_editor(&self) -> bool {
+        false
+    }
 
     /// Forget in-progress state (context changed, mode uncertain).
     fn reset(&mut self);

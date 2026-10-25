@@ -4,7 +4,7 @@
 
 Flow Buddy is a local companion that helps you get better at your tools continuously. It watches how you work, spots inefficient patterns, and suggests a better way, quietly and only when it's useful.
 
-> **Status:** early development. Nothing works yet. Track progress in the [milestones](https://github.com/AbdelrahmanWM/Flow-Buddy/milestones).
+> **Status:** early development. The MVP is built but not yet tried on a real desktop. Track progress in the [milestones](https://github.com/AbdelrahmanWM/Flow-Buddy/milestones).
 
 ## Why
 
@@ -55,12 +55,49 @@ Later packs: VS Code feature discovery, terminal and shell efficiency, English w
 
 Linux, initially Ubuntu with GNOME on Wayland.
 
-## Building
+## Install
+
+Requires Rust (via [rustup](https://rustup.rs)), GNOME Shell 50 and bash.
 
 ```sh
-cargo build --workspace
-cargo test --workspace
+scripts/install.sh --dry-run      # see what it will do
+scripts/install.sh --with-udev    # install; --with-udev lets the active session read keyboards (sudo)
 ```
+
+Then log out and back in so GNOME loads the extension, and check:
+
+```sh
+flowbuddy status
+```
+
+`scripts/uninstall.sh` removes everything, and `--purge` also deletes your data.
+
+## Use
+
+```sh
+flowbuddy mode balanced           # off | passive | balanced | active
+flowbuddy pause 1h                # or 30m, until-tomorrow; `flowbuddy resume`
+flowbuddy summary [--week]        # how you're doing vs. before
+flowbuddy rules                   # list; `rules mute|disable|enable <id>`
+flowbuddy memory show             # the mistake memory; `memory export`, `memory forget`
+flowbuddy report-fp               # the last nudge was wrong
+```
+
+Settings live in `~/.config/flowbuddy/config.toml` and are reloaded automatically:
+
+```toml
+[coaching]
+default_mode = "balanced"
+balanced_interval_minutes = 30
+quiet_hours = "22:00-08:00"
+
+[rules."vim.repeat-jk"]
+threshold = 8
+```
+
+## Develop
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/writing-rules.md](docs/writing-rules.md).
 
 ## License
 

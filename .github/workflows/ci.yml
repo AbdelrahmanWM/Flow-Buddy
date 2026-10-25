@@ -21,3 +21,11 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace
+      - name: Check the libxkbcommon keymap
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq libxkbcommon-dev
+          cargo clippy -p flowbuddy-daemon --features xkb --all-targets
+      - name: Check shell scripts
+        run: |
+          for f in shell/flowbuddy.bash scripts/*.sh; do bash -n "$f"; done
+          shellcheck shell/flowbuddy.bash scripts/*.sh

@@ -51,6 +51,9 @@ function! Test_line_positions() abort
   call assert_false(f.line_start)
   call assert_true(s:facts([1, 10], [1, 1]).line_start)
   call assert_true(s:facts([1, 5], [1, 17]).line_end)
+  " A vertical move that keeps the column says nothing about line ends.
+  call s:buf(['abc', 'def'])
+  call assert_false(has_key(s:facts([1, 1], [2, 1]), 'line_start'))
 endfunction
 
 function! Test_brackets_and_star() abort

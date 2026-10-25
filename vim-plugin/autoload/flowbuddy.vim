@@ -352,11 +352,13 @@ function! s:facts(start, end, jump) abort
         let f.till_hops = len(hits)
       endif
     endif
+    " Only when the column changed: a j that happens to end in column 1
+    " doesn't call for 0.
+    let f.line_start = a:end[1] == 1 ? v:true : v:false
+    let f.first_nonblank = a:end[1] == match(text, '\S') + 1 ? v:true : v:false
+    let last = strlen(text) - strlen(matchstr(text, '.$')) + 1
+    let f.line_end = !empty(text) && a:end[1] == last ? v:true : v:false
   endif
-  let f.line_start = a:end[1] == 1 ? v:true : v:false
-  let f.first_nonblank = a:end[1] == match(text, '\S') + 1 ? v:true : v:false
-  let last = strlen(text) - strlen(matchstr(text, '.$')) + 1
-  let f.line_end = !empty(text) && a:end[1] == last ? v:true : v:false
 
   " Anywhere.
   let start_text = getline(a:start[0])

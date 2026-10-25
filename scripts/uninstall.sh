@@ -77,6 +77,13 @@ PY
     fi
 fi
 
+for pack in "$HOME/.vim/pack/flowbuddy" "${XDG_DATA_HOME:-$HOME/.local/share}/nvim/site/pack/flowbuddy"; do
+    if [[ -d $pack ]]; then
+        say "Removing the Vim plugin from ${pack%/pack/flowbuddy}"
+        run rm -rf "$pack"
+    fi
+done
+
 say "Removing the ~/.bashrc block"
 if grep -qF "# >>> flowbuddy >>>" "$bashrc" 2>/dev/null; then
     run sed -i '/# >>> flowbuddy >>>/,/# <<< flowbuddy <<</d' "$bashrc"

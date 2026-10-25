@@ -12,6 +12,8 @@
 #   ~/.local/share/gnome-shell/extensions/flowbuddy@abdelrahmanwm.github.io/
 #   ~/.local/share/flowbuddy/flowbuddy.bash, sourced from ~/.bashrc
 #   ~/.vscode/extensions/flowbuddy.flowbuddy-vscode-<version>/ (if VS Code is installed)
+#   ~/.vim/pack/flowbuddy/start/flowbuddy/ (if Vim is installed)
+#   ~/.local/share/nvim/site/pack/flowbuddy/start/flowbuddy/ (if Neovim is installed)
 #   /etc/udev/rules.d/70-flowbuddy.rules (only with --with-udev)
 
 set -euo pipefail
@@ -158,6 +160,19 @@ rewrite(os.path.join(root, ".obsolete"), lambda d: {k: v for k, v in d.items() i
 PY
     fi
     echo "    restart VS Code to load it (or install a .vsix with 'code --install-extension')"
+fi
+
+# The same plugin serves Vim and Neovim.
+vim_packs=()
+command -v vim >/dev/null && vim_packs+=("$HOME/.vim/pack/flowbuddy/start/flowbuddy")
+command -v nvim >/dev/null && vim_packs+=("${XDG_DATA_HOME:-$HOME/.local/share}/nvim/site/pack/flowbuddy/start/flowbuddy")
+if ((${#vim_packs[@]})); then
+    say "Installing the Vim plugin"
+    for pack in "${vim_packs[@]}"; do
+        for f in plugin/flowbuddy.vim autoload/flowbuddy.vim README.md; do
+            run install -Dm644 "$repo/vim-plugin/$f" "$pack/$f"
+        done
+    done
 fi
 
 say "Installing the systemd user service"

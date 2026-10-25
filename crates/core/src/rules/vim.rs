@@ -68,7 +68,14 @@ pub fn repeat_jk() -> RepeatRule {
             } else {
                 ("{", "Ctrl-u")
             };
-            format!("You pressed {unit} {n} times. Try {n}{unit}, {down} or {up}.")
+            // A big count is right but useless: nobody counts 40 lines.
+            if n <= 9 {
+                format!("You pressed {unit} {n} times. Try {n}{unit}, {down} or {up}.")
+            } else {
+                format!(
+                    "You pressed {unit} {n} times. For long moves, {up} jumps half a page and {down} to the next blank line; or search with /."
+                )
+            }
         },
     })
     .replaced_by_editor()
@@ -328,6 +335,14 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].shape.to_string(), "j×7");
         assert!(f[0].text.contains("7j"), "{}", f[0].text);
+    }
+
+    #[test]
+    fn long_jk_streaks_suggest_paging_not_counts() {
+        let ev = vim(repeat_jk(), &format!("{}<Esc>", "j".repeat(30)));
+        let text = &findings(&ev)[0].text;
+        assert!(!text.contains("30j"), "{text}");
+        assert!(text.contains("Ctrl-d"), "{text}");
     }
 
     #[test]

@@ -129,6 +129,8 @@ pub struct MotionFacts {
     /// `n` or `N` presses: the end is that many matches of the last search
     /// away, in the movement's direction. The pattern is never sent.
     pub search_hops: Option<u32>,
+    /// 'relativenumber' is on, so line counts on screen can be read off.
+    pub relative_numbers: bool,
 }
 
 #[cfg(test)]

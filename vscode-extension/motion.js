@@ -147,6 +147,7 @@ class MotionTracker {
             facts = computeFacts(linesOf(editor.document), seg.start, seg.end, {
                 window,
                 ignorecase: vscode.workspace.getConfiguration('vim').get('ignorecase', true),
+                relativeNumbers: editor.options.lineNumbers === vscode.TextEditorLineNumbersStyle.Relative,
             });
         } catch (e) {
             console.warn(`flowbuddy: motion facts failed: ${e}`);

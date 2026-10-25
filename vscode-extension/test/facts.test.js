@@ -23,7 +23,7 @@ const FIELDS = [
     'paragraph_hops', 'screen', 'window_lines', 'file_start', 'file_end',
     'word_hops', 'word_end_hops', 'bigword_hops', 'find_hops', 'till_hops',
     'line_start', 'first_nonblank', 'line_end', 'bracket_match', 'star_hops',
-    'jump_back',
+    'jump_back', 'search_hops', 'relative_numbers',
 ];
 
 let failed = 0;
@@ -153,6 +153,12 @@ facts('Latin-1 letters are keyword chars', intl, [0, 0], [0, 6], {},
     {word_hops: 1}, ['word_hops']);
 facts('a snowman makes word facts unknown', intl, [0, 6], [0, 14], {},
     {find_hops: 1}, ['word_hops', 'word_end_hops', 'bigword_hops', 'find_hops']);
+
+// Relative line numbers let the daemon suggest counts you can read.
+facts('relative numbers on', words, [0, 0], [0, 4], {relativeNumbers: true},
+    {relative_numbers: true}, ['relative_numbers']);
+facts('relative numbers off', words, [0, 0], [0, 4], {},
+    {}, ['relative_numbers']);
 
 // Nothing at all for a move that goes nowhere.
 facts('no move', words, [0, 3], [0, 3], {}, {});

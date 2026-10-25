@@ -439,8 +439,9 @@ function screenPos(window, line) {
  * @param {{line: number, col: number|null}} start where the cursor was
  * @param {{line: number, col: number|null}} end where it rested; a null
  *   column (Visual Line mode) leaves out every within-line fact
- * @param {{window?: {top: number, bottom: number}|null, ignorecase?: boolean}} opts
- *   the visible lines (one range, no folds) and Vim's 'ignorecase' for `*`
+ * @param {{window?: {top: number, bottom: number}|null, ignorecase?: boolean,
+ *   relativeNumbers?: boolean}} opts the visible lines (one range, no folds),
+ *   Vim's 'ignorecase' for `*`, and whether relative line numbers are shown
  * @returns {object} only the MotionFacts fields that are known
  */
 function computeFacts(lines, start, end, opts = {}) {
@@ -452,6 +453,7 @@ function computeFacts(lines, start, end, opts = {}) {
     const window = opts.window ?? null;
     if (window && window.bottom >= window.top)
         facts.window_lines = window.bottom - window.top + 1;
+    set('relative_numbers', !!opts.relativeNumbers);
 
     const vdir = Math.sign(end.line - start.line);
     if (vdir !== 0) {

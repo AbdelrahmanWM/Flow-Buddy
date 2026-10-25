@@ -87,6 +87,15 @@ function! Test_search_hops() abort
   call assert_false(has_key(s:facts([1, 1], [5, 1]), 'search_hops'))
 endfunction
 
+function! Test_relative_numbers() abort
+  call s:buf(['a', 'b'])
+  set norelativenumber
+  call assert_false(s:facts([1, 1], [2, 1]).relative_numbers)
+  set relativenumber
+  call assert_true(s:facts([1, 1], [2, 1]).relative_numbers)
+  set norelativenumber
+endfunction
+
 function! Test_facts_leave_no_trace() abort
   call s:buf(['a', '', 'b', '', 'c'])
   call cursor(1, 1)

@@ -1573,7 +1573,10 @@ pub(crate) mod tests {
         let n = nudges(&mut ext);
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].rule_id, "motion.paragraph");
-        assert_eq!(n[0].text, "That took 7 keys. } gets there in 1.");
+        assert_eq!(
+            n[0].text,
+            "That took 7 keys. } gets there in 1, or 7j in 2."
+        );
     }
 
     #[test]

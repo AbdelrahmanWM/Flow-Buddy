@@ -145,11 +145,21 @@ fn digits(n: u32) -> u32 {
     n.checked_ilog10().map_or(1, |d| d + 1)
 }
 
-/// `key` pressed `n` times, or with a count if that's shorter.
-fn repeated(category: Category, key: &str, key_cost: u32, n: u32) -> Part {
+/// Counts up to this are easy to see at a glance.
+const GLANCE: u32 = 9;
+
+/// Whether a count of lines can be read off the screen rather than
+/// counted: small, or shown by 'relativenumber' for a line in view.
+fn readable_lines(n: u32, f: &MotionFacts) -> bool {
+    n <= GLANCE || (f.relative_numbers && f.window_lines.is_some_and(|w| n < w))
+}
+
+/// `key` pressed `n` times, or with a count if that's shorter and
+/// `readable`: nobody types 193j, because nobody counts 193 lines.
+fn repeated(category: Category, key: &str, key_cost: u32, n: u32, readable: bool) -> Part {
     let plain = key_cost * n;
     let counted = digits(n) + key_cost;
-    if n == 1 || plain <= counted {
+    if n == 1 || plain <= counted || !readable {
         Part {
             category,
             keys: key.repeat(n as usize),
@@ -164,12 +174,14 @@ fn repeated(category: Category, key: &str, key_cost: u32, n: u32) -> Part {
     }
 }
 
-/// `f<char>`, `f<char>;`, or with a count from three on (`3f<char>`).
+/// `f<char>`, `f<char>;`, a readable count (`3f<char>`), or `;` again
+/// and again.
 fn find(category: Category, key: &str, n: u32) -> Part {
     let (keys, cost) = match n {
         1 => (format!("{key}<char>"), 2),
         2 => (format!("{key}<char>;"), 3),
-        _ => (format!("{n}{key}<char>"), digits(n) + 2),
+        _ if n <= GLANCE => (format!("{n}{key}<char>"), digits(n) + 2),
+        _ => (format!("{key}<char> then ;×{}", n - 1), n + 1),
     };
     Part {
         category,
@@ -181,18 +193,15 @@ fn find(category: Category, key: &str, n: u32) -> Part {
 fn vertical(lines: i64, f: &MotionFacts) -> Vec<Part> {
     let n = lines.unsigned_abs().min(u64::from(u32::MAX)) as u32;
     let down = lines > 0;
-    let mut parts = vec![repeated(
-        Category::Count,
-        if down { "j" } else { "k" },
-        1,
-        n,
-    )];
+    let (fwd, back) = if down { ("j", "k") } else { ("k", "j") };
+    let mut parts = vec![repeated(Category::Count, fwd, 1, n, readable_lines(n, f))];
     if let Some(k) = f.paragraph_hops {
         parts.push(repeated(
             Category::Paragraph,
             if down { "}" } else { "{" },
             1,
             k,
+            k <= GLANCE,
         ));
     }
     if let Some(pos) = f.screen {
@@ -207,19 +216,37 @@ fn vertical(lines: i64, f: &MotionFacts) -> Vec<Part> {
             cost: 1,
         });
     }
-    // Ctrl-d and Ctrl-u move by half the window ('scroll').
-    if let Some(half) = f.window_lines.map(|w| w / 2).filter(|h| *h > 0)
-        && n % half == 0
-    {
-        let key = if down { "Ctrl-d" } else { "Ctrl-u" };
+    // Ctrl-d and Ctrl-u move by half the window ('scroll'). Page close,
+    // then finish with a few lines; the target is on screen by then.
+    if let Some(half) = f.window_lines.map(|w| w / 2).filter(|h| *h > 0 && n >= *h) {
+        let page = if down { "Ctrl-d" } else { "Ctrl-u" };
+        let pages = |k: u32| {
+            if k == 1 {
+                page.to_string()
+            } else {
+                format!("{page}×{k}")
+            }
+        };
+        let rest = |key: &str, r: u32| repeated(Category::Count, key, 1, r, readable_lines(r, f));
+        let (k, r) = (n / half, n % half);
+        let mut options = vec![(k, rest(fwd, r))];
+        if r > 0 {
+            // One page too far, then back.
+            options.push((k + 1, rest(back, half - r)));
+        }
+        let (k, finish) = options
+            .into_iter()
+            .min_by_key(|(k, finish)| k + finish.cost)
+            .unwrap();
+        let keys = if finish.cost == 0 {
+            pages(k)
+        } else {
+            format!("{} then {}", pages(k), finish.keys)
+        };
         parts.push(Part {
             category: Category::Page,
-            keys: if n / half == 1 {
-                key.into()
-            } else {
-                format!("{key}×{}", n / half)
-            },
-            cost: n / half,
+            keys,
+            cost: k + finish.cost,
         });
     }
     if f.file_start && !down {
@@ -249,6 +276,7 @@ fn horizontal(lines: i64, cols: i64, f: &MotionFacts) -> Vec<Part> {
             if right { "l" } else { "h" },
             1,
             n,
+            n <= GLANCE,
         ));
     }
     let hop = |parts: &mut Vec<Part>, hops: Option<u32>, fwd: &str, back: &str, cost: u32| {
@@ -258,6 +286,7 @@ fn horizontal(lines: i64, cols: i64, f: &MotionFacts) -> Vec<Part> {
                 if right { fwd } else { back },
                 cost,
                 k,
+                k <= GLANCE,
             ));
         }
     };
@@ -304,6 +333,11 @@ fn cheapest_part(parts: Vec<Part>) -> Option<Part> {
 
 /// The shortest exact plan for `m`, if the facts allow one.
 pub fn cheapest(m: &Motion) -> Option<Plan> {
+    plans(m).into_iter().next()
+}
+
+/// Every practical exact plan for `m`, best first.
+pub fn plans(m: &Motion) -> Vec<Plan> {
     let f = &m.facts;
     let mut plans = Vec::new();
 
@@ -317,7 +351,13 @@ pub fn cheapest(m: &Motion) -> Option<Plan> {
         });
     }
     if let Some(k) = f.star_hops {
-        let p = repeated(Category::Star, if back { "#" } else { "*" }, 1, k);
+        let p = repeated(
+            Category::Star,
+            if back { "#" } else { "*" },
+            1,
+            k,
+            k <= GLANCE,
+        );
         plans.push(Plan {
             category: p.category,
             keys: p.keys,
@@ -325,7 +365,7 @@ pub fn cheapest(m: &Motion) -> Option<Plan> {
         });
     }
     if let Some(k) = f.search_hops {
-        let p = repeated(Category::Search, "n", 1, k);
+        let p = repeated(Category::Search, "n", 1, k, k <= GLANCE);
         plans.push(Plan {
             category: p.category,
             keys: p.keys,
@@ -341,46 +381,54 @@ pub fn cheapest(m: &Motion) -> Option<Plan> {
     }
 
     // A vertical part, then a part within the end line.
-    let v = if m.lines != 0 {
-        cheapest_part(vertical(m.lines, f))
+    let none = || Part {
+        category: Category::Count,
+        keys: String::new(),
+        cost: 0,
+    };
+    let verticals = if m.lines != 0 {
+        vertical(m.lines, f)
     } else {
-        Some(Part {
-            category: Category::Count,
-            keys: String::new(),
-            cost: 0,
-        })
+        vec![none()]
     };
     // Vertical motions keep the column, so no horizontal part is needed
     // when it didn't change.
     let h = if m.cols != 0 {
         cheapest_part(horizontal(m.lines, m.cols, f))
     } else {
-        Some(Part {
-            category: Category::Count,
-            keys: String::new(),
-            cost: 0,
-        })
+        Some(none())
     };
-    if let (Some(v), Some(h)) = (v, h) {
-        // Name the plan after its most specific part.
-        let category = if v.category != Category::Count || m.lines != 0 && h.cost == 0 {
-            v.category
-        } else {
-            h.category
-        };
-        plans.push(Plan {
-            category,
-            keys: v.keys + &h.keys,
-            cost: v.cost + h.cost,
-        });
-    }
-    plans.into_iter().filter(|p| p.cost > 0).reduce(|a, b| {
-        if better(a.cost, a.category, b.cost, b.category) {
-            b
-        } else {
-            a
+    if let Some(h) = h {
+        for v in verticals {
+            // Name the plan after its most specific part.
+            let category = if v.category != Category::Count || m.lines != 0 && h.cost == 0 {
+                v.category
+            } else {
+                h.category
+            };
+            let joiner = if v.keys.contains(' ') && !h.keys.is_empty() {
+                ", then "
+            } else {
+                ""
+            };
+            plans.push(Plan {
+                category,
+                keys: format!("{}{joiner}{}", v.keys, h.keys),
+                cost: v.cost + h.cost,
+            });
         }
-    })
+    }
+    plans.retain(|p| p.cost > 0);
+    plans.sort_by(|a, b| {
+        if better(a.cost, a.category, b.cost, b.category) {
+            std::cmp::Ordering::Greater
+        } else if better(b.cost, b.category, a.cost, a.category) {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    });
+    plans
 }
 
 /// Keys a command took, counting each chord (Ctrl-d) as one.
@@ -460,9 +508,14 @@ impl Rule for MotionRule {
         if ev.keys_used == 0 {
             return;
         }
-        let Some(plan) = cheapest(&ev.motion) else {
+        let all = plans(&ev.motion);
+        let Some(plan) = all.first() else {
             return;
         };
+        // A second way of a different kind, if it's also worth it.
+        let alt = all
+            .iter()
+            .find(|p| p.category != plan.category && ev.keys_used >= p.cost + self.min_saving);
         if plan.category != self.category {
             return;
         }
@@ -472,10 +525,16 @@ impl Rule for MotionRule {
             out.push(RuleEvent::Finding(Finding {
                 rule_id: self.category.id(),
                 title: self.category.title(),
-                text: format!(
-                    "That took {used} keys. {} gets there in {}.",
-                    plan.keys, plan.cost
-                ),
+                text: match alt {
+                    Some(alt) => format!(
+                        "That took {used} keys. {} gets there in {}, or {} in {}.",
+                        plan.keys, plan.cost, alt.keys, alt.cost
+                    ),
+                    None => format!(
+                        "That took {used} keys. {} gets there in {}.",
+                        plan.keys, plan.cost
+                    ),
+                },
                 shape: Shape::repeat(self.category.shape_token(), used),
                 mode: ev.motion.mode.vim_mode().unwrap_or(VimMode::Normal),
                 at_ms,
@@ -524,13 +583,43 @@ mod tests {
     #[test]
     fn counts_for_plain_vertical_moves() {
         assert_eq!(
-            plan(12, 0, MotionFacts::default()),
-            (Category::Count, "12j".into(), 3)
+            plan(7, 0, MotionFacts::default()),
+            (Category::Count, "7j".into(), 2)
         );
         assert_eq!(
             plan(-2, 0, MotionFacts::default()),
             (Category::Count, "kk".into(), 2)
         );
+    }
+
+    #[test]
+    fn counts_only_when_they_can_be_read() {
+        // Nobody counts 12 lines by eye...
+        let p = plan(12, 0, MotionFacts::default());
+        assert_eq!((p.0, p.2), (Category::Count, 12));
+        // ...but 'relativenumber' shows it when the line is on screen.
+        let f = MotionFacts {
+            relative_numbers: true,
+            window_lines: Some(40),
+            ..Default::default()
+        };
+        assert_eq!(plan(12, 0, f.clone()), (Category::Count, "12j".into(), 3));
+        // Off screen it can't be read either.
+        assert_ne!(plan(45, 0, f).1, "45j");
+    }
+
+    #[test]
+    fn long_moves_page() {
+        let f = MotionFacts {
+            window_lines: Some(40),
+            ..Default::default()
+        };
+        // 193 = 10 half pages less 7 lines.
+        assert_eq!(
+            plan(193, 0, f.clone()),
+            (Category::Page, "Ctrl-d×10 then 7k".into(), 12)
+        );
+        assert_eq!(plan(-60, 0, f), (Category::Page, "Ctrl-u×3".into(), 3));
     }
 
     #[test]
@@ -584,7 +673,9 @@ mod tests {
         // 3f<char> (3 keys) beats f<char>;; (4).
         assert_eq!(find(Category::Find, "f", 3).keys, "3f<char>");
         assert_eq!(find(Category::Find, "f", 3).cost, 3);
-        assert_eq!(find(Category::Find, "f", 12).cost, 4);
+        // Nobody counts 12 commas: f then ; until there.
+        assert_eq!(find(Category::Find, "f", 12).keys, "f<char> then ;×11");
+        assert_eq!(find(Category::Find, "f", 12).cost, 13);
     }
 
     #[test]
@@ -627,8 +718,8 @@ mod tests {
             plan(-20, 0, f.clone()),
             (Category::Page, "Ctrl-u".into(), 1)
         );
-        // Not a multiple of half a page: a count.
-        assert_eq!(plan(25, 0, f).1, "25j");
+        // Not a multiple of half a page: page, then finish.
+        assert_eq!(plan(25, 0, f).1, "Ctrl-d then 5j");
         let f = MotionFacts {
             search_hops: Some(2),
             ..Default::default()
@@ -660,7 +751,10 @@ mod tests {
             panic!("{out:?}")
         };
         assert_eq!(finding.rule_id, "motion.paragraph");
-        assert_eq!(finding.text, "That took 7 keys. } gets there in 1.");
+        assert_eq!(
+            finding.text,
+            "That took 7 keys. } gets there in 1, or 7j in 2."
+        );
         assert_eq!(finding.shape.to_string(), "keys for }×7");
         // Saving only 2 keys isn't worth a nudge.
         assert!(run(3, 3, 0, f).is_empty());

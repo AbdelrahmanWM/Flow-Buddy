@@ -402,5 +402,6 @@ function! s:facts(start, end, jump) abort
     endfor
   endif
   let f.jump_back = a:jump == a:end && a:jump != [0, 0] ? v:true : v:false
+  let f.relative_numbers = &relativenumber ? v:true : v:false
   return f
 endfunction

@@ -422,6 +422,7 @@ impl App {
             ClientMsg::NudgeResponse { nudge_id, action } => {
                 self.on_nudge_response(&nudge_id, action, now_ms);
             }
+            ClientMsg::PointerClick => self.on_pointer_click(),
             ClientMsg::Command { id, command } => {
                 let reply = self.on_command(id, command, now_ms);
                 self.reply(conn, reply);
@@ -736,6 +737,17 @@ pub(crate) mod tests {
         assert!(!app.mode_known().1);
         keys(&mut app, "<Esc>");
         app.on_pointer_click();
+        assert!(!app.mode_known().1);
+    }
+
+    #[test]
+    fn clicks_reported_by_the_extension_make_mode_uncertain() {
+        let mut app = test_app(CoachingMode::Active);
+        let _rx = connect(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        keys(&mut app, "<Esc>");
+        assert!(app.mode_known().1);
+        send(&mut app, 1, ClientMsg::PointerClick, 0);
         assert!(!app.mode_known().1);
     }
 

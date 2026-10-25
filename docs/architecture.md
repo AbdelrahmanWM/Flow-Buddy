@@ -156,6 +156,11 @@ When nothing is focused, `app_id` is `null`. The protocol accepts an optional `t
 ```
 `action` is one of `seen` (shown and timed out), `dismiss`, `mute_rule` or `false_positive`.
 
+**`pointer_click`**: a mouse button was pressed or the touchpad tapped, anywhere. Sent by the extension; it carries no position and no target. A click can change the editor's mode, so the daemon stops trusting its mode guess until the next Esc.
+```json
+{"v":0,"type":"pointer_click"}
+```
+
 **`command`**: a request from the CLI or the indicator menu.
 ```json
 {"v":0,"type":"command","id":7,"name":"status"}

@@ -16,6 +16,7 @@ Flow Buddy reads your keyboard. That is a lot of trust to ask for, so this docum
 | Key events | Linux evdev (`/dev/input`) | In-memory ring buffer (last ~64 keys) | Until the context changes, you pause, or the daemon stops |
 | Focused app id and window PID (titles are not sent) | GNOME Shell extension | Memory only | Replaced on every focus change |
 | Terminal foreground command **name** (e.g. `vim`, never its arguments) | Bash hook | Memory only | Replaced on every command |
+| That a click happened (no position, no target) | GNOME Shell extension | Not kept: it only marks the Vim mode as unknown | Immediately |
 
 The key buffer is only filled while a supported context is focused (VS Code with Vim, Vim in a terminal, bash vi-mode). In any other app, keys are dropped as soon as they are read.
 

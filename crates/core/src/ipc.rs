@@ -95,6 +95,8 @@ pub enum ClientMsg {
         nudge_id: String,
         action: NudgeAction,
     },
+    /// A mouse button was pressed or the touchpad tapped. No position, no target.
+    PointerClick,
     Command {
         #[serde(default)]
         id: Option<u64>,
@@ -104,7 +106,14 @@ pub enum ClientMsg {
 }
 
 impl ClientMsg {
-    pub const TYPES: [&'static str; 5] = ["hello", "focus", "ctx", "nudge_response", "command"];
+    pub const TYPES: [&'static str; 6] = [
+        "hello",
+        "focus",
+        "ctx",
+        "nudge_response",
+        "pointer_click",
+        "command",
+    ];
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,6 +282,7 @@ mod tests {
             r#"{"v":0,"type":"ctx","event":"fg","command":"vim","shell_pid":51002,"tty":"/dev/pts/3"}"#,
             r#"{"v":0,"type":"ctx","event":"prompt","vi_mode":true,"shell_pid":51002,"tty":"/dev/pts/3"}"#,
             r#"{"v":0,"type":"nudge_response","nudge_id":"n-1729740000-3","action":"dismiss"}"#,
+            r#"{"v":0,"type":"pointer_click"}"#,
             r#"{"v":0,"type":"command","id":7,"name":"status"}"#,
             r#"{"v":0,"type":"command","id":8,"name":"set_mode","args":{"mode":"active"}}"#,
             r#"{"v":0,"type":"command","id":9,"name":"pause","args":{"seconds":3600}}"#,

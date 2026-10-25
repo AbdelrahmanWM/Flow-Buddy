@@ -25,6 +25,99 @@ fn times(n: u64) -> String {
     }
 }
 
+/// Families of habits that share one underlying cause.
+const FAMILIES: &[(&str, &[&str])] = &[
+    (
+        "stepping one line or character at a time instead of a count or a bigger motion",
+        &[
+            "vim.repeat-jk",
+            "vim.repeat-hl",
+            "vim.repeat-dd",
+            "vim.repeat-indent",
+            "vim.repeat-join",
+            "vim.repeat-paste",
+            "motion.count",
+            "motion.paragraph",
+            "motion.page",
+            "motion.word",
+            "motion.find",
+        ],
+    ),
+    (
+        "reaching for the arrow keys",
+        &[
+            "vim.arrows-normal",
+            "vim.arrows-insert",
+            "bash.left-streak",
+            "bash.up-history",
+        ],
+    ),
+    (
+        "deleting a character at a time",
+        &[
+            "vim.repeat-x",
+            "vim.backspace-streak",
+            "bash.backspace-clear",
+            "vim.delete-then-insert",
+        ],
+    ),
+];
+
+/// Facts across habits, worked out here so the model only has to phrase
+/// them: shared causes, a habit that differs between contexts, and the
+/// week's overall balance.
+pub fn insights(export: &Export) -> Vec<String> {
+    use flowbuddy_core::learning::Stage;
+    let mut out = Vec::new();
+    for (cause, rules) in FAMILIES {
+        let active: Vec<_> = export
+            .patterns
+            .iter()
+            .filter(|p| rules.contains(&p.rule.as_str()) && p.last_7_days.hits > 0)
+            .collect();
+        let mut distinct: Vec<&str> = active.iter().map(|p| p.rule.as_str()).collect();
+        distinct.sort();
+        distinct.dedup();
+        let hits: u64 = active.iter().map(|p| p.last_7_days.hits).sum();
+        if distinct.len() >= 2 && hits >= 5 {
+            out.push(format!(
+                "{} habits come from one cause, {cause}: {hits} times this week in all.",
+                distinct.len()
+            ));
+        }
+    }
+    let good = |s: Stage| matches!(s, Stage::Improving | Stage::Mastered);
+    for (i, a) in export.patterns.iter().enumerate() {
+        for b in &export.patterns[i + 1..] {
+            if a.rule == b.rule && a.context != b.context && good(a.stage) != good(b.stage) {
+                let (better, worse) = if good(a.stage) { (a, b) } else { (b, a) };
+                out.push(format!(
+                    "{}: {} in {}, but {} in {}.",
+                    better.description,
+                    better.stage.as_str(),
+                    better.context,
+                    worse.stage.as_str(),
+                    worse.context
+                ));
+            }
+        }
+    }
+    let hits: u64 = export.patterns.iter().map(|p| p.last_7_days.hits).sum();
+    let adoptions: u64 = export
+        .patterns
+        .iter()
+        .map(|p| p.last_7_days.adoptions)
+        .sum();
+    if hits + adoptions > 0 {
+        out.push(format!(
+            "This week: the better way {}, the old way {}.",
+            times(adoptions),
+            times(hits)
+        ));
+    }
+    out
+}
+
 /// The prompt for `export`, answering `question` if there is one.
 pub fn prompt(export: &Export, question: Option<&str>) -> String {
     let engine = Engine::standard();
@@ -48,6 +141,13 @@ pub fn prompt(export: &Export, question: Option<&str>) -> String {
         "Overview: {} habits tracked; {} mastered, {} improving, {} slipping back.",
         s.patterns, s.mastered, s.improving, s.regressed
     );
+    let seen = insights(export);
+    if !seen.is_empty() {
+        out.push_str("\nAcross habits:\n");
+        for line in seen {
+            let _ = writeln!(out, "- {line}");
+        }
+    }
     out.push_str("\nHabits, most worth working on first:\n");
     for p in export.patterns.iter().take(MAX_PATTERNS) {
         let tip = engine
@@ -229,6 +329,36 @@ mod tests {
         assert!(p.ends_with(
             "Tell them the one or two habits most worth working on now, and exactly how.\n"
         ));
+    }
+
+    #[test]
+    fn insights_across_habits() {
+        use flowbuddy_core::learning::Stage;
+        let mut e = sample();
+        let mut x = e.patterns[0].clone();
+        x.rule = "vim.repeat-hl".into();
+        x.last_7_days.hits = 4;
+        e.patterns.push(x);
+        let mut terminal = e.patterns[0].clone();
+        terminal.context = "terminal-vim".into();
+        terminal.stage = Stage::Improving;
+        e.patterns.push(terminal);
+        let got = insights(&e);
+        assert!(
+            got.iter()
+                .any(|l| l.starts_with("2 habits come from one cause, stepping one line")),
+            "{got:?}"
+        );
+        assert!(
+            got.iter()
+                .any(|l| l.ends_with("improving in terminal-vim, but new in vscode-vim.")),
+            "{got:?}"
+        );
+        assert!(
+            got.iter()
+                .any(|l| l.starts_with("This week: the better way")),
+            "{got:?}"
+        );
     }
 
     #[test]

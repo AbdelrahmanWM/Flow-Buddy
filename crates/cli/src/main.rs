@@ -201,6 +201,8 @@ fn print_status(s: &Status) {
 fn context_line(s: &Status) -> String {
     if s.context == "unsupported" {
         "unsupported (not watching)".into()
+    } else if s.mode_from_editor {
+        format!("{} (mode from the editor)", s.context)
     } else if s.confident {
         s.context.clone()
     } else {
@@ -453,6 +455,7 @@ mod status_tests {
             context: context.into(),
             app: Some("code_code".into()),
             confident,
+            mode_from_editor: false,
             keyboards: 1,
             clients: vec![],
         }

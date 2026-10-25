@@ -4,7 +4,8 @@
 
 use std::collections::HashMap;
 
-use flowbuddy_core::context::ContextKind;
+use flowbuddy_core::context::{ContextKind, VimMode};
+use flowbuddy_core::editor::EditorKind;
 
 /// App ids and command names that select each context.
 #[derive(Clone, Debug)]
@@ -95,18 +96,40 @@ struct Focus {
     pid: Option<u32>,
 }
 
+/// An editor plugin connected to the daemon (VS Code companion, Vim plugin).
+#[derive(Clone, Debug)]
+pub struct Editor {
+    pub kind: EditorKind,
+    pub pid: Option<u32>,
+    /// Whether a text editor has focus; `None` until it says.
+    pub focused: Option<bool>,
+    /// When it last said it was focused (VS Code sends this as a heartbeat
+    /// while the editor is in use).
+    pub focused_ms: u64,
+    /// When it last sent anything.
+    pub active_ms: u64,
+    /// The mode it last reported.
+    pub mode: Option<VimMode>,
+}
+
+/// Connection id of an editor client.
+pub type EditorId = u64;
+
 /// The resolved context and what caused the latest change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Resolved {
     pub kind: ContextKind,
     /// The shell the context comes from, for terminal contexts.
     pub shell_pid: Option<u32>,
+    /// The editor plugin the context comes from, when one is reporting.
+    pub editor: Option<EditorId>,
 }
 
 impl Resolved {
     const UNSUPPORTED: Resolved = Resolved {
         kind: ContextKind::Unsupported,
         shell_pid: None,
+        editor: None,
     };
 }
 
@@ -115,7 +138,10 @@ pub struct Resolver {
     procs: Box<dyn ProcessTree>,
     focus: Focus,
     shells: HashMap<u32, Shell>,
+    editors: HashMap<EditorId, Editor>,
 }
+
+const VIMS: [EditorKind; 2] = [EditorKind::Vim, EditorKind::Nvim];
 
 /// Walking more parents than this means something is odd; give up.
 const MAX_DEPTH: usize = 64;
@@ -127,6 +153,7 @@ impl Resolver {
             procs,
             focus: Focus::default(),
             shells: HashMap::new(),
+            editors: HashMap::new(),
         }
     }
 
@@ -150,6 +177,63 @@ impl Resolver {
                 updated_ms: now_ms,
             },
         );
+    }
+
+    pub fn editor_hello(&mut self, id: EditorId, kind: EditorKind, pid: Option<u32>, now_ms: u64) {
+        self.editors.insert(
+            id,
+            Editor {
+                kind,
+                pid,
+                focused: None,
+                focused_ms: 0,
+                active_ms: now_ms,
+                mode: None,
+            },
+        );
+    }
+
+    pub fn editor_focus(&mut self, id: EditorId, focused: bool, now_ms: u64) {
+        if let Some(e) = self.editors.get_mut(&id) {
+            e.focused = Some(focused);
+            e.active_ms = now_ms;
+            if focused {
+                e.focused_ms = now_ms;
+            }
+        }
+    }
+
+    pub fn editor_mode(&mut self, id: EditorId, mode: Option<VimMode>, now_ms: u64) {
+        if let Some(e) = self.editors.get_mut(&id) {
+            e.mode = mode;
+            e.active_ms = now_ms;
+        }
+    }
+
+    pub fn editor_gone(&mut self, id: EditorId) {
+        self.editors.remove(&id);
+    }
+
+    pub fn editor(&self, id: EditorId) -> Option<&Editor> {
+        self.editors.get(&id)
+    }
+
+    /// The most recently focused editor of `kinds` running inside the
+    /// window `window_pid` (any, if the window's pid is unknown).
+    fn editor_in(
+        &self,
+        window_pid: Option<u32>,
+        kinds: &[EditorKind],
+    ) -> Option<(EditorId, &Editor)> {
+        self.editors
+            .iter()
+            .filter(|(_, e)| kinds.contains(&e.kind))
+            .filter(|(_, e)| match (e.pid, window_pid) {
+                (Some(pid), Some(window)) => self.descends_from(pid, window),
+                _ => true,
+            })
+            .max_by_key(|(_, e)| (e.focused_ms, e.active_ms))
+            .map(|(id, e)| (*id, e))
     }
 
     /// Forget shells whose process is gone.
@@ -176,9 +260,14 @@ impl Resolver {
             return Resolved::UNSUPPORTED;
         };
         if contains(&self.ids.vscode, app_id) {
-            return Resolved {
-                kind: ContextKind::VsCodeVim,
-                shell_pid: None,
+            // The companion knows whether the editor or a panel has focus.
+            return match self.editor_in(self.focus.pid, &[EditorKind::Vscode]) {
+                Some((_, e)) if e.focused == Some(false) => Resolved::UNSUPPORTED,
+                editor => Resolved {
+                    kind: ContextKind::VsCodeVim,
+                    shell_pid: None,
+                    editor: editor.map(|(id, _)| id),
+                },
             };
         }
         if !contains(&self.ids.terminals, app_id) {
@@ -194,19 +283,47 @@ impl Resolver {
             .iter()
             .filter(|(pid, _)| self.descends_from(**pid, window_pid))
             .max_by_key(|(_, s)| s.updated_ms);
+        let vim = |id: EditorId| Resolved {
+            kind: ContextKind::TerminalVim,
+            shell_pid: None,
+            editor: Some(id),
+        };
+        // A Vim plugin inside this terminal, wherever Vim was started from
+        // (`git commit`, a script). With focus events it says whether it has
+        // focus; without, it wins if it was active after the last shell.
+        if let Some((id, _)) = self.editor_in(Some(window_pid), &VIMS).filter(|(_, e)| {
+            e.pid.is_some()
+                && match e.focused {
+                    Some(f) => f,
+                    None => shell.is_none_or(|(_, s)| e.active_ms > s.updated_ms),
+                }
+        }) {
+            return vim(id);
+        }
+        // Vim inside tmux or ssh isn't a child of the terminal. If a Vim
+        // plugin says it has focus, trust it.
+        let focused_vim = || {
+            self.editors
+                .iter()
+                .filter(|(_, e)| VIMS.contains(&e.kind) && e.focused == Some(true))
+                .max_by_key(|(_, e)| e.focused_ms)
+                .map(|(id, _)| vim(*id))
+        };
         let Some((&pid, shell)) = shell else {
-            return Resolved::UNSUPPORTED;
+            return focused_vim().unwrap_or(Resolved::UNSUPPORTED);
         };
         let kind = match &shell.state {
             ShellState::Fg(cmd) if self.ids.vims.iter().any(|v| v == cmd) => {
                 ContextKind::TerminalVim
             }
             ShellState::Prompt { vi: true } => ContextKind::BashVi,
+            ShellState::Fg(_) => return focused_vim().unwrap_or(Resolved::UNSUPPORTED),
             _ => ContextKind::Unsupported,
         };
         Resolved {
             kind,
             shell_pid: Some(pid),
+            editor: None,
         }
     }
 }
@@ -227,14 +344,20 @@ pub(crate) mod tests {
         }
     }
 
-    /// Terminal server 100 with shells 200 and 300; VS Code 500.
+    /// Terminal server 100 with shells 200 and 300, Vim 210 under shell
+    /// 200; VS Code 500 with its extension host 510; Vim 950 inside a tmux
+    /// server 940 that isn't under the terminal.
     pub(crate) fn tree() -> Box<FakeTree> {
         Box::new(FakeTree(vec![
             (100, 1),
             (200, 100),
+            (210, 200),
             (300, 100),
             (500, 1),
+            (510, 500),
             (900, 1),
+            (940, 1),
+            (950, 940),
         ]))
     }
 
@@ -317,5 +440,54 @@ pub(crate) mod tests {
         let me = std::process::id();
         assert!(Procfs.parent(me).is_some());
         assert!(Procfs.alive(me));
+    }
+
+    #[test]
+    fn vscode_companion_decides_editor_or_panel() {
+        let mut r = resolver();
+        r.set_focus(Some("code_code".into()), Some(500));
+        r.editor_hello(7, EditorKind::Vscode, Some(510), 1);
+        assert_eq!(r.resolve().editor, Some(7));
+        r.editor_focus(7, false, 2);
+        assert_eq!(kind(&r), ContextKind::Unsupported);
+        r.editor_focus(7, true, 3);
+        assert_eq!(kind(&r), ContextKind::VsCodeVim);
+        r.editor_gone(7);
+        assert_eq!(r.resolve().editor, None);
+        assert_eq!(kind(&r), ContextKind::VsCodeVim);
+    }
+
+    #[test]
+    fn vim_plugin_in_the_terminal_wins_over_the_shell() {
+        let mut r = resolver();
+        r.set_focus(Some("org.gnome.Terminal".into()), Some(100));
+        // Started by `git commit`: the shell only knows `git` is running.
+        r.shell_report(200, ShellState::Fg("git".into()), 1);
+        assert_eq!(kind(&r), ContextKind::Unsupported);
+        r.editor_hello(8, EditorKind::Vim, Some(210), 2);
+        assert_eq!(kind(&r), ContextKind::TerminalVim);
+        assert_eq!(r.resolve().editor, Some(8));
+        // Another window's shell drew a prompt more recently.
+        r.shell_report(300, ShellState::Prompt { vi: true }, 3);
+        assert_eq!(kind(&r), ContextKind::BashVi);
+        // Focus events settle it.
+        r.editor_focus(8, true, 4);
+        assert_eq!(kind(&r), ContextKind::TerminalVim);
+        r.editor_focus(8, false, 5);
+        assert_eq!(kind(&r), ContextKind::BashVi);
+    }
+
+    #[test]
+    fn vim_in_tmux_counts_when_it_has_focus() {
+        let mut r = resolver();
+        r.set_focus(Some("org.gnome.Terminal".into()), Some(100));
+        r.shell_report(200, ShellState::Fg("tmux".into()), 1);
+        r.editor_hello(9, EditorKind::Nvim, Some(950), 2);
+        assert_eq!(kind(&r), ContextKind::Unsupported);
+        r.editor_focus(9, true, 3);
+        assert_eq!(kind(&r), ContextKind::TerminalVim);
+        // Not while the terminal isn't focused.
+        r.set_focus(Some("firefox".into()), Some(900));
+        assert_eq!(kind(&r), ContextKind::Unsupported);
     }
 }

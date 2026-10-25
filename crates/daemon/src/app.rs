@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use flowbuddy_core::config::{self, Config, State};
 use flowbuddy_core::context::{ContextKind, VimMode};
+use flowbuddy_core::editor::EditorKind;
 use flowbuddy_core::engine::Engine;
 use flowbuddy_core::ipc::{
     ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, Nudge, NudgeAction, NudgeStyle,
@@ -55,6 +56,10 @@ pub struct App {
 }
 
 const NUDGE_HISTORY: usize = 20;
+
+/// How recent VS Code editor activity must be for keys to count as typed
+/// into the editor.
+const EDITOR_ACTIVITY_MS: u64 = 2000;
 
 /// App ids from the config, falling back to the built-in lists.
 pub fn app_ids(config: &Config) -> AppIds {
@@ -259,6 +264,13 @@ impl App {
         let ctx = self.resolved.kind;
         for ev in events {
             match ev {
+                RuleEvent::Finding(f) if !self.editor_saw(f.at_ms) => {
+                    tracing::debug!(
+                        rule = f.rule_id,
+                        "finding dropped: keys didn't reach the editor"
+                    );
+                }
+                RuleEvent::Adoption { at_ms, .. } if !self.editor_saw(*at_ms) => {}
                 RuleEvent::Finding(f) => {
                     tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
                     self.memory.hit(f, ctx, now_ms);
@@ -272,6 +284,18 @@ impl App {
                 }
                 RuleEvent::Adoption { rule_id, .. } => self.memory.adoption(rule_id, ctx, now_ms),
             }
+        }
+    }
+
+    /// Whether keys up to `at_ms` plausibly went to the editor. The VS Code
+    /// companion reports editor activity as a heartbeat; keys typed into the
+    /// terminal or a chat panel come with none.
+    fn editor_saw(&self, at_ms: u64) -> bool {
+        match self.resolved.editor.and_then(|id| self.resolver.editor(id)) {
+            Some(e) if e.kind == EditorKind::Vscode => {
+                e.focused == Some(true) && e.focused_ms + EDITOR_ACTIVITY_MS >= at_ms
+            }
+            _ => true,
         }
     }
 
@@ -322,6 +346,8 @@ impl App {
     pub fn on_pointer_click(&mut self) {
         self.tracker.invalidate();
         self.engine.reset();
+        // An editor that reports its mode still knows it.
+        self.apply_editor_mode();
     }
 
     #[cfg(test)]
@@ -341,7 +367,8 @@ impl App {
         let known = known_for
             .filter(|(pid, _)| new.shell_pid == Some(*pid))
             .map(|(_, mode)| mode);
-        if new != self.resolved {
+        let changed = new != self.resolved;
+        if changed {
             tracing::debug!(from = ?self.resolved.kind, to = ?new.kind, "context changed");
             self.buffer.clear(ClearReason::ContextChanged);
             let events = self.engine.context_changed(self.resolved.kind, now_ms);
@@ -350,6 +377,20 @@ impl App {
             self.tracker = Tracker::new(flavor(new.kind));
         }
         if let Some(mode) = known {
+            self.tracker.reset_known(mode);
+        }
+        if changed {
+            self.apply_editor_mode();
+        }
+    }
+
+    /// Use the mode the context's editor reported, if any, over our guess.
+    fn apply_editor_mode(&mut self) {
+        let mode = self
+            .resolved
+            .editor
+            .and_then(|id| self.resolver.editor(id)?.mode);
+        if let Some(mode) = mode {
             self.tracker.reset_known(mode);
         }
     }
@@ -365,6 +406,10 @@ impl App {
             }
             ConnEvent::Closed { id } => {
                 self.clients.remove(&id);
+                if self.resolver.editor(id).is_some() {
+                    self.resolver.editor_gone(id);
+                    self.update_context(None, now_ms);
+                }
             }
             ConnEvent::Msg { id, msg } => self.on_msg(id, msg, now_ms),
         }
@@ -387,7 +432,12 @@ impl App {
 
     fn on_msg(&mut self, conn: ConnId, msg: ClientMsg, now_ms: u64) {
         match msg {
-            ClientMsg::Hello { client, .. } => {
+            ClientMsg::Hello {
+                client,
+                editor,
+                pid,
+                ..
+            } => {
                 if let Some(c) = self.clients.get_mut(&conn) {
                     c.kind = Some(client);
                 }
@@ -398,6 +448,10 @@ impl App {
                         mode: self.mode,
                     },
                 );
+                if let (ClientKind::Editor, Some(editor)) = (client, editor) {
+                    self.resolver.editor_hello(conn, editor, pid, now_ms);
+                    self.update_context(None, now_ms);
+                }
             }
             ClientMsg::Focus { app_id, pid, .. } => {
                 self.resolver.set_focus(app_id, pid);
@@ -427,9 +481,21 @@ impl App {
                 self.on_nudge_response(&nudge_id, action, now_ms);
             }
             ClientMsg::PointerClick => self.on_pointer_click(),
-            // Handled once the daemon uses editor reports (#61).
-            ClientMsg::EditorFocus { .. } | ClientMsg::EditorMode { .. } | ClientMsg::Motion(_) => {
+            ClientMsg::EditorFocus { focused } => {
+                self.resolver.editor_focus(conn, focused, now_ms);
+                self.update_context(None, now_ms);
             }
+            ClientMsg::EditorMode { mode } => {
+                self.resolver.editor_mode(conn, mode.vim_mode(), now_ms);
+                if self.resolved.editor == Some(conn) {
+                    self.apply_editor_mode();
+                } else {
+                    // A Vim plugin that just started may make itself the context.
+                    self.update_context(None, now_ms);
+                }
+            }
+            // Motion rules use these (#63).
+            ClientMsg::Motion(_) => {}
             ClientMsg::Command { id, command } => {
                 let reply = self.on_command(id, command, now_ms);
                 self.reply(conn, reply);
@@ -545,6 +611,11 @@ impl App {
             paused_until: self.paused_until.filter(|&t| t > now_s),
             context: self.resolved.kind.as_str().into(),
             app: self.resolver.focused_app().map(Into::into),
+            mode_from_editor: self
+                .resolved
+                .editor
+                .and_then(|id| self.resolver.editor(id)?.mode)
+                .is_some(),
             confident: self.tracker.confident(),
             keyboards: self.keyboards,
             clients,
@@ -556,6 +627,7 @@ impl App {
 pub(crate) mod tests {
     use super::*;
     use crate::resolver::AppIds;
+    use flowbuddy_core::editor::EditorMode;
     use flowbuddy_core::learning::Stage;
     use flowbuddy_core::vim::notation::strokes;
     use tokio::sync::mpsc::UnboundedReceiver;
@@ -1097,5 +1169,94 @@ pub(crate) mod tests {
             app.memory.stage("vim.repeat-jk", ContextKind::VsCodeVim),
             Stage::Improving
         );
+    }
+
+    fn editor(
+        app: &mut App,
+        id: ConnId,
+        kind: EditorKind,
+        pid: u32,
+    ) -> UnboundedReceiver<ServerMsg> {
+        let rx = connect(app, id);
+        send(
+            app,
+            id,
+            ClientMsg::Hello {
+                client: ClientKind::Editor,
+                client_version: "test".into(),
+                editor: Some(kind),
+                pid: Some(pid),
+            },
+            0,
+        );
+        rx
+    }
+
+    #[test]
+    fn vscode_keys_without_editor_activity_are_not_coached() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
+        focus(&mut app, "code_code", 500);
+        // Typing in the terminal panel or a chat: no editor heartbeat.
+        keys(&mut app, "<Esc>jjjjjjjw");
+        assert!(nudges(&mut ext).is_empty());
+        // Back in the editor.
+        send(&mut app, 2, ClientMsg::EditorFocus { focused: true }, 0);
+        keys(&mut app, "<Esc>jjjjjjjw");
+        assert_eq!(nudges(&mut ext).len(), 1);
+    }
+
+    #[test]
+    fn vscode_panel_focus_stops_capture() {
+        let mut app = test_app(CoachingMode::Active);
+        let _rx = connect(&mut app, 1);
+        let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
+        focus(&mut app, "code_code", 500);
+        send(&mut app, 2, ClientMsg::EditorFocus { focused: false }, 0);
+        assert_eq!(app.context().kind, ContextKind::Unsupported);
+        assert!(keys(&mut app, "jjjjjjj").is_empty());
+    }
+
+    #[test]
+    fn editor_mode_replaces_the_guess() {
+        let mut app = test_app(CoachingMode::Active);
+        let _rx = connect(&mut app, 1);
+        let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
+        focus(&mut app, "code_code", 500);
+        send(&mut app, 2, ClientMsg::EditorFocus { focused: true }, 0);
+        assert!(!app.mode_known().1);
+        send(
+            &mut app,
+            2,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Insert,
+            },
+            0,
+        );
+        assert_eq!(app.mode_known(), (VimMode::Insert, true));
+        // A click no longer loses the mode: the editor still knows it.
+        app.on_pointer_click();
+        assert_eq!(app.mode_known(), (VimMode::Insert, true));
+    }
+
+    #[test]
+    fn vim_plugin_mode_applies_when_its_terminal_is_focused() {
+        let mut app = test_app(CoachingMode::Active);
+        let _rx = connect(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Visual,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        assert_eq!(app.context().kind, ContextKind::TerminalVim);
+        assert_eq!(app.mode_known(), (VimMode::Visual, true));
+        app.on_conn(ConnEvent::Closed { id: 3 }, 0);
+        assert_eq!(app.context().kind, ContextKind::Unsupported);
     }
 }

@@ -209,6 +209,9 @@ pub struct Status {
     #[serde(default)]
     pub app: Option<String>,
     pub confident: bool,
+    /// Whether the mode comes from an editor plugin rather than a guess.
+    #[serde(default)]
+    pub mode_from_editor: bool,
     pub keyboards: usize,
     pub clients: Vec<ClientKind>,
 }

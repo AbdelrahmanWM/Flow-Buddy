@@ -344,6 +344,16 @@ mod tests {
     }
 
     #[test]
+    fn vim_plugin_motion_parses() {
+        // Captured from vim-plugin/ sending to a test socket.
+        let line = r#"{"start_ms":1792942695843,"moves":1,"lines":6,"facts":{"line_start":true,"line_end":false,"file_start":false,"file_end":false,"jump_back":false,"first_nonblank":false,"window_lines":23,"paragraph_hops":2},"v":0,"mode":"normal","type":"motion","end_ms":1792942695843,"cols":0}"#;
+        match decode_client(line).unwrap() {
+            ClientMsg::Motion(m) => assert_eq!(m.facts.paragraph_hops, Some(2)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn motion_with_a_text_field_is_rejected() {
         let line = r#"{"v":0,"type":"motion","start_ms":1,"end_ms":2,"moves":1,"mode":"normal","lines":1,"cols":0,"text":"secret"}"#;
         assert_eq!(decode_client(line).unwrap_err().code, ErrorCode::BadRequest);

@@ -1,0 +1,35 @@
+# Flow Buddy for Vim and Neovim
+
+Tells the local `flowbuddyd` what Vim knows and keystrokes don't: the real mode, whether this Vim has focus, and where each movement ended. With it, Flow Buddy can coach `}` instead of `jjjjjj` only when `}` would really have got you there, and it works for Vim inside tmux or started by `git commit`.
+
+## Install
+
+`scripts/install.sh` installs it as a package for both editors:
+
+- Vim 9 (`+channel`): `~/.vim/pack/flowbuddy/start/flowbuddy`
+- Neovim 0.9+: `~/.local/share/nvim/site/pack/flowbuddy/start/flowbuddy`
+
+It does nothing when the daemon isn't running, and retries every few seconds. To turn it off: `let g:flowbuddy_enabled = 0`.
+
+## What it sends
+
+Over the daemon's Unix socket (`$FLOWBUDDY_SOCKET`, or `$XDG_RUNTIME_DIR/flowbuddy.sock`), as described in [docs/architecture.md](../docs/architecture.md#editor-clients):
+
+- `hello` with the editor's name and process id.
+- `editor_mode` on every mode change.
+- `editor_focus` on focus gained/lost (needs a terminal with focus events; in tmux, `set -g focus-events on`) and on suspend/resume.
+- `motion` once the cursor rests (1 s, `g:flowbuddy_rest_ms`) after moving in Normal or Visual mode: the line and column deltas, how many moves, and **facts**: numbers and flags such as "`}` twice lands here" or "`f` plus the target character, then `;` once".
+
+It never sends text, characters, file names, paths or positions. Facts are worked out inside Vim and only the counts leave it.
+
+## How facts are worked out
+
+For motions with no side effects (`}`, `{`, `w`, `b`, `e`, `ge`, `W`, `B`, `%`), the plugin runs them from the start position with `keepjumps normal!`, counts the presses that land exactly on the end, and then restores the view. Autocommands are ignored while it does this, and the jumplist, registers and search pattern are untouched. `f`/`t` and `*`/`#` are counted from the line text and `searchpos()` instead, because running them would change your `;` and `n`. Facts are only worked out in Normal mode, never during a Visual selection or a pending operator.
+
+## Tests
+
+```sh
+vim-plugin/test/run.sh
+```
+
+runs headless and checks each fact against hand-written buffers. Neovim support follows the same code path, with `sockconnect` in place of `ch_open`, but it hasn't been tested yet.

@@ -34,6 +34,8 @@ enum Cmd {
     Resume,
     /// Mark the last nudge as wrong, to help tune the rules.
     ReportFp,
+    /// The one habit worth working on now.
+    Next,
     /// How you did today (or this week) compared with before.
     Summary {
         /// The last 7 days instead of today.
@@ -119,6 +121,7 @@ fn main() {
         Cmd::Rules { action } => rules(action.unwrap_or(RulesCmd::List)),
         Cmd::Mode { mode } => set_mode(mode),
         Cmd::Summary { week } => summary(week),
+        Cmd::Next => next(),
         Cmd::Memory { action } => memory(action.unwrap_or(MemoryCmd::Show)),
         Cmd::Pause { duration } => pause(&duration),
         Cmd::Resume => simple(Command::Resume, "resumed"),
@@ -236,6 +239,20 @@ fn summary(week: bool) -> anyhow::Result<()> {
         report::Period::Today
     };
     print!("{}", report::summary(&store, now_ms(), period)?);
+    Ok(())
+}
+
+fn next() -> anyhow::Result<()> {
+    let Some(store) = open_db()? else {
+        println!("Nothing recorded yet. Is flowbuddyd running? Try `flowbuddy status`.");
+        return Ok(());
+    };
+    let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
+        .unwrap_or_default();
+    let state = flowbuddy_core::config::State::load(&flowbuddy_core::paths::state_file());
+    let mut skip = state.muted();
+    skip.extend(flowbuddy_core::config::rule_settings(&config, &state).disabled);
+    print!("{}", report::next(&store, now_ms(), &skip)?);
     Ok(())
 }
 

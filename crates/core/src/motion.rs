@@ -434,6 +434,10 @@ impl Rule for MotionRule {
         self.category.description()
     }
 
+    fn title(&self) -> &'static str {
+        self.category.title()
+    }
+
     fn contexts(&self) -> &'static [ContextKind] {
         VIM
     }

@@ -99,6 +99,10 @@ impl Rule for RepeatRule {
         self.spec.description
     }
 
+    fn title(&self) -> &'static str {
+        self.spec.title
+    }
+
     fn contexts(&self) -> &'static [ContextKind] {
         self.spec.contexts
     }

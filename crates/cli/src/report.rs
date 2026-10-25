@@ -1,11 +1,11 @@
 //! `flowbuddy summary` and `flowbuddy memory show`: read the database
 //! directly, so they work even when the daemon isn't running.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use flowbuddy_core::engine::Engine;
-use flowbuddy_core::learning::Stage;
+use flowbuddy_core::learning::{self, Stage};
 use flowbuddy_store::{Store, days};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -229,6 +229,58 @@ pub fn memory_show(store: &Store, now_ms: u64) -> anyhow::Result<String> {
     Ok(out)
 }
 
+fn times(n: u64) -> String {
+    match n {
+        1 => "once".into(),
+        n => format!("{n} times"),
+    }
+}
+
+/// `flowbuddy next`: the one habit worth working on now, by
+/// [`learning::priority`], skipping rules in `skip` (disabled or muted).
+pub fn next(store: &Store, now_ms: u64, skip: &BTreeSet<String>) -> anyhow::Result<String> {
+    let week = days::range(now_ms, 7, 0);
+    let engine = Engine::standard();
+    let mut ranked = Vec::new();
+    for p in store.patterns()? {
+        if skip.contains(&p.rule_id) {
+            continue;
+        }
+        let w = store.window(&p.rule_id, &p.context, &week.0, &week.1)?;
+        let score = learning::priority(p.stage, w.hits, p.false_positives);
+        if score > 0.0 {
+            ranked.push((score, p, w));
+        }
+    }
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut out = String::new();
+    let Some((_, top, w)) = ranked.first() else {
+        out.push_str("Nothing to work on: no habits showed up this week.\n");
+        return Ok(out);
+    };
+    let rule = engine.rules().find(|r| r.id() == top.rule_id);
+    writeln!(out, "Work on: {} ({})", describe(&top.rule_id), top.context)?;
+    if let Some(title) = rule.map(|r| r.title()).filter(|t| !t.is_empty()) {
+        writeln!(out, "  {title}.")?;
+    }
+    writeln!(
+        out,
+        "  This week: {}, the better way {}. Stage: {}.",
+        times(w.hits),
+        times(w.adoptions),
+        top.stage.as_str()
+    )?;
+    if let Some((_, second, w2)) = ranked.get(1) {
+        writeln!(
+            out,
+            "  After that: {} ({} this week).",
+            describe(&second.rule_id),
+            times(w2.hits)
+        )?;
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,5 +357,45 @@ mod tests {
         assert_eq!(trend(6.0, 2.0), "↑ 200%");
         assert_eq!(trend(2.0, 2.05), "≈ same");
         assert_eq!(trend(1.0, 0.0), "new");
+    }
+
+    #[test]
+    fn next_picks_the_most_pressing_habit() {
+        let s = sample();
+        let x = Event::Hit {
+            mode: "normal",
+            shape: "x×5",
+        };
+        let day = days::day(at(24, 12));
+        s.record(&day, "vscode-vim", "vim.repeat-x", x, at(24, 12) / 1000)
+            .unwrap();
+        let out = next(&s, at(24, 18), &BTreeSet::new()).unwrap();
+        assert!(out.starts_with("Work on: Pressing j or k"), "{out}");
+        assert!(out.contains("Try a count."), "{out}");
+        assert!(
+            out.contains("This week: 8 times, the better way 5 times."),
+            "{out}"
+        );
+        assert!(
+            out.contains("After that: Deleting character by character"),
+            "{out}"
+        );
+        // A muted rule is skipped.
+        let skip = BTreeSet::from(["vim.repeat-jk".to_string()]);
+        assert!(
+            next(&s, at(24, 18), &skip)
+                .unwrap()
+                .starts_with("Work on: Deleting")
+        );
+    }
+
+    #[test]
+    fn next_with_nothing_recorded() {
+        let s = Store::open_in_memory().unwrap();
+        assert!(
+            next(&s, at(24, 18), &BTreeSet::new())
+                .unwrap()
+                .starts_with("Nothing to work on")
+        );
     }
 }

@@ -246,6 +246,10 @@ impl Rule for WriteThenQuit {
         "Saving with :w and then quitting with :q"
     }
 
+    fn title(&self) -> &'static str {
+        "Save and quit at once"
+    }
+
     fn contexts(&self) -> &'static [ContextKind] {
         VIM
     }

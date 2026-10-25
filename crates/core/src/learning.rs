@@ -194,3 +194,37 @@ mod tests {
         assert_eq!(next(Stage::Mastered, w(1, 0), w(1, 20)), Stage::Mastered);
     }
 }
+
+/// How much a habit deserves attention now: how often it happened lately,
+/// weighted by where it is in learning, and trusted less the more often
+/// its nudges were marked "not helpful". Mastered habits score 0.
+pub fn priority(stage: Stage, recent_hits: u64, false_positives: u64) -> f64 {
+    let weight = match stage {
+        Stage::Regressed => 1.5,
+        Stage::Nudged => 1.2,
+        Stage::New => 1.0,
+        Stage::Improving => 0.6,
+        Stage::Mastered => 0.0,
+    };
+    recent_hits as f64 * weight / (1.0 + false_positives as f64)
+}
+
+#[cfg(test)]
+mod priority_tests {
+    use super::*;
+
+    #[test]
+    fn slipping_back_matters_most() {
+        assert!(priority(Stage::Regressed, 10, 0) > priority(Stage::Nudged, 10, 0));
+        assert!(priority(Stage::Nudged, 10, 0) > priority(Stage::New, 10, 0));
+        assert!(priority(Stage::New, 10, 0) > priority(Stage::Improving, 10, 0));
+        assert_eq!(priority(Stage::Mastered, 100, 0), 0.0);
+    }
+
+    #[test]
+    fn frequency_and_trust() {
+        assert!(priority(Stage::Improving, 30, 0) > priority(Stage::New, 10, 0));
+        assert!(priority(Stage::New, 10, 3) < priority(Stage::New, 10, 0));
+        assert_eq!(priority(Stage::New, 0, 0), 0.0);
+    }
+}

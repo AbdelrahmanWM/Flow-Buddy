@@ -110,6 +110,10 @@ impl Rule for DeleteThenInsert {
         "Deleting and then entering Insert mode where one change command does both"
     }
 
+    fn title(&self) -> &'static str {
+        "Change instead"
+    }
+
     fn contexts(&self) -> &'static [ContextKind] {
         VIM
     }
@@ -210,6 +214,10 @@ impl Rule for Shorthand {
 
     fn description(&self) -> &'static str {
         "Spelling out a command that has a one-key form (d$ for D, $a for A)"
+    }
+
+    fn title(&self) -> &'static str {
+        "One key does it"
     }
 
     fn contexts(&self) -> &'static [ContextKind] {
@@ -322,6 +330,10 @@ impl Rule for VisualOperator {
 
     fn description(&self) -> &'static str {
         "Selecting in Visual mode just to run one operator on a motion or text object"
+    }
+
+    fn title(&self) -> &'static str {
+        "Skip Visual mode"
     }
 
     fn contexts(&self) -> &'static [ContextKind] {
@@ -491,6 +503,10 @@ impl Rule for DotRepeat {
 
     fn description(&self) -> &'static str {
         "Typing the same change again where . repeats it"
+    }
+
+    fn title(&self) -> &'static str {
+        "Repeat it with ."
     }
 
     fn contexts(&self) -> &'static [ContextKind] {
@@ -702,6 +718,10 @@ impl Rule for Macro {
 
     fn description(&self) -> &'static str {
         "Doing the same multi-key edit on line after line where a macro replays it"
+    }
+
+    fn title(&self) -> &'static str {
+        "Record a macro"
     }
 
     fn contexts(&self) -> &'static [ContextKind] {

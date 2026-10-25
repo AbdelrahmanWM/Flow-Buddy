@@ -75,6 +75,10 @@ pub trait Rule: Send {
     /// Stable id such as `vim.repeat-jk`, used in config and storage.
     fn id(&self) -> &'static str;
     fn description(&self) -> &'static str;
+    /// The better way in a few words, e.g. "Try a count".
+    fn title(&self) -> &'static str {
+        ""
+    }
     fn contexts(&self) -> &'static [ContextKind];
 
     fn threshold(&self) -> Option<u32> {

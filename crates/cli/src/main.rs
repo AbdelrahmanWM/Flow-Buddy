@@ -2,6 +2,7 @@ mod client;
 
 use clap::{Parser, Subcommand};
 use flowbuddy_core::ipc::{ClientKind, ClientMsg, Command, CtxEvent, RuleAction, RuleInfo, Status};
+use flowbuddy_core::policy::CoachingMode;
 
 use crate::client::Client;
 
@@ -17,6 +18,17 @@ struct Args {
 enum Cmd {
     /// Show whether the daemon is running and what it sees (no key data).
     Status,
+    /// Show or set how involved Flow Buddy is: off, passive, balanced, active.
+    Mode { mode: Option<CoachingMode> },
+    /// Stop watching for a while: 30m, 1h, 2h30m, until-tomorrow.
+    Pause {
+        #[arg(default_value = "1h")]
+        duration: String,
+    },
+    /// Resume after a pause.
+    Resume,
+    /// Mark the last nudge as wrong, to help tune the rules.
+    ReportFp,
     /// List rules, or enable/disable/mute one.
     Rules {
         #[command(subcommand)]
@@ -71,6 +83,13 @@ fn main() {
     let result = match args.command {
         Cmd::Status => status(),
         Cmd::Rules { action } => rules(action.unwrap_or(RulesCmd::List)),
+        Cmd::Mode { mode } => set_mode(mode),
+        Cmd::Pause { duration } => pause(&duration),
+        Cmd::Resume => simple(Command::Resume, "resumed"),
+        Cmd::ReportFp => simple(
+            Command::ReportFalsePositive,
+            "thanks, the last nudge was marked as not helpful",
+        ),
         Cmd::Ctx {
             event,
             shell_pid,
@@ -129,6 +148,62 @@ fn status() -> anyhow::Result<()> {
         }
     );
     Ok(())
+}
+
+fn simple(command: Command, done: &str) -> anyhow::Result<()> {
+    Client::connect(ClientKind::Cli)?.command(command)?;
+    println!("{done}");
+    Ok(())
+}
+
+fn set_mode(mode: Option<CoachingMode>) -> anyhow::Result<()> {
+    let mut client = Client::connect(ClientKind::Cli)?;
+    match mode {
+        None => {
+            let s: Status = serde_json::from_value(client.query(Command::Status)?)?;
+            println!("{}", s.mode.as_str());
+        }
+        Some(mode) => {
+            client.command(Command::SetMode { mode })?;
+            println!("mode: {}", mode.as_str());
+        }
+    }
+    Ok(())
+}
+
+fn pause(duration: &str) -> anyhow::Result<()> {
+    let seconds = parse_duration(duration, chrono::Local::now()).ok_or_else(|| {
+        anyhow::anyhow!("can't read {duration:?}; try 30m, 1h, 2h30m or until-tomorrow")
+    })?;
+    Client::connect(ClientKind::Cli)?.command(Command::Pause { seconds })?;
+    let until = chrono::Local::now() + chrono::Duration::seconds(seconds as i64);
+    println!("paused until {}", until.format("%a %H:%M"));
+    Ok(())
+}
+
+/// `30m`, `1h`, `2h30m`, `90s`, or `until-tomorrow` (next local midnight).
+fn parse_duration(s: &str, now: chrono::DateTime<chrono::Local>) -> Option<u64> {
+    if s == "until-tomorrow" {
+        let midnight = (now.date_naive() + chrono::Days::new(1)).and_hms_opt(0, 0, 0)?;
+        let midnight = midnight.and_local_timezone(chrono::Local).earliest()?;
+        return u64::try_from((midnight - now).num_seconds()).ok();
+    }
+    let (mut total, mut num) = (0u64, String::new());
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+            continue;
+        }
+        let n: u64 = std::mem::take(&mut num).parse().ok()?;
+        total += n * match c {
+            's' => 1,
+            'm' => 60,
+            'h' => 3600,
+            'd' => 86400,
+            _ => return None,
+        };
+    }
+    (num.is_empty() && total > 0).then_some(total)
 }
 
 fn rules(cmd: RulesCmd) -> anyhow::Result<()> {
@@ -201,4 +276,24 @@ fn format_time(unix: u64) -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| unix.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_duration;
+    use chrono::TimeZone;
+
+    #[test]
+    fn durations() {
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 10, 24, 22, 0, 0)
+            .unwrap();
+        assert_eq!(parse_duration("30m", now), Some(1800));
+        assert_eq!(parse_duration("2h30m", now), Some(9000));
+        assert_eq!(parse_duration("90s", now), Some(90));
+        assert_eq!(parse_duration("until-tomorrow", now), Some(7200));
+        assert_eq!(parse_duration("1x", now), None);
+        assert_eq!(parse_duration("15", now), None);
+        assert_eq!(parse_duration("", now), None);
+    }
 }

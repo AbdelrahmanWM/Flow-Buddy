@@ -1,0 +1,167 @@
+// Cursor movements in Normal and Visual mode, sent as `motion` messages.
+//
+// A movement starts at the first cursor move and ends when the cursor has
+// rested for REST_MS or the mode changes. Its facts are computed by
+// facts.js from the text, and only numbers and flags are sent: never the
+// text, the file or where in it the cursor is.
+
+'use strict';
+
+const vscode = require('vscode');
+const {computeFacts} = require('./facts');
+
+const REST_MS = 1000;
+// Visual Block has a selection per line and no single cursor to follow.
+const MOTION_MODES = ['normal', 'visual', 'visual_line'];
+
+// Where vscodevim's cursor is, from the selection it draws (see
+// ModeHandler.updateView). A null column means it can't be known.
+function cursorOf(editor, mode) {
+    const s = editor.selection;
+    const a = s.active;
+    if (mode === 'visual_line')
+        return {line: a.line, col: null};
+    if (mode === 'visual' && s.anchor.isBefore(a)) {
+        // Forward selections end just past the cursor.
+        if (a.character > 0)
+            return {line: a.line, col: a.character - 1};
+        const empty = editor.document.lineAt(a.line).text.length === 0;
+        return {line: a.line, col: empty ? 0 : null};
+    }
+    return {line: a.line, col: a.character};
+}
+
+function samePos(a, b) {
+    return a.line === b.line && a.col === b.col;
+}
+
+// The document as an array of lines, read lazily: facts.js only looks at
+// the lines it needs.
+function linesOf(document) {
+    return new Proxy([], {
+        get(_target, key) {
+            if (key === 'length')
+                return document.lineCount;
+            const i = typeof key === 'string' ? Number(key) : NaN;
+            return Number.isInteger(i) && i >= 0 && i < document.lineCount
+                ? document.lineAt(i).text : undefined;
+        },
+    });
+}
+
+class MotionTracker {
+    constructor(link, modeTracker) {
+        this._link = link;
+        this._modes = modeTracker;
+        this._pos = null;
+        this._posMode = null;
+        this._editor = null;
+        this._version = null;
+        this._segment = null;
+        this._restId = null;
+    }
+
+    enable(subscriptions) {
+        const w = vscode.window;
+        const sub = d => subscriptions.push(d);
+        sub(w.onDidChangeTextEditorSelection(e => this._onSelection(e)));
+        sub(w.onDidChangeActiveTextEditor(() => this._abort()));
+        sub(vscode.workspace.onDidChangeTextDocument(e => {
+            // An edit, not a movement.
+            if (e.contentChanges.length && e.document === this._editor?.document)
+                this._abort();
+        }));
+        sub({dispose: () => this._abort()});
+    }
+
+    // Called by the mode tracker: a mode change ends the movement.
+    modeChanged() {
+        this._finish();
+        this._pos = null;
+    }
+
+    _onSelection(e) {
+        const editor = e.textEditor;
+        if (editor !== vscode.window.activeTextEditor)
+            return;
+        this._modes.update();
+        const mode = this._modes.mode;
+        if (editor !== this._editor || mode !== this._posMode) {
+            this._finish();
+            this._editor = editor;
+            this._posMode = mode;
+            this._pos = null;
+        }
+        if (!MOTION_MODES.includes(mode)) {
+            this._pos = null;
+            return;
+        }
+        const pos = cursorOf(editor, mode);
+        const version = editor.document.version;
+        // A cursor moved by an edit isn't a motion, and neither are clicks.
+        if (version !== this._version) {
+            this._abort();
+            this._pos = pos;
+            this._version = version;
+            return;
+        }
+        if (e.kind === vscode.TextEditorSelectionChangeKind.Mouse) {
+            this._finish();
+            this._pos = pos;
+            return;
+        }
+        const from = this._pos;
+        this._pos = pos;
+        if (!from || samePos(from, pos))
+            return;
+        const now = Date.now();
+        this._segment ??= {mode, start: from, startMs: now, moves: 0};
+        this._segment.moves++;
+        this._segment.end = pos;
+        this._segment.endMs = now;
+        clearTimeout(this._restId);
+        this._restId = setTimeout(() => this._finish(), REST_MS);
+    }
+
+    _abort() {
+        clearTimeout(this._restId);
+        this._restId = null;
+        this._segment = null;
+        this._pos = null;
+    }
+
+    _finish() {
+        clearTimeout(this._restId);
+        this._restId = null;
+        const seg = this._segment;
+        this._segment = null;
+        const editor = this._editor;
+        if (!seg || !editor || editor.document.isClosed || samePos(seg.start, seg.end))
+            return;
+        const known = seg.start.col !== null && seg.end.col !== null;
+        const ranges = editor.visibleRanges;
+        const window = ranges.length === 1
+            ? {top: ranges[0].start.line, bottom: ranges[0].end.line} : null;
+        let facts = {};
+        try {
+            facts = computeFacts(linesOf(editor.document), seg.start, seg.end, {
+                window,
+                ignorecase: vscode.workspace.getConfiguration('vim').get('ignorecase', true),
+            });
+        } catch (e) {
+            console.warn(`flowbuddy: motion facts failed: ${e}`);
+        }
+        this._link.send({
+            type: 'motion',
+            start_ms: seg.startMs,
+            end_ms: seg.endMs,
+            moves: seg.moves,
+            mode: seg.mode,
+            lines: seg.end.line - seg.start.line,
+            cols: known ? seg.end.col - seg.start.col : 0,
+            facts,
+        });
+    }
+}
+
+module.exports = {MotionTracker};

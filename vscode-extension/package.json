@@ -1,0 +1,17 @@
+{
+  "name": "flowbuddy-vscode",
+  "displayName": "Flow Buddy",
+  "description": "Tells the local Flow Buddy daemon whether the editor has focus, vscodevim's mode and how the cursor moved. Numbers and flags only; nothing leaves your machine.",
+  "version": "0.1.0",
+  "publisher": "flowbuddy",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AbdelrahmanWM/Flow-Buddy"
+  },
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Other"],
+  "extensionKind": ["ui"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js"
+}

@@ -11,6 +11,7 @@
 #   ~/.config/systemd/user/flowbuddyd.service (enabled and started)
 #   ~/.local/share/gnome-shell/extensions/flowbuddy@abdelrahmanwm.github.io/
 #   ~/.local/share/flowbuddy/flowbuddy.bash, sourced from ~/.bashrc
+#   ~/.vscode/extensions/flowbuddy.flowbuddy-vscode-<version>/ (if VS Code is installed)
 #   /etc/udev/rules.d/70-flowbuddy.rules (only with --with-udev)
 
 set -euo pipefail
@@ -21,6 +22,9 @@ bin_dir=$HOME/.local/bin
 unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 ext_dir=${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$uuid
 share_dir=${XDG_DATA_HOME:-$HOME/.local/share}/flowbuddy
+vscode_dir=$HOME/.vscode/extensions
+vscode_version=$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$repo/vscode-extension/package.json")
+vscode_ext=$vscode_dir/flowbuddy.flowbuddy-vscode-$vscode_version
 bashrc=$HOME/.bashrc
 udev_rule=/etc/udev/rules.d/70-flowbuddy.rules
 marker_begin="# >>> flowbuddy >>>"
@@ -32,7 +36,7 @@ for arg in "$@"; do
         --dry-run) dry_run=1 ;;
         --with-udev) with_udev=1 ;;
         --yes | -y) yes=1 ;;
-        -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
+        -h | --help) sed -n '2,17p' "$0"; exit 0 ;;
         *) echo "unknown option: $arg" >&2; exit 2 ;;
     esac
 done
@@ -106,6 +110,54 @@ if ! { command -v gnome-extensions >/dev/null && run gnome-extensions enable "$u
     else
         echo "    enable it after logging back in: gnome-extensions enable $uuid"
     fi
+fi
+
+if command -v code >/dev/null || [[ -d $HOME/.vscode ]]; then
+    say "Installing the VS Code companion"
+    # Same folder for the snap and the .deb. Older versions are replaced.
+    for old in "$vscode_dir"/flowbuddy.flowbuddy-vscode-*; do
+        if [[ -e $old && $old != "$vscode_ext" ]]; then
+            run rm -rf "$old"
+        fi
+    done
+    run mkdir -p "$vscode_ext"
+    for f in "$repo"/vscode-extension/*.js "$repo"/vscode-extension/*.json "$repo"/vscode-extension/README.md; do
+        run install -m644 "$f" "$vscode_ext/${f##*/}"
+    done
+    # VS Code only loads extensions listed in extensions.json (and skips
+    # ones in .obsolete), so register it there. Without the file, VS Code
+    # scans the folder itself on its next start.
+    if ((dry_run)); then
+        printf '    + register flowbuddy.flowbuddy-vscode in %s\n' "$vscode_dir/extensions.json"
+    else
+        python3 - "$vscode_dir" "$vscode_ext" "$vscode_version" <<'PY'
+import json, os, sys, time
+root, location, version = sys.argv[1:]
+ext_id, name = "flowbuddy.flowbuddy-vscode", os.path.basename(location)
+
+def rewrite(path, change):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return
+    with open(path + ".flowbuddy", "w") as f:
+        json.dump(change(data), f)
+    os.replace(path + ".flowbuddy", path)
+
+rewrite(os.path.join(root, "extensions.json"), lambda entries: [
+    e for e in entries if e.get("identifier", {}).get("id") != ext_id
+] + [{
+    "identifier": {"id": ext_id},
+    "version": version,
+    "location": {"$mid": 1, "path": location, "scheme": "file"},
+    "relativeLocation": name,
+    "metadata": {"installedTimestamp": int(time.time() * 1000), "source": "vsix"},
+}])
+rewrite(os.path.join(root, ".obsolete"), lambda d: {k: v for k, v in d.items() if k != name})
+PY
+    fi
+    echo "    restart VS Code to load it (or install a .vsix with 'code --install-extension')"
 fi
 
 say "Installing the systemd user service"

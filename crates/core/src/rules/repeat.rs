@@ -4,8 +4,9 @@
 //! Each is a [`RepeatRule`] configured with plain functions.
 
 use crate::context::{ContextKind, VimMode};
+use crate::key::Key;
 use crate::rule::{Finding, Rule, RuleEvent, Shape};
-use crate::vim::Step;
+use crate::vim::{InsertKey, Step, VimEvent};
 
 /// Presses further apart than this don't form one streak.
 pub const MAX_GAP_MS: u64 = 1500;
@@ -35,11 +36,35 @@ struct Streak {
 pub struct RepeatRule {
     spec: RepeatSpec,
     streak: Option<Streak>,
+    /// The better-way step just seen and when. Repeating it (holding `j`)
+    /// counts as one adoption, not hundreds.
+    adopting: Option<(Same, u64)>,
+}
+
+/// What makes two better-way steps "the same" for counting adoptions.
+#[derive(Clone, PartialEq)]
+enum Same {
+    Command(Vec<Key>),
+    Insert(std::mem::Discriminant<InsertKey>),
+}
+
+impl Same {
+    fn of(step: &Step) -> Option<Same> {
+        match &step.event {
+            Some(VimEvent::Command(c)) => Some(Same::Command(c.keys.clone())),
+            Some(VimEvent::Insert(k)) => Some(Same::Insert(std::mem::discriminant(k))),
+            _ => None,
+        }
+    }
 }
 
 impl RepeatRule {
     pub fn new(spec: RepeatSpec) -> Self {
-        RepeatRule { spec, streak: None }
+        RepeatRule {
+            spec,
+            streak: None,
+            adopting: None,
+        }
     }
 
     fn end(&mut self, out: &mut Vec<RuleEvent>) {
@@ -80,10 +105,19 @@ impl Rule for RepeatRule {
 
     fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
         if (self.spec.adopted)(step) {
-            out.push(RuleEvent::Adoption {
-                rule_id: self.spec.id,
-                at_ms: step.at_ms,
+            let same = Same::of(step);
+            let repeated = self.adopting.as_ref().is_some_and(|(prev, t)| {
+                same.as_ref() == Some(prev) && step.at_ms.saturating_sub(*t) <= MAX_GAP_MS
             });
+            if !repeated {
+                out.push(RuleEvent::Adoption {
+                    rule_id: self.spec.id,
+                    at_ms: step.at_ms,
+                });
+            }
+            self.adopting = same.map(|s| (s, step.at_ms));
+        } else if step.event.is_some() {
+            self.adopting = None;
         }
         let Some(unit) = (self.spec.unit)(step) else {
             if step.event.is_some() {
@@ -120,5 +154,60 @@ impl Rule for RepeatRule {
 
     fn reset(&mut self) {
         self.streak = None;
+        self.adopting = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::context::VimMode;
+    use crate::rules::testing::{adoptions, run};
+    use crate::rules::{bash, vim};
+    use crate::vim::Flavor;
+
+    #[test]
+    fn holding_a_better_key_is_one_adoption() {
+        let held = "j".repeat(20);
+        let ev = run(
+            Box::new(vim::arrows_normal()),
+            Flavor::Vim,
+            VimMode::Normal,
+            &held,
+        );
+        assert_eq!(adoptions(&ev), 1);
+    }
+
+    #[test]
+    fn different_better_steps_each_count() {
+        let ev = run(
+            Box::new(vim::arrows_normal()),
+            Flavor::Vim,
+            VimMode::Normal,
+            "jjjwkkk",
+        );
+        // j-run, k-run; w is not an adoption for arrows but breaks the run.
+        assert_eq!(adoptions(&ev), 2);
+    }
+
+    #[test]
+    fn insert_adoptions_are_counted_per_run() {
+        let ev = run(
+            Box::new(vim::backspace_insert()),
+            Flavor::Vim,
+            VimMode::Normal,
+            "i<C-w><C-w><C-w><Esc>",
+        );
+        assert_eq!(adoptions(&ev), 1);
+    }
+
+    #[test]
+    fn bash_rules_count_runs_too() {
+        let ev = run(
+            Box::new(bash::backspace_clear()),
+            Flavor::Readline,
+            VimMode::Insert,
+            "<C-u><C-u><C-u>",
+        );
+        assert_eq!(adoptions(&ev), 1);
     }
 }

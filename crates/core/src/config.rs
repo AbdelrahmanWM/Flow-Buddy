@@ -10,6 +10,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::RuleSettings;
+use crate::ipc::NudgeStyle;
 use crate::learning::LearningConfig;
 use crate::policy::CoachingMode;
 
@@ -38,8 +39,10 @@ pub struct CoachingConfig {
     pub cooldown_minutes: u32,
     /// Active mode: nudges per hour at most.
     pub hourly_cap: u32,
-    /// How long a hint stays in the top bar.
+    /// How long a hint stays on screen.
     pub nudge_seconds: u32,
+    /// "card" or "bar"; by default a card in active mode, the top bar otherwise.
+    pub nudge_style: Option<NudgeStyle>,
     /// No nudges in this local time range, e.g. "22:00-08:00".
     pub quiet_hours: Option<String>,
     /// Passive mode: local time of the end-of-day summary notification.
@@ -55,6 +58,7 @@ impl Default for CoachingConfig {
             cooldown_minutes: 10,
             hourly_cap: 6,
             nudge_seconds: 6,
+            nudge_style: None,
             quiet_hours: None,
             summary_time: "18:00".into(),
         }

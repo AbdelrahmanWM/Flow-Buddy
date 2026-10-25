@@ -193,9 +193,9 @@ When nothing is focused, `app_id` is `null`. The protocol accepts an optional `t
 
 **`nudge`**: shows a hint. Pushed to the extension.
 ```json
-{"v":0,"type":"nudge","nudge_id":"n-1729740000-3","rule_id":"vim.repeat-jk","title":"Try a count","text":"You pressed j 7 times. Try 7j, } or Ctrl-d.","ttl_ms":6000}
+{"v":0,"type":"nudge","nudge_id":"n-1729740000-3","rule_id":"vim.repeat-jk","title":"Try a count","text":"You pressed j 7 times. Try 7j, } or Ctrl-d.","ttl_ms":6000,"style":"card"}
 ```
-In `balanced` mode, one batch may contain several `nudge` messages.
+In `balanced` mode, one batch may contain several `nudge` messages. `style` is `card` (a card at the top centre of the screen that fades out, the default in `active` mode) or `bar` (a label next to the top-bar icon, the default otherwise); `[coaching] nudge_style` overrides it. It was added after v0 shipped, so it is optional and defaults to `bar`. Either way the icon shows a dot until the menu is opened.
 
 **`mode_changed`**: the coaching mode changed. Broadcast to clients that stay connected, so the indicator stays in sync.
 ```json

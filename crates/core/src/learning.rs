@@ -209,6 +209,34 @@ pub fn priority(stage: Stage, recent_hits: u64, false_positives: u64) -> f64 {
     recent_hits as f64 * weight / (1.0 + false_positives as f64)
 }
 
+const WEEK_S: u64 = 7 * 86_400;
+
+/// Spaced check-ins for a mastered habit: once it has been mastered for a
+/// week, one reminder may be shown if it shows up again; then after two
+/// more weeks, four more, and so on.
+pub fn checkin_due(mastered_since_s: u64, checkins_done: u64, now_s: u64) -> bool {
+    let weeks = (1u64 << (checkins_done.min(20) as u32 + 1)) - 1;
+    now_s >= mastered_since_s.saturating_add(weeks * WEEK_S)
+}
+
+#[cfg(test)]
+mod checkin_tests {
+    use super::*;
+
+    #[test]
+    fn intervals_double() {
+        let w = WEEK_S;
+        assert!(!checkin_due(0, 0, w - 1));
+        assert!(checkin_due(0, 0, w));
+        // After one check-in: 1 + 2 weeks.
+        assert!(!checkin_due(0, 1, 3 * w - 1));
+        assert!(checkin_due(0, 1, 3 * w));
+        // After two: 1 + 2 + 4.
+        assert!(!checkin_due(0, 2, 7 * w - 1));
+        assert!(checkin_due(0, 2, 7 * w));
+    }
+}
+
 #[cfg(test)]
 mod priority_tests {
     use super::*;

@@ -90,6 +90,8 @@ pub struct RuleFacts {
     pub stage: Stage,
     /// The habit picked to work on now; balanced batches favour it.
     pub focus: bool,
+    /// A mastered habit is due a spaced check-in, so it may be nudged once.
+    pub check_in: bool,
 }
 
 struct Queued {
@@ -145,7 +147,7 @@ impl Coach {
         gate: &Gate,
         now_ms: u64,
     ) -> Option<Finding> {
-        if facts.muted || facts.stage == Stage::Mastered {
+        if facts.muted || (facts.stage == Stage::Mastered && !facts.check_in) {
             return None;
         }
         match gate.mode {
@@ -245,6 +247,7 @@ mod tests {
         muted: false,
         stage: Stage::New,
         focus: false,
+        check_in: false,
     };
 
     #[test]
@@ -301,11 +304,13 @@ mod tests {
             muted: true,
             stage: Stage::New,
             focus: false,
+            check_in: false,
         };
         let mastered = RuleFacts {
             muted: false,
             stage: Stage::Mastered,
             focus: false,
+            check_in: false,
         };
         assert!(c.on_finding(&finding("a"), muted, &g, 0).is_none());
         assert!(c.on_finding(&finding("a"), mastered, &g, 0).is_none());
@@ -332,6 +337,7 @@ mod tests {
                 muted: false,
                 stage: Stage::Improving,
                 focus: false,
+                check_in: false,
             };
             c.on_finding(&finding("improving"), improving, &g, MINUTE_MS);
         }
@@ -346,6 +352,22 @@ mod tests {
             c.on_tick(&g, 61 * MINUTE_MS).is_empty(),
             "queue was drained"
         );
+    }
+
+    #[test]
+    fn mastered_habits_only_at_check_ins() {
+        let mut c = Coach::new(cfg());
+        let g = gate(CoachingMode::Active);
+        let mastered = RuleFacts {
+            stage: Stage::Mastered,
+            ..NEW
+        };
+        assert!(c.on_finding(&finding("a"), mastered, &g, 0).is_none());
+        let due = RuleFacts {
+            check_in: true,
+            ..mastered
+        };
+        assert!(c.on_finding(&finding("a"), due, &g, 0).is_some());
     }
 
     #[test]

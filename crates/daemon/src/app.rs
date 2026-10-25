@@ -291,6 +291,7 @@ impl App {
                         muted: muted.contains(f.rule_id),
                         stage: self.memory.stage(f.rule_id, ctx),
                         focus: self.memory.is_focus(f.rule_id),
+                        check_in: self.memory.check_in_due(f.rule_id, ctx),
                     };
                     if let Some(f) = self.coach.on_finding(f, facts, &gate, now_ms) {
                         self.deliver(&f, now_ms);
@@ -1097,6 +1098,49 @@ pub(crate) mod tests {
             .into_iter()
             .flat_map(|k| app.on_key(k, k.at_ms))
             .collect()
+    }
+
+    #[test]
+    fn mastered_habits_get_spaced_check_ins() {
+        const DAY: u64 = 86_400_000;
+        let now = 1_800_000_000_000;
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        {
+            let store = app.memory.store().unwrap();
+            let old = now - 30 * DAY;
+            let hit = flowbuddy_store::Event::Hit {
+                mode: "normal",
+                shape: "x×5",
+            };
+            store
+                .record(
+                    &memory::day(old),
+                    "vscode-vim",
+                    "vim.repeat-x",
+                    hit,
+                    old / 1000,
+                )
+                .unwrap();
+            store
+                .set_stage(
+                    "vim.repeat-x",
+                    "vscode-vim",
+                    Stage::Mastered,
+                    (now - 8 * DAY) / 1000,
+                )
+                .unwrap();
+        }
+        app.memory.maintain(now);
+        assert!(
+            app.memory
+                .check_in_due("vim.repeat-x", ContextKind::VsCodeVim)
+        );
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>xxxxxw", now);
+        assert_eq!(nudges(&mut ext).len(), 1, "one check-in");
+        type_at(&mut app, "<Esc>xxxxxw", now + 20 * 60_000);
+        assert!(nudges(&mut ext).is_empty(), "then quiet until the next one");
     }
 
     /// Acceptance test for #27/#30: a whole typing session, and no typed

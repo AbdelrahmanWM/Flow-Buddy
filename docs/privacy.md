@@ -66,6 +66,11 @@ The comparison, and what was found on a real machine, is in [spikes/evdev.md](sp
 
 Details of the memory and its export format are in [memory.md](memory.md).
 
-## Future AI features
+## AI coaching (`flowbuddy coach`)
 
-When AI-based suggestions arrive, they will receive the **mistake memory export** (aggregates and abstract shapes), never raw input. Any feature that would send data off the machine will be opt-in, off by default, and documented here first.
+Off until you set `[ai] command` in `config.toml` to a program on this machine, such as `["ollama", "run", "llama3.2:3b"]`. Flow Buddy never talks to a network itself: it runs that program, writes the prompt to its stdin and shows what it writes back.
+
+- **What the model sees:** the mistake memory export only. That means habit descriptions, contexts, learning stages, counts, and abstract shapes such as `j×12`. It never sees keys, typed text, file names, window titles or positions.
+- **Check it first:** `flowbuddy coach --prompt` prints exactly what would be sent, without running anything.
+- **Only when you ask:** nothing runs unprompted.
+- **Your choice of program:** the command is yours to pick. If you point it at a tool that sends data to a server, the prompt goes there, so pick one that runs locally.

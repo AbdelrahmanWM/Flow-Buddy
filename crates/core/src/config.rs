@@ -24,6 +24,28 @@ pub struct Config {
     pub rules: BTreeMap<String, RuleConfig>,
     pub memory: MemoryConfig,
     pub learning: LearningConfig,
+    pub ai: AiConfig,
+}
+
+/// `flowbuddy coach`: a local model, off until `command` is set.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AiConfig {
+    /// A program that reads a prompt on stdin and writes an answer to
+    /// stdout, e.g. `["ollama", "run", "llama3.2:3b"]`. Run directly, not
+    /// through a shell.
+    pub command: Option<Vec<String>>,
+    /// Give up after this long.
+    pub timeout_seconds: u32,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        AiConfig {
+            command: None,
+            timeout_seconds: 120,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]

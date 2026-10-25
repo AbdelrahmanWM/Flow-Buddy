@@ -1,4 +1,5 @@
 mod client;
+mod coach;
 mod report;
 
 use clap::{Parser, Subcommand};
@@ -36,6 +37,14 @@ enum Cmd {
     ReportFp,
     /// The one habit worth working on now.
     Next,
+    /// Ask a local model about your habits (set `[ai] command` first).
+    Coach {
+        /// A question, e.g. "how do I move faster in big files?"
+        question: Vec<String>,
+        /// Print exactly what the model would be sent, and stop.
+        #[arg(long)]
+        prompt: bool,
+    },
     /// What Vim keys do, piece by piece: `flowbuddy explain 'ci"'`.
     Explain {
         keys: String,
@@ -133,6 +142,7 @@ fn main() {
         Cmd::Mode { mode } => set_mode(mode),
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),
+        Cmd::Coach { question, prompt } => coach(&question.join(" "), prompt),
         Cmd::Explain { keys, insert } => {
             explain(&keys, insert);
             Ok(())
@@ -254,6 +264,37 @@ fn summary(week: bool) -> anyhow::Result<()> {
         report::Period::Today
     };
     print!("{}", report::summary(&store, now_ms(), period)?);
+    Ok(())
+}
+
+fn coach(question: &str, show_prompt: bool) -> anyhow::Result<()> {
+    let store = match open_db()? {
+        Some(s) => s,
+        None => flowbuddy_store::Store::open_in_memory()?,
+    };
+    let now = now_ms();
+    let week = flowbuddy_store::days::range(now, 7, 0);
+    let describe = |id: &str| Some(report::describe(id));
+    let export = flowbuddy_store::Export::build(&store, &describe, (&week.0, &week.1), now / 1000)?;
+    let prompt = coach::prompt(&export, Some(question).filter(|q| !q.trim().is_empty()));
+    if show_prompt {
+        print!("{prompt}");
+        return Ok(());
+    }
+    let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
+        .map_err(anyhow::Error::msg)?;
+    let Some(command) = config.ai.command.filter(|c| !c.is_empty()) else {
+        print!("{}", coach::SETUP);
+        return Ok(());
+    };
+    coach::run(
+        &command,
+        &prompt,
+        config.ai.timeout_seconds,
+        &mut std::io::stdout(),
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!();
     Ok(())
 }
 

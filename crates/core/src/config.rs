@@ -66,6 +66,9 @@ impl Default for CoachingConfig {
 pub struct KeyboardConfig {
     /// Overrides the xkb options read from GNOME, e.g. `["caps:escape"]`.
     pub xkb_options: Option<Vec<String>>,
+    /// xkb layout used with the `xkb` feature (default "us"). Vim
+    /// commands are typed on a Latin layout even if you also use others.
+    pub xkb_layout: Option<String>,
 }
 
 /// Replace the built-in app id / command lists.

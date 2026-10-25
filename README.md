@@ -37,19 +37,27 @@ Flow Buddy is a local companion that helps you get better at your tools continuo
 
 Details, including the IPC protocol and the context model, are in [docs/architecture.md](docs/architecture.md).
 
-## MVP scope
+## What it coaches
 
-The first rule pack covers Vim in VS Code (vscodevim), Vim in the terminal, and bash vi-mode. Example nudges:
+Vim in VS Code (vscodevim), Vim and Neovim in the terminal, and bash vi-mode.
 
 | You did | Try |
 |---|---|
-| `jjjjjj` | `5j`, `}` or `Ctrl-d` |
+| `jjjjjj` to a blank line | `}` |
+| `llllll` to a character | `f<char>`, `w`, `e` |
+| `kkkk…` to the top of the window | `H` |
 | `xxxx` | `dw` / `de` |
 | Arrow keys in Normal mode | `h` `j` `k` `l` |
+| `x` then `i`, `dw` then `i` | `s`, `cw` |
+| `viwd`, `Vjjd` | `diw`, `3dd` |
+| The same change again | `.` |
+| The same edit on every line | a macro: `qq…q`, `@q` |
 | `:w` then `:q` | `:wq` or `ZZ` |
 | `↑↑↑↑` hunting shell history | `Ctrl-r` |
 
-Later packs: VS Code feature discovery, terminal and shell efficiency, English writing feedback, and typing accuracy.
+`flowbuddy rules` lists all of them. Motion coaching (the first three rows) compares each movement with the cheapest motion that lands in the same place. It needs the editor plugins, which tell Flow Buddy where a movement ended without sending any text: [vim-plugin/](vim-plugin/README.md) and [vscode-extension/](vscode-extension/README.md). Without them, the simpler rules that count repeated keys take over.
+
+Next: AI-based coaching from the mistake memory, all local.
 
 ## Platform
 

@@ -80,7 +80,9 @@ struct Context {
 
 | Focused app (from extension) | Terminal report (from hook) | Context |
 |---|---|---|
+| VS Code, companion says a panel has focus | — | `Unsupported` |
 | VS Code (`code`, `code_code` for the snap) | — | `VsCodeVim` |
+| Terminal emulator, Vim plugin inside it (see below) | — | `TerminalVim` |
 | Terminal emulator | foreground `vim`/`vi`/`nvim` | `TerminalVim` |
 | Terminal emulator | at prompt (`ctx prompt`) | `BashVi` |
 | Terminal emulator | other foreground command, or no report | `Unsupported` |
@@ -90,10 +92,17 @@ The app ids are defaults and can be overridden in the config. The exact values r
 
 **Matching a terminal window to a shell.** The extension reports the focused window's PID, and each hook report carries the shell's `$$` and TTY. The daemon walks the shell's parent processes until it reaches the window PID.
 
+**Editor plugins** take part when they're connected (see [Editor clients](#editor-clients)):
+- The VS Code companion reports editor focus. Its heartbeat also gates findings: keys that came with no editor activity in the last 2 s went to a terminal, chat or other panel, so they aren't coached.
+- A Vim plugin whose process descends from the focused terminal makes the context `TerminalVim`, wherever Vim was started from (for example by `git commit`). If it has reported focus, that decides. Otherwise it wins only if it was active after the last shell report.
+- A Vim plugin that isn't a child of the terminal (inside tmux) counts when it has said it has focus.
+- An editor's reported mode replaces the guess, and stays known after clicks.
+
 **Open question for #5:** GNOME Terminal and Ptyxis run one server process for all their windows, so several shells can match the same window. Until there's a better signal, the daemon uses the shell that reported most recently.
 
 ### Mode inference and confidence
 
+- With an editor plugin connected, the editor's own mode is used. Otherwise:
 - Mode is inferred from keys by a state machine for each context (#14, #15).
 - **Esc** (or `Ctrl-[`) always resyncs to Normal and sets `confident = true`.
 - Anything the daemon can't see sets `confident = false` until the next Esc. Examples: a mouse click, opening the VS Code command palette, a focus change, or an unrecognized key sequence (#16).

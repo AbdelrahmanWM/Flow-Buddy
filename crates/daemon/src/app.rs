@@ -536,6 +536,7 @@ impl App {
             mode: self.mode,
             paused_until: self.paused_until.filter(|&t| t > now_s),
             context: self.resolved.kind.as_str().into(),
+            app: self.resolver.focused_app().map(Into::into),
             confident: self.tracker.confident(),
             keyboards: self.keyboards,
             clients,

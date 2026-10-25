@@ -18,7 +18,11 @@ struct Args {
 #[derive(Subcommand)]
 enum Cmd {
     /// Show whether the daemon is running and what it sees (no key data).
-    Status,
+    Status {
+        /// Refresh every second; switch windows to see the context change.
+        #[arg(long)]
+        watch: bool,
+    },
     /// Show or set how involved Flow Buddy is: off, passive, balanced, active.
     Mode { mode: Option<CoachingMode> },
     /// Stop watching for a while: 30m, 1h, 2h30m, until-tomorrow.
@@ -111,7 +115,7 @@ enum CtxCmd {
 fn main() {
     let args = Args::parse();
     let result = match args.command {
-        Cmd::Status => status(),
+        Cmd::Status { watch } => status(watch),
         Cmd::Rules { action } => rules(action.unwrap_or(RulesCmd::List)),
         Cmd::Mode { mode } => set_mode(mode),
         Cmd::Summary { week } => summary(week),
@@ -134,7 +138,7 @@ fn main() {
     }
 }
 
-fn status() -> anyhow::Result<()> {
+fn status(watch: bool) -> anyhow::Result<()> {
     let mut client = match Client::connect(ClientKind::Cli) {
         Ok(c) => c,
         Err(e) => {
@@ -144,21 +148,34 @@ fn status() -> anyhow::Result<()> {
             std::process::exit(3);
         }
     };
-    let s: Status = serde_json::from_value(client.query(Command::Status)?)?;
+    if !watch {
+        let s: Status = serde_json::from_value(client.query(Command::Status)?)?;
+        print_status(&s);
+        return Ok(());
+    }
+    loop {
+        let s: Status = serde_json::from_value(client.query(Command::Status)?)?;
+        // Clear the screen and redraw in place.
+        print!("\x1b[H\x1b[2J");
+        print_status(&s);
+        println!("\n  watching; switch windows to see the context change, Ctrl-C to stop");
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
+fn print_status(s: &Status) {
     println!("flowbuddyd {}: running", s.daemon_version);
     let paused = s
         .paused_until
         .map(|t| format!(" (paused until {})", format_time(t)))
         .unwrap_or_default();
     println!("  mode:      {}{paused}", s.mode.as_str());
-    println!(
-        "  context:   {}{}",
-        s.context,
-        if s.confident { "" } else { " (mode uncertain)" }
-    );
+    println!("  focused:   {}", s.app.as_deref().unwrap_or("nothing"));
+    println!("  context:   {}", context_line(s));
     println!("  keyboards: {}", s.keyboards);
     if s.keyboards == 0 {
-        println!("             no readable keyboard: see docs/privacy.md#keyboard-access");
+        println!("             no readable keyboard: run scripts/install.sh --with-udev,");
+        println!("             or see docs/privacy.md#keyboard-access");
     }
     let clients: Vec<String> = s
         .clients
@@ -179,7 +196,16 @@ fn status() -> anyhow::Result<()> {
             clients.join(", ")
         }
     );
-    Ok(())
+}
+
+fn context_line(s: &Status) -> String {
+    if s.context == "unsupported" {
+        "unsupported (not watching)".into()
+    } else if s.confident {
+        s.context.clone()
+    } else {
+        format!("{} (mode unknown until you press Esc)", s.context)
+    }
 }
 
 fn now_ms() -> u64 {
@@ -411,5 +437,46 @@ mod tests {
         assert_eq!(parse_duration("1x", now), None);
         assert_eq!(parse_duration("15", now), None);
         assert_eq!(parse_duration("", now), None);
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    fn status(context: &str, confident: bool) -> Status {
+        Status {
+            running: true,
+            daemon_version: "0".into(),
+            mode: CoachingMode::Active,
+            paused_until: None,
+            context: context.into(),
+            app: Some("code_code".into()),
+            confident,
+            keyboards: 1,
+            clients: vec![],
+        }
+    }
+
+    #[test]
+    fn unsupported_does_not_mention_the_mode() {
+        assert_eq!(
+            context_line(&status("unsupported", false)),
+            "unsupported (not watching)"
+        );
+    }
+
+    #[test]
+    fn uncertain_mode_says_how_to_fix_it() {
+        assert_eq!(context_line(&status("vscode-vim", true)), "vscode-vim");
+        assert!(context_line(&status("vscode-vim", false)).contains("press Esc"));
+    }
+
+    #[test]
+    fn status_without_app_still_parses() {
+        let json = r#"{"running":true,"daemon_version":"0","mode":"active","paused_until":null,
+            "context":"unsupported","confident":false,"keyboards":0,"clients":[]}"#;
+        let s: Status = serde_json::from_str(json).unwrap();
+        assert_eq!(s.app, None);
     }
 }

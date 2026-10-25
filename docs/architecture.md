@@ -181,9 +181,9 @@ When nothing is focused, `app_id` is `null`. The protocol accepts an optional `t
 
 **`result`**: a request succeeded and returns data.
 ```json
-{"v":0,"type":"result","id":7,"data":{"running":true,"mode":"balanced","paused_until":null,"context":"VsCodeVim","clients":["gnome-extension"]}}
+{"v":0,"type":"result","id":7,"data":{"running":true,"mode":"balanced","paused_until":null,"context":"vscode-vim","app":"code_code","clients":["gnome-extension"]}}
 ```
-`status` reports the *kind* of context, never keys or titles.
+`status` reports the *kind* of context and the focused app's id, never keys or titles.
 
 **`error`**: something went wrong.
 ```json

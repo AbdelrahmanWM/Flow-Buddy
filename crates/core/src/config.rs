@@ -157,6 +157,9 @@ pub struct RuleState {
     pub enabled: Option<bool>,
     /// Muted rules still count, but never nudge.
     pub muted: bool,
+    /// How far Flow Buddy raised the threshold after "not helpful" reports
+    /// (`flowbuddy rules reset` clears it). Ignored when the config sets one.
+    pub raised: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -168,6 +171,9 @@ pub struct State {
     pub rules: BTreeMap<String, RuleState>,
     /// Local date (YYYY-MM-DD) of the last end-of-day notification.
     pub last_summary_day: Option<String>,
+    /// Local date of the last weekly progress note, or when the first
+    /// week started.
+    pub last_weekly_day: Option<String>,
 }
 
 impl State {
@@ -214,6 +220,8 @@ pub fn rule_settings(config: &Config, state: &State) -> RuleSettings {
         }
         if let Some(n) = configured.and_then(|c| c.threshold) {
             settings.thresholds.insert(id.clone(), n);
+        } else if let Some(r) = state.rules.get(id).map(|r| r.raised).filter(|r| *r > 0) {
+            settings.raised.insert(id.clone(), r);
         }
     }
     settings
@@ -270,9 +278,28 @@ mod tests {
             RuleState {
                 enabled: Some(true),
                 muted: false,
+                raised: 0,
             },
         );
         assert!(rule_settings(&c, &st).disabled.is_empty());
+    }
+
+    #[test]
+    fn raised_thresholds_unless_configured() {
+        let mut st = State::default();
+        st.rules.insert(
+            "vim.repeat-x".into(),
+            RuleState {
+                raised: 2,
+                ..Default::default()
+            },
+        );
+        let s = rule_settings(&Config::default(), &st);
+        assert_eq!(s.raised.get("vim.repeat-x"), Some(&2));
+        let c: Config = toml::from_str("[rules.\"vim.repeat-x\"]\nthreshold = 9").unwrap();
+        let s = rule_settings(&c, &st);
+        assert_eq!(s.thresholds.get("vim.repeat-x"), Some(&9));
+        assert!(s.raised.is_empty());
     }
 
     #[test]
@@ -300,6 +327,7 @@ mod tests {
             RuleState {
                 enabled: None,
                 muted: true,
+                raised: 0,
             },
         );
         st.save(&path).unwrap();

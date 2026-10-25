@@ -8,15 +8,17 @@ use std::path::PathBuf;
 
 use flowbuddy_core::config::{self, Config, State};
 use flowbuddy_core::context::{ContextKind, VimMode};
+use flowbuddy_core::editor::{EditorKind, Motion};
 use flowbuddy_core::engine::Engine;
 use flowbuddy_core::ipc::{
     ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, Nudge, NudgeAction, NudgeStyle,
     RuleAction, RuleInfo, ServerMsg, Status,
 };
 use flowbuddy_core::key::{Key, KeyStroke, Sym};
+use flowbuddy_core::motion::{self, MotionEvent};
 use flowbuddy_core::policy::{Coach, CoachingMode, Gate, PolicyConfig, RuleFacts};
 use flowbuddy_core::rule::{Finding, RuleEvent};
-use flowbuddy_core::vim::{Flavor, Tracker};
+use flowbuddy_core::vim::{Flavor, Tracker, VimEvent};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -52,9 +54,27 @@ pub struct App {
     nudges: VecDeque<(String, &'static str)>,
     nudge_seq: u64,
     memory: Memory,
+    /// Recent commands as (time, keys if it was a motion): just enough to
+    /// count the keys behind a movement an editor reports. No keys are kept.
+    commands: VecDeque<(u64, Option<u32>)>,
 }
 
 const NUDGE_HISTORY: usize = 20;
+
+/// The most a threshold is raised after "not helpful" reports.
+const MAX_RAISE: u32 = 3;
+
+/// Commands remembered for counting the keys behind a movement.
+const COMMAND_HISTORY: usize = 256;
+
+/// Editors notice the first move a little after its key; count keys this
+/// long before a movement's reported start, and this long after its end.
+const MOTION_LEAD_MS: u64 = 1500;
+const MOTION_LAG_MS: u64 = 200;
+
+/// How recent VS Code editor activity must be for keys to count as typed
+/// into the editor.
+const EDITOR_ACTIVITY_MS: u64 = 2000;
 
 /// App ids from the config, falling back to the built-in lists.
 pub fn app_ids(config: &Config) -> AppIds {
@@ -115,6 +135,7 @@ impl App {
             nudges: VecDeque::new(),
             nudge_seq: 0,
             memory: Memory::new(None, &Config::default()),
+            commands: VecDeque::new(),
         }
         .with_memory_config()
     }
@@ -174,6 +195,45 @@ impl App {
         }
     }
 
+    /// Every mode but off: one note a week about progress, at `summary_time`.
+    fn weekly_note(&mut self, now_ms: u64) {
+        use chrono::{TimeZone, Timelike};
+        if self.mode == CoachingMode::Off || !self.capturing(now_ms) {
+            return;
+        }
+        let today = memory::day(now_ms);
+        let Some(last) = self.state.last_weekly_day.clone() else {
+            // The first week starts now.
+            self.state.last_weekly_day = Some(today);
+            self.save_state();
+            return;
+        };
+        let week_ago = flowbuddy_store::days::range(now_ms, 1, 7).0;
+        let Some(target) = config::parse_hm(&self.config.coaching.summary_time) else {
+            return;
+        };
+        let Some(local) = chrono::Local.timestamp_millis_opt(now_ms as i64).single() else {
+            return;
+        };
+        let minute = local.hour() * 60 + local.minute();
+        let quiet = self
+            .config
+            .coaching
+            .quiet_hours
+            .as_deref()
+            .and_then(config::parse_range)
+            .is_some_and(|q| q.contains(minute));
+        if last > week_ago || minute < target || quiet {
+            return;
+        }
+        self.state.last_weekly_day = Some(today);
+        self.save_state();
+        let describe = |id: &str| self.describe(id).to_lowercase();
+        if let Some(text) = self.memory.week_summary(now_ms, &describe) {
+            self.notifier.notify("Flow Buddy: your week", &text, 20_000);
+        }
+    }
+
     fn extension_connected(&self) -> bool {
         self.clients
             .values()
@@ -223,6 +283,37 @@ impl App {
         if action == NudgeAction::MuteRule {
             self.set_rule(rule_id, RuleAction::Mute);
         }
+        if action == NudgeAction::FalsePositive {
+            self.raise_threshold(rule_id, now_ms);
+        }
+    }
+
+    /// Every two "not helpful" reports in two weeks raise a rule's threshold
+    /// by one, up to [`MAX_RAISE`] above its default. Never when the config
+    /// sets a threshold: that's the user's call.
+    fn raise_threshold(&mut self, rule_id: &'static str, now_ms: u64) {
+        if self
+            .config
+            .rules
+            .get(rule_id)
+            .is_some_and(|r| r.threshold.is_some())
+            || self.engine.default_threshold(rule_id).is_none()
+        {
+            return;
+        }
+        let reports = self.memory.recent_false_positives(rule_id, now_ms);
+        let entry = self.state.rules.entry(rule_id.to_string()).or_default();
+        if entry.raised < MAX_RAISE && reports >= 2 * u64::from(entry.raised + 1) {
+            entry.raised += 1;
+            tracing::info!(
+                rule = rule_id,
+                raised = entry.raised,
+                "threshold raised after not-helpful reports"
+            );
+            self.engine
+                .apply(&config::rule_settings(&self.config, &self.state));
+            self.save_state();
+        }
     }
 
     pub fn with_state_path(mut self, path: PathBuf) -> Self {
@@ -259,12 +350,21 @@ impl App {
         let ctx = self.resolved.kind;
         for ev in events {
             match ev {
+                RuleEvent::Finding(f) if !self.editor_saw(f.at_ms) => {
+                    tracing::debug!(
+                        rule = f.rule_id,
+                        "finding dropped: keys didn't reach the editor"
+                    );
+                }
+                RuleEvent::Adoption { at_ms, .. } if !self.editor_saw(*at_ms) => {}
                 RuleEvent::Finding(f) => {
                     tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
                     self.memory.hit(f, ctx, now_ms);
                     let facts = RuleFacts {
                         muted: muted.contains(f.rule_id),
                         stage: self.memory.stage(f.rule_id, ctx),
+                        focus: self.memory.is_focus(f.rule_id),
+                        check_in: self.memory.check_in_due(f.rule_id, ctx),
                     };
                     if let Some(f) = self.coach.on_finding(f, facts, &gate, now_ms) {
                         self.deliver(&f, now_ms);
@@ -272,6 +372,32 @@ impl App {
                 }
                 RuleEvent::Adoption { rule_id, .. } => self.memory.adoption(rule_id, ctx, now_ms),
             }
+        }
+    }
+
+    /// Keys pressed for a movement: the motion commands just before its end,
+    /// back to its start or the last command that wasn't a motion.
+    fn keys_for(&self, m: &Motion) -> u32 {
+        let from = m.start_ms.saturating_sub(MOTION_LEAD_MS);
+        let to = m.end_ms + MOTION_LAG_MS;
+        self.commands
+            .iter()
+            .rev()
+            .skip_while(|(at, _)| *at > to)
+            .take_while(|(at, keys)| *at >= from && keys.is_some())
+            .map(|(_, keys)| keys.unwrap_or(0))
+            .sum()
+    }
+
+    /// Whether keys up to `at_ms` plausibly went to the editor. The VS Code
+    /// companion reports editor activity as a heartbeat; keys typed into the
+    /// terminal or a chat panel come with none.
+    fn editor_saw(&self, at_ms: u64) -> bool {
+        match self.resolved.editor.and_then(|id| self.resolver.editor(id)) {
+            Some(e) if e.kind == EditorKind::Vscode => {
+                e.focused == Some(true) && e.focused_ms + EDITOR_ACTIVITY_MS >= at_ms
+            }
+            _ => true,
         }
     }
 
@@ -291,6 +417,7 @@ impl App {
         }
         self.memory.maintain(now_ms);
         self.end_of_day(now_ms);
+        self.weekly_note(now_ms);
     }
 
     fn capturing(&self, now_ms: u64) -> bool {
@@ -313,6 +440,15 @@ impl App {
         }
         self.memory.active(kind, now_ms);
         let step = self.tracker.feed(stroke);
+        if step.confident
+            && let Some(VimEvent::Command(c)) = &step.event
+        {
+            if self.commands.len() == COMMAND_HISTORY {
+                self.commands.pop_front();
+            }
+            let keys = motion::is_motion(c).then(|| motion::command_keys(c));
+            self.commands.push_back((stroke.at_ms, keys));
+        }
         let events = self.engine.on_step(kind, &step);
         self.on_rule_events(&events, now_ms);
         events
@@ -322,6 +458,8 @@ impl App {
     pub fn on_pointer_click(&mut self) {
         self.tracker.invalidate();
         self.engine.reset();
+        // An editor that reports its mode still knows it.
+        self.apply_editor_mode();
     }
 
     #[cfg(test)]
@@ -341,15 +479,32 @@ impl App {
         let known = known_for
             .filter(|(pid, _)| new.shell_pid == Some(*pid))
             .map(|(_, mode)| mode);
-        if new != self.resolved {
+        let changed = new != self.resolved;
+        if changed {
             tracing::debug!(from = ?self.resolved.kind, to = ?new.kind, "context changed");
             self.buffer.clear(ClearReason::ContextChanged);
             let events = self.engine.context_changed(self.resolved.kind, now_ms);
             self.on_rule_events(&events, now_ms);
             self.resolved = new;
             self.tracker = Tracker::new(flavor(new.kind));
+            self.commands.clear();
+            self.engine.set_editor_motions(new.editor.is_some());
         }
         if let Some(mode) = known {
+            self.tracker.reset_known(mode);
+        }
+        if changed {
+            self.apply_editor_mode();
+        }
+    }
+
+    /// Use the mode the context's editor reported, if any, over our guess.
+    fn apply_editor_mode(&mut self) {
+        let mode = self
+            .resolved
+            .editor
+            .and_then(|id| self.resolver.editor(id)?.mode);
+        if let Some(mode) = mode {
             self.tracker.reset_known(mode);
         }
     }
@@ -365,6 +520,10 @@ impl App {
             }
             ConnEvent::Closed { id } => {
                 self.clients.remove(&id);
+                if self.resolver.editor(id).is_some() {
+                    self.resolver.editor_gone(id);
+                    self.update_context(None, now_ms);
+                }
             }
             ConnEvent::Msg { id, msg } => self.on_msg(id, msg, now_ms),
         }
@@ -387,7 +546,12 @@ impl App {
 
     fn on_msg(&mut self, conn: ConnId, msg: ClientMsg, now_ms: u64) {
         match msg {
-            ClientMsg::Hello { client, .. } => {
+            ClientMsg::Hello {
+                client,
+                editor,
+                pid,
+                ..
+            } => {
                 if let Some(c) = self.clients.get_mut(&conn) {
                     c.kind = Some(client);
                 }
@@ -398,6 +562,10 @@ impl App {
                         mode: self.mode,
                     },
                 );
+                if let (ClientKind::Editor, Some(editor)) = (client, editor) {
+                    self.resolver.editor_hello(conn, editor, pid, now_ms);
+                    self.update_context(None, now_ms);
+                }
             }
             ClientMsg::Focus { app_id, pid, .. } => {
                 self.resolver.set_focus(app_id, pid);
@@ -427,6 +595,29 @@ impl App {
                 self.on_nudge_response(&nudge_id, action, now_ms);
             }
             ClientMsg::PointerClick => self.on_pointer_click(),
+            ClientMsg::EditorFocus { focused } => {
+                self.resolver.editor_focus(conn, focused, now_ms);
+                self.update_context(None, now_ms);
+            }
+            ClientMsg::EditorMode { mode } => {
+                self.resolver.editor_mode(conn, mode.vim_mode(), now_ms);
+                if self.resolved.editor == Some(conn) {
+                    self.apply_editor_mode();
+                } else {
+                    // A Vim plugin that just started may make itself the context.
+                    self.update_context(None, now_ms);
+                }
+            }
+            ClientMsg::Motion(m) if self.resolved.editor == Some(conn) => {
+                let ev = MotionEvent {
+                    keys_used: self.keys_for(&m),
+                    motion: m,
+                };
+                let events = self.engine.on_motion(self.resolved.kind, &ev);
+                self.on_rule_events(&events, now_ms);
+            }
+            // From an editor that isn't the current context.
+            ClientMsg::Motion(_) => {}
             ClientMsg::Command { id, command } => {
                 let reply = self.on_command(id, command, now_ms);
                 self.reply(conn, reply);
@@ -495,6 +686,7 @@ impl App {
                 enabled: self.engine.is_enabled(r.id()),
                 muted: muted.contains(r.id()),
                 threshold: r.threshold(),
+                raised: self.state.rules.get(r.id()).map_or(0, |s| s.raised),
             })
             .collect()
     }
@@ -518,6 +710,7 @@ impl App {
             RuleAction::Disable => entry.enabled = Some(false),
             RuleAction::Mute => entry.muted = true,
             RuleAction::Unmute => entry.muted = false,
+            RuleAction::Reset => entry.raised = 0,
         }
         self.engine
             .apply(&config::rule_settings(&self.config, &self.state));
@@ -542,6 +735,11 @@ impl App {
             paused_until: self.paused_until.filter(|&t| t > now_s),
             context: self.resolved.kind.as_str().into(),
             app: self.resolver.focused_app().map(Into::into),
+            mode_from_editor: self
+                .resolved
+                .editor
+                .and_then(|id| self.resolver.editor(id)?.mode)
+                .is_some(),
             confident: self.tracker.confident(),
             keyboards: self.keyboards,
             clients,
@@ -553,6 +751,7 @@ impl App {
 pub(crate) mod tests {
     use super::*;
     use crate::resolver::AppIds;
+    use flowbuddy_core::editor::EditorMode;
     use flowbuddy_core::learning::Stage;
     use flowbuddy_core::vim::notation::strokes;
     use tokio::sync::mpsc::UnboundedReceiver;
@@ -588,6 +787,8 @@ pub(crate) mod tests {
         ClientMsg::Hello {
             client: kind,
             client_version: "test".into(),
+            editor: None,
+            pid: None,
         }
     }
 
@@ -975,6 +1176,49 @@ pub(crate) mod tests {
             .collect()
     }
 
+    #[test]
+    fn mastered_habits_get_spaced_check_ins() {
+        const DAY: u64 = 86_400_000;
+        let now = 1_800_000_000_000;
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        {
+            let store = app.memory.store().unwrap();
+            let old = now - 30 * DAY;
+            let hit = flowbuddy_store::Event::Hit {
+                mode: "normal",
+                shape: "x×5",
+            };
+            store
+                .record(
+                    &memory::day(old),
+                    "vscode-vim",
+                    "vim.repeat-x",
+                    hit,
+                    old / 1000,
+                )
+                .unwrap();
+            store
+                .set_stage(
+                    "vim.repeat-x",
+                    "vscode-vim",
+                    Stage::Mastered,
+                    (now - 8 * DAY) / 1000,
+                )
+                .unwrap();
+        }
+        app.memory.maintain(now);
+        assert!(
+            app.memory
+                .check_in_due("vim.repeat-x", ContextKind::VsCodeVim)
+        );
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>xxxxxw", now);
+        assert_eq!(nudges(&mut ext).len(), 1, "one check-in");
+        type_at(&mut app, "<Esc>xxxxxw", now + 20 * 60_000);
+        assert!(nudges(&mut ext).is_empty(), "then quiet until the next one");
+    }
+
     /// Acceptance test for #27/#30: a whole typing session, and no typed
     /// text anywhere in the database.
     #[test]
@@ -1079,6 +1323,118 @@ pub(crate) mod tests {
         assert!(sent[0].1.contains("1 habits spotted"), "{}", sent[0].1);
     }
 
+    fn threshold(app: &App, id: &str) -> Option<u32> {
+        app.engine.rules().find(|r| r.id() == id)?.threshold()
+    }
+
+    #[test]
+    fn not_helpful_reports_raise_the_threshold() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let _ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>xxxxxw", 1_000);
+        let report = |app: &mut App| {
+            send(
+                app,
+                1,
+                ClientMsg::Command {
+                    id: None,
+                    command: Command::ReportFalsePositive,
+                },
+                5_000,
+            )
+        };
+        assert_eq!(threshold(&app, "vim.repeat-x"), Some(4));
+        report(&mut app);
+        assert_eq!(
+            threshold(&app, "vim.repeat-x"),
+            Some(4),
+            "one report isn't enough"
+        );
+        report(&mut app);
+        assert_eq!(threshold(&app, "vim.repeat-x"), Some(5));
+        assert_eq!(app.state.rules["vim.repeat-x"].raised, 1);
+        app.set_rule("vim.repeat-x", RuleAction::Reset);
+        assert_eq!(threshold(&app, "vim.repeat-x"), Some(4));
+    }
+
+    #[test]
+    fn a_configured_threshold_is_never_raised() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        app.config.rules.insert(
+            "vim.repeat-x".into(),
+            config::RuleConfig {
+                enabled: None,
+                threshold: Some(6),
+            },
+        );
+        app.engine
+            .apply(&config::rule_settings(&app.config, &app.state));
+        let _ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>xxxxxxxw", 1_000);
+        for _ in 0..4 {
+            send(
+                &mut app,
+                1,
+                ClientMsg::Command {
+                    id: None,
+                    command: Command::ReportFalsePositive,
+                },
+                5_000,
+            );
+        }
+        assert_eq!(threshold(&app, "vim.repeat-x"), Some(6));
+    }
+
+    #[test]
+    fn weekly_note_once_a_week() {
+        use chrono::TimeZone;
+        let (mut app, recorder) = app_with_store(CoachingMode::Balanced);
+        let at = |d, h| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 10, d, h, 0, 0)
+                .unwrap()
+                .timestamp_millis() as u64
+        };
+        let x = |app: &mut App, t| {
+            let store = app.memory.store().unwrap();
+            let hit = flowbuddy_store::Event::Hit {
+                mode: "normal",
+                shape: "x×5",
+            };
+            store
+                .record(&memory::day(t), "vscode-vim", "vim.repeat-x", hit, t / 1000)
+                .unwrap();
+        };
+        // Last week: x streaks five times. This week: once.
+        for _ in 0..5 {
+            x(&mut app, at(14, 10));
+        }
+        x(&mut app, at(22, 10));
+        app.tick(at(15, 19));
+        assert!(
+            recorder.0.borrow().is_empty(),
+            "the first tick starts the week"
+        );
+        app.tick(at(21, 19));
+        assert!(recorder.0.borrow().is_empty(), "not a week yet");
+        app.tick(at(22, 17));
+        assert!(recorder.0.borrow().is_empty(), "not before summary_time");
+        app.tick(at(22, 19));
+        app.tick(at(22, 20));
+        let sent = recorder.0.borrow();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].0, "Flow Buddy: your week");
+        assert!(
+            sent[0]
+                .1
+                .contains("Less often than last week: deleting character by character"),
+            "{}",
+            sent[0].1
+        );
+    }
+
     #[test]
     fn maintenance_moves_patterns_to_improving() {
         let (mut app, _) = app_with_store(CoachingMode::Active);
@@ -1091,6 +1447,156 @@ pub(crate) mod tests {
         assert_eq!(
             app.memory.stage("vim.repeat-jk", ContextKind::VsCodeVim),
             Stage::Improving
+        );
+    }
+
+    fn editor(
+        app: &mut App,
+        id: ConnId,
+        kind: EditorKind,
+        pid: u32,
+    ) -> UnboundedReceiver<ServerMsg> {
+        let rx = connect(app, id);
+        send(
+            app,
+            id,
+            ClientMsg::Hello {
+                client: ClientKind::Editor,
+                client_version: "test".into(),
+                editor: Some(kind),
+                pid: Some(pid),
+            },
+            0,
+        );
+        rx
+    }
+
+    #[test]
+    fn vscode_keys_without_editor_activity_are_not_coached() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
+        focus(&mut app, "code_code", 500);
+        // Typing in the terminal panel or a chat: no editor heartbeat.
+        keys(&mut app, "<Esc>xxxxx<Esc>");
+        assert!(nudges(&mut ext).is_empty());
+        // Back in the editor.
+        send(&mut app, 2, ClientMsg::EditorFocus { focused: true }, 0);
+        keys(&mut app, "<Esc>xxxxx<Esc>");
+        assert_eq!(nudges(&mut ext).len(), 1);
+    }
+
+    #[test]
+    fn vscode_panel_focus_stops_capture() {
+        let mut app = test_app(CoachingMode::Active);
+        let _rx = connect(&mut app, 1);
+        let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
+        focus(&mut app, "code_code", 500);
+        send(&mut app, 2, ClientMsg::EditorFocus { focused: false }, 0);
+        assert_eq!(app.context().kind, ContextKind::Unsupported);
+        assert!(keys(&mut app, "jjjjjjj").is_empty());
+    }
+
+    #[test]
+    fn editor_mode_replaces_the_guess() {
+        let mut app = test_app(CoachingMode::Active);
+        let _rx = connect(&mut app, 1);
+        let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
+        focus(&mut app, "code_code", 500);
+        send(&mut app, 2, ClientMsg::EditorFocus { focused: true }, 0);
+        assert!(!app.mode_known().1);
+        send(
+            &mut app,
+            2,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Insert,
+            },
+            0,
+        );
+        assert_eq!(app.mode_known(), (VimMode::Insert, true));
+        // A click no longer loses the mode: the editor still knows it.
+        app.on_pointer_click();
+        assert_eq!(app.mode_known(), (VimMode::Insert, true));
+    }
+
+    #[test]
+    fn vim_plugin_mode_applies_when_its_terminal_is_focused() {
+        let mut app = test_app(CoachingMode::Active);
+        let _rx = connect(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Visual,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        assert_eq!(app.context().kind, ContextKind::TerminalVim);
+        assert_eq!(app.mode_known(), (VimMode::Visual, true));
+        app.on_conn(ConnEvent::Closed { id: 3 }, 0);
+        assert_eq!(app.context().kind, ContextKind::Unsupported);
+    }
+
+    #[test]
+    fn editor_motions_replace_the_repeat_rules() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        // Seven j presses, 100 ms apart from t=0: the repeat rule stays quiet.
+        keys(&mut app, "jjjjjjj");
+        assert!(nudges(&mut ext).is_empty());
+        // The plugin reports where they went: a paragraph boundary.
+        let motion = Motion {
+            start_ms: 10,
+            end_ms: 610,
+            moves: 7,
+            mode: EditorMode::Normal,
+            lines: 7,
+            cols: 0,
+            facts: flowbuddy_core::editor::MotionFacts {
+                paragraph_hops: Some(1),
+                ..Default::default()
+            },
+        };
+        send(&mut app, 3, ClientMsg::Motion(motion), 700);
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].rule_id, "motion.paragraph");
+        assert_eq!(n[0].text, "That took 7 keys. } gets there in 1.");
+    }
+
+    #[test]
+    fn motions_from_other_editors_are_ignored() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 950);
+        focus(&mut app, "code_code", 500);
+        keys(&mut app, "<Esc>jjjjjjj");
+        let motion = Motion {
+            start_ms: 10,
+            end_ms: 710,
+            moves: 7,
+            mode: EditorMode::Normal,
+            lines: 7,
+            cols: 0,
+            facts: Default::default(),
+        };
+        send(&mut app, 3, ClientMsg::Motion(motion), 800);
+        assert!(
+            nudges(&mut ext)
+                .iter()
+                .all(|n| !n.rule_id.starts_with("motion."))
         );
     }
 }

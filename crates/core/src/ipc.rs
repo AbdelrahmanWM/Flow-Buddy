@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::editor::{EditorKind, EditorMode, Motion};
 use crate::policy::CoachingMode;
 
 pub const PROTOCOL_VERSION: u32 = 0;
@@ -16,6 +17,8 @@ pub enum ClientKind {
     GnomeExtension,
     Cli,
     BashHook,
+    /// An editor plugin: the VS Code companion or the Vim/Neovim plugin.
+    Editor,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +46,8 @@ pub enum RuleAction {
     Disable,
     Mute,
     Unmute,
+    /// Undo threshold raises made after "not helpful" reports.
+    Reset,
 }
 
 /// Requests from the CLI or the indicator menu.
@@ -72,6 +77,12 @@ pub enum ClientMsg {
     Hello {
         client: ClientKind,
         client_version: String,
+        /// Editor clients: which editor, and its process id so the daemon
+        /// can match it to the focused window or terminal.
+        #[serde(default)]
+        editor: Option<EditorKind>,
+        #[serde(default)]
+        pid: Option<u32>,
     },
     Focus {
         app_id: Option<String>,
@@ -97,6 +108,13 @@ pub enum ClientMsg {
     },
     /// A mouse button was pressed or the touchpad tapped. No position, no target.
     PointerClick,
+    /// Editor clients: whether a text editor has keyboard focus (as opposed
+    /// to a terminal, chat or other panel inside the same window).
+    EditorFocus { focused: bool },
+    /// Editor clients: the editor's real mode.
+    EditorMode { mode: EditorMode },
+    /// Editor clients: a finished movement and facts about where it ended.
+    Motion(Motion),
     Command {
         #[serde(default)]
         id: Option<u64>,
@@ -106,12 +124,15 @@ pub enum ClientMsg {
 }
 
 impl ClientMsg {
-    pub const TYPES: [&'static str; 6] = [
+    pub const TYPES: [&'static str; 9] = [
         "hello",
         "focus",
         "ctx",
         "nudge_response",
         "pointer_click",
+        "editor_focus",
+        "editor_mode",
+        "motion",
         "command",
     ];
 }
@@ -190,6 +211,9 @@ pub struct Status {
     #[serde(default)]
     pub app: Option<String>,
     pub confident: bool,
+    /// Whether the mode comes from an editor plugin rather than a guess.
+    #[serde(default)]
+    pub mode_from_editor: bool,
     pub keyboards: usize,
     pub clients: Vec<ClientKind>,
 }
@@ -202,6 +226,9 @@ pub struct RuleInfo {
     pub enabled: bool,
     pub muted: bool,
     pub threshold: Option<u32>,
+    /// How much of `threshold` was added after "not helpful" reports.
+    #[serde(default)]
+    pub raised: u32,
 }
 
 #[derive(Serialize)]
@@ -277,6 +304,12 @@ pub fn decode_client(line: &str) -> Result<ClientMsg, DecodeError> {
             id,
         ));
     }
+    let mut value = value;
+    // The envelope's version isn't part of any message, and messages that
+    // reject unknown fields would otherwise trip over it.
+    if let Some(map) = value.as_object_mut() {
+        map.remove("v");
+    }
     serde_json::from_value(value)
         .map_err(|e| DecodeError::new(ErrorCode::BadRequest, e.to_string(), id))
 }
@@ -300,6 +333,10 @@ mod tests {
             r#"{"v":0,"type":"ctx","event":"prompt","vi_mode":true,"shell_pid":51002,"tty":"/dev/pts/3"}"#,
             r#"{"v":0,"type":"nudge_response","nudge_id":"n-1729740000-3","action":"dismiss"}"#,
             r#"{"v":0,"type":"pointer_click"}"#,
+            r#"{"v":0,"type":"hello","client":"editor","client_version":"0.1.0","editor":"vim","pid":61234}"#,
+            r#"{"v":0,"type":"editor_focus","focused":false}"#,
+            r#"{"v":0,"type":"editor_mode","mode":"visual_line"}"#,
+            r#"{"v":0,"type":"motion","start_ms":1729740000000,"end_ms":1729740000900,"moves":12,"mode":"normal","lines":12,"cols":0,"facts":{"paragraph_hops":2,"window_lines":40}}"#,
             r#"{"v":0,"type":"command","id":7,"name":"status"}"#,
             r#"{"v":0,"type":"command","id":8,"name":"set_mode","args":{"mode":"active"}}"#,
             r#"{"v":0,"type":"command","id":9,"name":"pause","args":{"seconds":3600}}"#,
@@ -309,6 +346,22 @@ mod tests {
         for line in examples {
             decode_client(line).unwrap_or_else(|e| panic!("{line}: {e:?}"));
         }
+    }
+
+    #[test]
+    fn vim_plugin_motion_parses() {
+        // Captured from vim-plugin/ sending to a test socket.
+        let line = r#"{"start_ms":1792942695843,"moves":1,"lines":6,"facts":{"line_start":true,"line_end":false,"file_start":false,"file_end":false,"jump_back":false,"first_nonblank":false,"window_lines":23,"paragraph_hops":2},"v":0,"mode":"normal","type":"motion","end_ms":1792942695843,"cols":0}"#;
+        match decode_client(line).unwrap() {
+            ClientMsg::Motion(m) => assert_eq!(m.facts.paragraph_hops, Some(2)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn motion_with_a_text_field_is_rejected() {
+        let line = r#"{"v":0,"type":"motion","start_ms":1,"end_ms":2,"moves":1,"mode":"normal","lines":1,"cols":0,"text":"secret"}"#;
+        assert_eq!(decode_client(line).unwrap_err().code, ErrorCode::BadRequest);
     }
 
     #[test]

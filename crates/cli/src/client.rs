@@ -31,6 +31,8 @@ impl Client {
         client.send(&ClientMsg::Hello {
             client: kind,
             client_version: flowbuddy_core::VERSION.into(),
+            editor: None,
+            pid: None,
         })?;
         match client.read()? {
             ServerMsg::Welcome { .. } => Ok(client),

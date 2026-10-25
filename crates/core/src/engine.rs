@@ -1,8 +1,9 @@
 //! Dispatch steps to the rules that apply to the current context.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::context::ContextKind;
+use crate::motion::MotionEvent;
 use crate::rule::{Rule, RuleEvent};
 use crate::vim::Step;
 
@@ -10,19 +11,31 @@ use crate::vim::Step;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RuleSettings {
     pub disabled: HashSet<String>,
+    /// Set in the config; wins over everything.
     pub thresholds: BTreeMap<String, u32>,
+    /// Added to the default threshold after "not helpful" reports.
+    pub raised: BTreeMap<String, u32>,
 }
 
 pub struct Engine {
     rules: Vec<Box<dyn Rule>>,
     disabled: HashSet<String>,
+    editor_motions: bool,
+    /// Each rule's built-in threshold.
+    defaults: HashMap<&'static str, u32>,
 }
 
 impl Engine {
     pub fn new(rules: Vec<Box<dyn Rule>>) -> Self {
+        let defaults = rules
+            .iter()
+            .filter_map(|r| Some((r.id(), r.threshold()?)))
+            .collect();
         Engine {
             rules,
             disabled: HashSet::new(),
+            editor_motions: false,
+            defaults,
         }
     }
 
@@ -46,17 +59,52 @@ impl Engine {
     pub fn apply(&mut self, settings: &RuleSettings) {
         self.disabled = settings.disabled.clone();
         for rule in &mut self.rules {
-            if let Some(&n) = settings.thresholds.get(rule.id()) {
-                rule.set_threshold(n);
-            }
+            let Some(&default) = self.defaults.get(rule.id()) else {
+                continue;
+            };
+            let n = settings
+                .thresholds
+                .get(rule.id())
+                .copied()
+                .unwrap_or_else(|| default + settings.raised.get(rule.id()).copied().unwrap_or(0));
+            rule.set_threshold(n);
+        }
+    }
+
+    pub fn default_threshold(&self, id: &str) -> Option<u32> {
+        self.defaults.get(id).copied()
+    }
+
+    /// Whether an editor plugin reports motions in the current context:
+    /// motion rules run and the key-only rules they replace step aside.
+    pub fn set_editor_motions(&mut self, on: bool) {
+        if on != self.editor_motions {
+            self.editor_motions = on;
+            self.reset();
         }
     }
 
     fn active(&mut self, context: ContextKind) -> impl Iterator<Item = &mut Box<dyn Rule>> {
         let disabled = &self.disabled;
-        self.rules
-            .iter_mut()
-            .filter(move |r| !disabled.contains(r.id()) && r.contexts().contains(&context))
+        let editor = self.editor_motions;
+        self.rules.iter_mut().filter(move |r| {
+            !disabled.contains(r.id())
+                && r.contexts().contains(&context)
+                && if editor {
+                    !r.replaced_by_editor()
+                } else {
+                    !r.needs_editor()
+                }
+        })
+    }
+
+    /// A movement reported by an editor plugin.
+    pub fn on_motion(&mut self, context: ContextKind, ev: &MotionEvent) -> Vec<RuleEvent> {
+        let mut out = Vec::new();
+        for rule in self.active(context) {
+            rule.on_motion(ev, &mut out);
+        }
+        out
     }
 
     /// Feed one step. Unconfident steps reset in-progress streaks instead

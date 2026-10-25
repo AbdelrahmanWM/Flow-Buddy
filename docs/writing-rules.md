@@ -78,6 +78,24 @@ pub fn repeat_x() -> RepeatRule {
 
 For anything else, implement `Rule` directly. `WriteThenQuit` in `vim.rs` is a small example.
 
+## Motion rules: when an editor reports
+
+With the Vim plugin or the VS Code companion running, the editor reports each movement with facts about where it ended (`Motion` and `MotionFacts` in `crates/core/src/editor.rs`). The daemon adds how many keys you pressed for it, and rules get `on_motion(&MotionEvent)` with both.
+
+`crates/core/src/motion.rs` turns the facts into the cheapest exact plan:
+- the best way to the end line (a count, `{`/`}`, `H/M/L`, `gg/G`);
+- plus the best way along it (`w/b/e/W/B`, `f/t` with `;` or a count, `0 ^ $`);
+- or a single motion to the whole position (`%`, `*`/`#`, Ctrl-o).
+
+There is one `MotionRule` per kind of plan (`motion.paragraph`, `motion.find`, …). It nudges when the plan saves at least its threshold in keys (default 3), and counts an adoption when you already took the short way.
+
+To teach it a new motion:
+1. Add the fact to `MotionFacts`, and compute it in both plugins: `vim-plugin/autoload/flowbuddy.vim` and `vscode-extension/facts.js`.
+2. Turn the fact into a `Part` or `Plan` in `motion.rs`, with its key cost.
+3. Add a table test in `motion.rs`.
+
+Rules that only guess from keys and that a motion rule does better, such as `vim.repeat-jk`, are marked `.replaced_by_editor()`. They step aside while an editor reports motions, so one habit gets one nudge.
+
 ## Then
 
 1. Add the constructor to the pack's `all()` so the engine runs it.

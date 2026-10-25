@@ -2,10 +2,12 @@
 
 pub mod config;
 pub mod context;
+pub mod editor;
 pub mod engine;
 pub mod ipc;
 pub mod key;
 pub mod learning;
+pub mod motion;
 pub mod paths;
 pub mod policy;
 pub mod rule;

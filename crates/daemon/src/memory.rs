@@ -1,7 +1,7 @@
 //! The daemon's side of the mistake memory: record what happened, keep
 //! learning stages up to date, prune old episodes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use flowbuddy_core::config::Config;
 use flowbuddy_core::context::ContextKind;
@@ -14,6 +14,9 @@ const HOUR_MS: u64 = 3_600_000;
 
 pub use flowbuddy_store::days::day;
 
+/// A pattern: (rule id, context).
+type PatternKey = (String, String);
+
 pub struct Memory {
     store: Option<Store>,
     stages: HashMap<(String, String), Stage>,
@@ -23,6 +26,10 @@ pub struct Memory {
     last_maintenance_ms: Option<u64>,
     learning: LearningConfig,
     retention_days: u32,
+    /// The habit worth working on now (`flowbuddy next`), updated hourly.
+    focus: Option<String>,
+    /// Mastered patterns due a spaced check-in, updated hourly.
+    check_ins: HashSet<PatternKey>,
 }
 
 impl Memory {
@@ -39,7 +46,31 @@ impl Memory {
             last_maintenance_ms: None,
             learning: config.learning,
             retention_days: config.memory.episode_retention_days,
+            focus: None,
+            check_ins: HashSet::new(),
         }
+    }
+
+    /// "Not helpful" reports for a rule in the last 14 days, all contexts.
+    pub fn recent_false_positives(&self, rule_id: &str, now_ms: u64) -> u64 {
+        let Some(store) = &self.store else { return 0 };
+        let (from, to) = days::range(now_ms, 14, 0);
+        store
+            .daily(&from, &to)
+            .unwrap_or_default()
+            .iter()
+            .filter(|r| r.rule_id == rule_id)
+            .map(|r| r.false_positives)
+            .sum()
+    }
+
+    pub fn check_in_due(&self, rule_id: &str, ctx: ContextKind) -> bool {
+        self.check_ins
+            .contains(&(rule_id.to_string(), ctx.as_str().to_string()))
+    }
+
+    pub fn is_focus(&self, rule_id: &str) -> bool {
+        self.focus.as_deref() == Some(rule_id)
     }
 
     pub fn set_config(&mut self, config: &Config) {
@@ -90,6 +121,7 @@ impl Memory {
         };
         self.record(ctx, rule_id, Event::Nudge, now_ms);
         let key = (rule_id.to_string(), ctx.as_str().to_string());
+        self.check_ins.remove(&key);
         let stage = self.stages.entry(key).or_default();
         if *stage == Stage::New {
             *stage = Stage::Nudged;
@@ -133,8 +165,12 @@ impl Memory {
         }
         self.last_maintenance_ms = Some(now_ms);
         if let Some(store) = &self.store {
-            if let Err(e) = self.update_stages(store, now_ms) {
-                tracing::warn!(error = %e, "could not update learning stages");
+            match self.update_stages(store, now_ms) {
+                Ok((focus, check_ins)) => {
+                    self.focus = focus;
+                    self.check_ins = check_ins;
+                }
+                Err(e) => tracing::warn!(error = %e, "could not update learning stages"),
             }
             let cutoff = (now_ms / 1000).saturating_sub(u64::from(self.retention_days) * 86_400);
             match store.prune_episodes(cutoff) {
@@ -146,9 +182,17 @@ impl Memory {
         self.refresh_stages();
     }
 
-    fn update_stages(&self, store: &Store, now_ms: u64) -> flowbuddy_store::Result<()> {
+    /// Returns the habit to focus on, scored with the new stages, and the
+    /// mastered patterns due a check-in.
+    fn update_stages(
+        &self,
+        store: &Store,
+        now_ms: u64,
+    ) -> flowbuddy_store::Result<(Option<String>, HashSet<PatternKey>)> {
         let week = days::range(now_ms, 7, 0);
         let fortnight = days::range(now_ms, 14, 0);
+        let mut focus: Option<(f64, String)> = None;
+        let mut check_ins = HashSet::new();
         for p in store.patterns()? {
             let w7 = store.window(&p.rule_id, &p.context, &week.0, &week.1)?;
             let w14 = store.window(&p.rule_id, &p.context, &fortnight.0, &fortnight.1)?;
@@ -157,8 +201,23 @@ impl Memory {
                 tracing::info!(rule = %p.rule_id, context = %p.context, from = p.stage.as_str(), to = next.as_str(), "learning stage changed");
                 store.set_stage(&p.rule_id, &p.context, next, now_ms / 1000)?;
             }
+            if next == Stage::Mastered {
+                let since_s = if next == p.stage {
+                    p.stage_since
+                } else {
+                    now_ms / 1000
+                };
+                let done = store.nudges_since(&p.rule_id, &p.context, &day(since_s * 1000))?;
+                if learning::checkin_due(since_s, done, now_ms / 1000) {
+                    check_ins.insert((p.rule_id.clone(), p.context.clone()));
+                }
+            }
+            let score = learning::priority(next, w7.hits, p.false_positives);
+            if score > 0.0 && focus.as_ref().is_none_or(|(best, _)| score > *best) {
+                focus = Some((score, p.rule_id));
+            }
         }
-        Ok(())
+        Ok((focus.map(|(_, id)| id), check_ins))
     }
 
     fn refresh_stages(&mut self) {
@@ -192,5 +251,61 @@ impl Memory {
         Some(format!(
             "{hits} habits spotted, {adoptions} times you used the better way. {top} Run `flowbuddy summary` for details."
         ))
+    }
+
+    /// A few lines about the week for the weekly note: what improved
+    /// against the week before, what was mastered, and what to work on.
+    pub fn week_summary(&self, now_ms: u64, describe: &dyn Fn(&str) -> String) -> Option<String> {
+        let store = self.store.as_ref()?;
+        let this = days::range(now_ms, 7, 0);
+        let before = days::range(now_ms, 7, 7);
+        let totals = |range: &(String, String)| -> HashMap<String, (u64, u64)> {
+            let mut out: HashMap<String, (u64, u64)> = HashMap::new();
+            for r in store.daily(&range.0, &range.1).unwrap_or_default() {
+                let e = out.entry(r.rule_id).or_default();
+                e.0 += r.hits;
+                e.1 += r.adoptions;
+            }
+            out
+        };
+        let (now, then) = (totals(&this), totals(&before));
+        let hits: u64 = now.values().map(|v| v.0).sum();
+        let adoptions: u64 = now.values().map(|v| v.1).sum();
+        if hits + adoptions == 0 {
+            return None;
+        }
+        let mut improved: Vec<String> = then
+            .iter()
+            .filter(|(id, (was, _))| {
+                let is = now.get(*id).map_or(0, |v| v.0);
+                *was >= 3 && is * 10 <= was * 7
+            })
+            .map(|(id, _)| describe(id))
+            .collect();
+        improved.sort();
+        let week_ago_s = (now_ms / 1000).saturating_sub(7 * 86_400);
+        let mut mastered: Vec<String> = store
+            .patterns()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.stage == Stage::Mastered && p.stage_since >= week_ago_s)
+            .map(|p| describe(&p.rule_id))
+            .collect();
+        mastered.sort();
+        mastered.dedup();
+        let mut text = format!("{adoptions} times the better way, {hits} habits spotted.");
+        if !improved.is_empty() {
+            text.push_str(&format!(
+                " Less often than last week: {}.",
+                improved.join("; ")
+            ));
+        }
+        if !mastered.is_empty() {
+            text.push_str(&format!(" Mastered: {}.", mastered.join("; ")));
+        }
+        if let Some(focus) = &self.focus {
+            text.push_str(&format!(" Work on next: {}.", describe(focus)));
+        }
+        Some(text)
     }
 }

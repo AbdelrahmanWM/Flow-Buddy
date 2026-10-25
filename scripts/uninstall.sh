@@ -12,6 +12,7 @@ bin_dir=$HOME/.local/bin
 unit=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/flowbuddyd.service
 ext_dir=${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$uuid
 share_dir=${XDG_DATA_HOME:-$HOME/.local/share}/flowbuddy
+vscode_dir=$HOME/.vscode/extensions
 config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/flowbuddy
 state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/flowbuddy
 bashrc=$HOME/.bashrc
@@ -55,6 +56,33 @@ fi
 run rm -rf "$ext_dir"
 run rm -f "$bin_dir/flowbuddyd" "$bin_dir/flowbuddy"
 run rm -f "$share_dir/flowbuddy.bash"
+
+vscode_exts=("$vscode_dir"/flowbuddy.flowbuddy-vscode-*)
+if [[ -e ${vscode_exts[0]} ]]; then
+    say "Removing the VS Code companion"
+    run rm -rf "${vscode_exts[@]}"
+    if ((dry_run)); then
+        printf '    + unregister flowbuddy.flowbuddy-vscode in %s\n' "$vscode_dir/extensions.json"
+    elif [[ -f $vscode_dir/extensions.json ]]; then
+        python3 - "$vscode_dir/extensions.json" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+with open(path) as f:
+    entries = json.load(f)
+entries = [e for e in entries if e.get("identifier", {}).get("id") != "flowbuddy.flowbuddy-vscode"]
+with open(path + ".flowbuddy", "w") as f:
+    json.dump(entries, f)
+os.replace(path + ".flowbuddy", path)
+PY
+    fi
+fi
+
+for pack in "$HOME/.vim/pack/flowbuddy" "${XDG_DATA_HOME:-$HOME/.local/share}/nvim/site/pack/flowbuddy"; do
+    if [[ -d $pack ]]; then
+        say "Removing the Vim plugin from ${pack%/pack/flowbuddy}"
+        run rm -rf "$pack"
+    fi
+done
 
 say "Removing the ~/.bashrc block"
 if grep -qF "# >>> flowbuddy >>>" "$bashrc" 2>/dev/null; then

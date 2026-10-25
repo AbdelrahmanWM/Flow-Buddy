@@ -80,7 +80,9 @@ struct Context {
 
 | Focused app (from extension) | Terminal report (from hook) | Context |
 |---|---|---|
+| VS Code, companion says a panel has focus | — | `Unsupported` |
 | VS Code (`code`, `code_code` for the snap) | — | `VsCodeVim` |
+| Terminal emulator, Vim plugin inside it (see below) | — | `TerminalVim` |
 | Terminal emulator | foreground `vim`/`vi`/`nvim` | `TerminalVim` |
 | Terminal emulator | at prompt (`ctx prompt`) | `BashVi` |
 | Terminal emulator | other foreground command, or no report | `Unsupported` |
@@ -90,10 +92,17 @@ The app ids are defaults and can be overridden in the config. The exact values r
 
 **Matching a terminal window to a shell.** The extension reports the focused window's PID, and each hook report carries the shell's `$$` and TTY. The daemon walks the shell's parent processes until it reaches the window PID.
 
+**Editor plugins** take part when they're connected (see [Editor clients](#editor-clients)):
+- The VS Code companion reports editor focus. Its heartbeat also gates findings: keys that came with no editor activity in the last 2 s went to a terminal, chat or other panel, so they aren't coached.
+- A Vim plugin whose process descends from the focused terminal makes the context `TerminalVim`, wherever Vim was started from (for example by `git commit`). If it has reported focus, that decides. Otherwise it wins only if it was active after the last shell report.
+- A Vim plugin that isn't a child of the terminal (inside tmux) counts when it has said it has focus.
+- An editor's reported mode replaces the guess, and stays known after clicks.
+
 **Open question for #5:** GNOME Terminal and Ptyxis run one server process for all their windows, so several shells can match the same window. Until there's a better signal, the daemon uses the shell that reported most recently.
 
 ### Mode inference and confidence
 
+- With an editor plugin connected, the editor's own mode is used. Otherwise:
 - Mode is inferred from keys by a state machine for each context (#14, #15).
 - **Esc** (or `Ctrl-[`) always resyncs to Normal and sets `confident = true`.
 - Anything the daemon can't see sets `confident = false` until the next Esc. Examples: a mouse click, opening the VS Code command palette, a focus change, or an unrecognized key sequence (#16).
@@ -108,11 +117,16 @@ The app ids are defaults and can be overridden in the config. The exact values r
 | `balanced` (default) | Yes | Batched: up to 1–2 tips every N minutes (default 30) | On demand |
 | `active` | Yes | Real time, with a cooldown per rule and a cap per hour | On demand |
 
+Rules learn from "not helpful" reports: every two in two weeks raise that rule's threshold by one, at most three above its default. A threshold set in `config.toml` is never changed, and `flowbuddy rules reset <id>` undoes the raises.
+
+Once a week, in every mode but `off`, one notification sums up progress: how often you used the better way, habits that showed up less than the week before, habits mastered, and what to work on next. It is sent at `summary_time`, outside quiet hours and pauses.
+
 These apply in every mode:
 - quiet hours
 - `pause <duration>`
 - muting individual rules
-- no nudges for patterns the mistake memory marks as `mastered`
+- no nudges for patterns the mistake memory marks as `mastered`, except a spaced check-in if the habit shows up again: one is allowed a week after mastering it, the next after two more weeks, then four, and so on
+- in `balanced` mode, the habit picked to work on next (`flowbuddy next`) counts double when choosing a batch's tips
 
 Nudges come back once a pattern `regressed`.
 
@@ -206,6 +220,34 @@ In `balanced` mode, one batch may contain several `nudge` messages. `style` is `
 ```json
 {"v":0,"type":"mode_changed","mode":"active","paused_until":null}
 ```
+
+### Editor clients
+
+Keystrokes alone can't show which pane of an editor has focus, what mode it's really in, or where a movement was heading. Editor plugins report those, as numbers and flags only, never text, file names or paths. They connect like the extension, saying which editor they are and their process id:
+
+```json
+{"v":0,"type":"hello","client":"editor","client_version":"0.1.0","editor":"vim","pid":61234}
+```
+
+`editor` is `vscode`, `vim` or `nvim`. Then:
+
+**`editor_focus`**: whether a text editor has keyboard focus. In VS Code, `false` means the terminal, a chat or another panel; in a terminal Vim, it follows the terminal's focus events.
+```json
+{"v":0,"type":"editor_focus","focused":false}
+```
+
+**`editor_mode`**: the editor's real mode, one of `normal`, `insert`, `replace`, `visual`, `visual_line`, `visual_block`, `cmdline`, `op_pending`, `other`. It replaces the daemon's guess.
+```json
+{"v":0,"type":"editor_mode","mode":"visual_line"}
+```
+
+**`motion`**: one movement in Normal or Visual mode, from the first cursor move until it rests for about a second.
+```json
+{"v":0,"type":"motion","start_ms":1729740000000,"end_ms":1729740000900,"moves":12,"mode":"normal","lines":12,"cols":0,"facts":{"paragraph_hops":2,"window_lines":40}}
+```
+`lines` and `cols` are deltas, never positions; times are Unix epoch milliseconds, so the daemon can count the keys it saw in that window. `facts` describe the end position (see `MotionFacts` in `crates/core/src/editor.rs`), for example "`}` twice lands exactly here" or "`f` plus the target character, then `;` twice". The character itself is never sent. Every editor message rejects unknown fields, so nothing text-like can be added by accident.
+
+These were added after v0 shipped. They are new message types and optional fields only, so the version stays 0.
 
 ## Storage layout
 

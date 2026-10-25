@@ -270,6 +270,16 @@ impl Store {
         rows.collect()
     }
 
+    /// Nudges shown for one pattern from `from_day` on.
+    pub fn nudges_since(&self, rule_id: &str, context: &str, from_day: &str) -> Result<u64> {
+        self.conn.query_row(
+            "SELECT COALESCE(SUM(nudges), 0) FROM daily_stats
+             WHERE rule_id = ?1 AND context = ?2 AND day >= ?3",
+            params![rule_id, context, from_day],
+            |r| r.get(0),
+        )
+    }
+
     /// Hits, adoptions and activity for one pattern over a day range.
     pub fn window(
         &self,

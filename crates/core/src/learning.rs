@@ -194,3 +194,65 @@ mod tests {
         assert_eq!(next(Stage::Mastered, w(1, 0), w(1, 20)), Stage::Mastered);
     }
 }
+
+/// How much a habit deserves attention now: how often it happened lately,
+/// weighted by where it is in learning, and trusted less the more often
+/// its nudges were marked "not helpful". Mastered habits score 0.
+pub fn priority(stage: Stage, recent_hits: u64, false_positives: u64) -> f64 {
+    let weight = match stage {
+        Stage::Regressed => 1.5,
+        Stage::Nudged => 1.2,
+        Stage::New => 1.0,
+        Stage::Improving => 0.6,
+        Stage::Mastered => 0.0,
+    };
+    recent_hits as f64 * weight / (1.0 + false_positives as f64)
+}
+
+const WEEK_S: u64 = 7 * 86_400;
+
+/// Spaced check-ins for a mastered habit: once it has been mastered for a
+/// week, one reminder may be shown if it shows up again; then after two
+/// more weeks, four more, and so on.
+pub fn checkin_due(mastered_since_s: u64, checkins_done: u64, now_s: u64) -> bool {
+    let weeks = (1u64 << (checkins_done.min(20) as u32 + 1)) - 1;
+    now_s >= mastered_since_s.saturating_add(weeks * WEEK_S)
+}
+
+#[cfg(test)]
+mod checkin_tests {
+    use super::*;
+
+    #[test]
+    fn intervals_double() {
+        let w = WEEK_S;
+        assert!(!checkin_due(0, 0, w - 1));
+        assert!(checkin_due(0, 0, w));
+        // After one check-in: 1 + 2 weeks.
+        assert!(!checkin_due(0, 1, 3 * w - 1));
+        assert!(checkin_due(0, 1, 3 * w));
+        // After two: 1 + 2 + 4.
+        assert!(!checkin_due(0, 2, 7 * w - 1));
+        assert!(checkin_due(0, 2, 7 * w));
+    }
+}
+
+#[cfg(test)]
+mod priority_tests {
+    use super::*;
+
+    #[test]
+    fn slipping_back_matters_most() {
+        assert!(priority(Stage::Regressed, 10, 0) > priority(Stage::Nudged, 10, 0));
+        assert!(priority(Stage::Nudged, 10, 0) > priority(Stage::New, 10, 0));
+        assert!(priority(Stage::New, 10, 0) > priority(Stage::Improving, 10, 0));
+        assert_eq!(priority(Stage::Mastered, 100, 0), 0.0);
+    }
+
+    #[test]
+    fn frequency_and_trust() {
+        assert!(priority(Stage::Improving, 30, 0) > priority(Stage::New, 10, 0));
+        assert!(priority(Stage::New, 10, 3) < priority(Stage::New, 10, 0));
+        assert_eq!(priority(Stage::New, 0, 0), 0.0);
+    }
+}

@@ -1,6 +1,7 @@
 //! Rule packs.
 
 pub mod bash;
+pub mod edit;
 pub mod repeat;
 pub mod vim;
 
@@ -10,6 +11,8 @@ use crate::rule::Rule;
 pub fn all() -> Vec<Box<dyn Rule>> {
     let mut rules = vim::all();
     rules.extend(bash::all());
+    rules.extend(edit::all());
+    rules.extend(crate::motion::all());
     rules
 }
 

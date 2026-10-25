@@ -276,6 +276,42 @@ pub fn run(
     }
 }
 
+/// The prompt for the weekly note: the usual facts plus `summary`, the
+/// fixed note, asking for something short enough for a notification.
+pub fn weekly_prompt(export: &Export, summary: &str) -> String {
+    let mut p = prompt(export, None);
+    let ask = "Tell them the one or two habits most worth working on now, and exactly how.\n";
+    if let Some(stripped) = p.strip_suffix(ask) {
+        p = stripped.to_string();
+    }
+    let _ = write!(
+        p,
+        "This week's numbers: {summary}\n\n\
+         Write their weekly progress note: two or three short, warm sentences for a desktop \
+         notification. Mention one real improvement if there is one, and the one habit to work \
+         on next with the exact command. Plain text only: no lists, no headings, no markdown.\n"
+    );
+    p
+}
+
+/// Tidy a model's answer for a notification: plain, short.
+pub fn notification_text(answer: &str) -> Option<String> {
+    let text = answer.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = text
+        .trim_matches(|c: char| c == '"' || c.is_whitespace())
+        .to_string();
+    if text.is_empty() {
+        return None;
+    }
+    const MAX: usize = 400;
+    Some(if text.chars().count() > MAX {
+        let cut: String = text.chars().take(MAX - 1).collect();
+        format!("{}…", cut.trim_end())
+    } else {
+        text
+    })
+}
+
 /// What to tell someone who hasn't set `[ai] command` yet.
 pub const SETUP: &str = "\
 flowbuddy coach asks a model running on this machine about your habits.
@@ -358,6 +394,26 @@ mod tests {
             got.iter()
                 .any(|l| l.starts_with("This week: the better way")),
             "{got:?}"
+        );
+    }
+
+    #[test]
+    fn weekly_prompt_and_answer() {
+        let p = weekly_prompt(&sample(), "7 times the better way, 6 habits spotted.");
+        assert!(
+            p.contains("This week's numbers: 7 times the better way"),
+            "{p}"
+        );
+        assert!(p.ends_with("no lists, no headings, no markdown.\n"), "{p}");
+        assert!(!p.contains("Tell them the one or two habits"), "{p}");
+        assert_eq!(
+            notification_text("  \"Great week!\n  Try `}` next.\"  ").as_deref(),
+            Some("Great week! Try `}` next.")
+        );
+        assert_eq!(notification_text("   "), None);
+        assert_eq!(
+            notification_text(&"x".repeat(500)).unwrap().chars().count(),
+            400
         );
     }
 

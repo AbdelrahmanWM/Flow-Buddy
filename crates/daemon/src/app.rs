@@ -245,9 +245,16 @@ impl App {
         }
         self.state.last_weekly_day = Some(today);
         self.save_state();
+        // The model writes it, outside this sandbox; the fixed note if
+        // that can't start.
+        let ai = &self.config.ai;
+        if ai.weekly && ai.command.is_some() && self.notifier.start_weekly_note() {
+            return;
+        }
         let describe = |id: &str| self.describe(id).to_lowercase();
         if let Some(text) = self.memory.week_summary(now_ms, &describe) {
-            self.notifier.notify("Flow Buddy: your week", &text, 20_000);
+            self.notifier
+                .notify("Flow Buddy: your week", &glossary::plain(&text), 20_000);
         }
     }
 
@@ -1459,6 +1466,25 @@ pub(crate) mod tests {
             );
         }
         assert_eq!(threshold(&app, "vim.repeat-x"), Some(6));
+    }
+
+    #[test]
+    fn weekly_note_by_the_model_when_opted_in() {
+        use chrono::TimeZone;
+        let (mut app, recorder) = app_with_store(CoachingMode::Balanced);
+        app.config.ai.weekly = true;
+        app.config.ai.command = Some(vec!["ollama".into(), "run".into(), "m".into()]);
+        let at = |d| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 10, d, 19, 0, 0)
+                .unwrap()
+                .timestamp_millis() as u64
+        };
+        app.tick(at(15));
+        app.tick(at(22));
+        let sent = recorder.0.borrow();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].0, "weekly service");
     }
 
     #[test]

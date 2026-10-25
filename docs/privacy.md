@@ -72,5 +72,5 @@ Off until you set `[ai] command` in `config.toml` to a program on this machine, 
 
 - **What the model sees:** the mistake memory export only. That means habit descriptions, contexts, learning stages, counts, and abstract shapes such as `j×12`. It never sees keys, typed text, file names, window titles or positions.
 - **Check it first:** `flowbuddy coach --prompt` prints exactly what would be sent, without running anything.
-- **Only when you ask:** nothing runs unprompted.
+- **Only when you ask:** nothing runs unprompted, unless you also set `[ai] weekly = true`. Then, once a week, the daemon starts `flowbuddy-weekly.service`, which asks the model to write the weekly progress note from the same export. If the model fails, you get the usual note. The daemon itself still has no network access; that one-shot service has it so it can reach local model servers such as Ollama on localhost.
 - **Your choice of program:** the command is yours to pick. If you point it at a tool that sends data to a server, the prompt goes there, so pick one that runs locally.

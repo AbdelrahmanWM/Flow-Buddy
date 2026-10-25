@@ -236,11 +236,26 @@ fn times(n: u64) -> String {
     }
 }
 
-/// `flowbuddy next`: the one habit worth working on now, by
-/// [`learning::priority`], skipping rules in `skip` (disabled or muted).
-pub fn next(store: &Store, now_ms: u64, skip: &BTreeSet<String>) -> anyhow::Result<String> {
+/// The habit `flowbuddy next` would pick, by id.
+pub fn focus(
+    store: &Store,
+    now_ms: u64,
+    skip: &BTreeSet<String>,
+) -> anyhow::Result<Option<String>> {
+    Ok(ranked(store, now_ms, skip)?
+        .into_iter()
+        .next()
+        .map(|(_, p, _)| p.rule_id))
+}
+
+type Ranked = Vec<(
+    f64,
+    flowbuddy_store::Pattern,
+    flowbuddy_core::learning::Window,
+)>;
+
+fn ranked(store: &Store, now_ms: u64, skip: &BTreeSet<String>) -> anyhow::Result<Ranked> {
     let week = days::range(now_ms, 7, 0);
-    let engine = Engine::standard();
     let mut ranked = Vec::new();
     for p in store.patterns()? {
         if skip.contains(&p.rule_id) {
@@ -253,6 +268,14 @@ pub fn next(store: &Store, now_ms: u64, skip: &BTreeSet<String>) -> anyhow::Resu
         }
     }
     ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+    Ok(ranked)
+}
+
+/// `flowbuddy next`: the one habit worth working on now, by
+/// [`learning::priority`], skipping rules in `skip` (disabled or muted).
+pub fn next(store: &Store, now_ms: u64, skip: &BTreeSet<String>) -> anyhow::Result<String> {
+    let engine = Engine::standard();
+    let ranked = ranked(store, now_ms, skip)?;
     let mut out = String::new();
     let Some((_, top, w)) = ranked.first() else {
         out.push_str("Nothing to work on: no habits showed up this week.\n");

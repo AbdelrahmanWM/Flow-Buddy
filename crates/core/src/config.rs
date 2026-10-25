@@ -37,6 +37,9 @@ pub struct AiConfig {
     pub command: Option<Vec<String>>,
     /// Give up after this long.
     pub timeout_seconds: u32,
+    /// Let the model write the weekly progress note. Off by default: the
+    /// model then runs once a week without being asked.
+    pub weekly: bool,
 }
 
 impl Default for AiConfig {
@@ -44,6 +47,7 @@ impl Default for AiConfig {
         AiConfig {
             command: None,
             timeout_seconds: 120,
+            weekly: false,
         }
     }
 }

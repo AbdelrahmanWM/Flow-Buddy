@@ -57,7 +57,13 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal, and bash vi-mode.
 
 `flowbuddy rules` lists all of them. Motion coaching (the first three rows) compares each movement with the cheapest motion that lands in the same place. It needs the editor plugins, which tell Flow Buddy where a movement ended without sending any text: [vim-plugin/](vim-plugin/README.md) and [vscode-extension/](vscode-extension/README.md). Without them, the simpler rules that count repeated keys take over.
 
-`flowbuddy coach` asks a model running on your machine for advice based on the mistake memory. It's off until you set it up, and `--prompt` shows exactly what the model sees.
+`flowbuddy coach` asks a model running on your machine for advice based on the mistake memory. It's off until you set it up, and `--prompt` shows exactly what the model sees:
+
+```toml
+[ai]
+command = ["ollama", "run", "llama3.2:3b"]   # any local program: prompt on stdin, answer on stdout
+weekly = false                                # true: the model writes the weekly progress note
+```
 
 ## Platform
 

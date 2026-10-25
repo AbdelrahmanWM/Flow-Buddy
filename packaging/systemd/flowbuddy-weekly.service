@@ -1,0 +1,13 @@
+[Unit]
+Description=Flow Buddy: the weekly progress note, written by your local model
+Documentation=https://github.com/AbdelrahmanWM/Flow-Buddy/blob/main/docs/privacy.md
+
+# Started by flowbuddyd once a week, only with [ai] weekly = true. Unlike
+# flowbuddyd it may use the network stack, because local model servers
+# such as Ollama listen on localhost. It runs `[ai] command` with the
+# mistake memory export as the prompt; see docs/privacy.md.
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/flowbuddy coach --weekly-note
+NoNewPrivileges=true
+TimeoutStartSec=300

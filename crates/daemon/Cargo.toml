@@ -21,6 +21,8 @@ anyhow = "1.0.104"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 futures-util = "0.3.34"
+serde_json.workspace = true
+serde.workspace = true
 xkbcommon = { version = "0.9", default-features = false, optional = true }
 
 [lints]

@@ -163,6 +163,9 @@ pub struct Status {
     pub paused_until: Option<u64>,
     /// Context *kind* only, never keys or titles.
     pub context: String,
+    /// The focused app's id, e.g. `code_code`. Never its title.
+    #[serde(default)]
+    pub app: Option<String>,
     pub confident: bool,
     pub keyboards: usize,
     pub clients: Vec<ClientKind>,

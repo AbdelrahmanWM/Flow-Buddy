@@ -43,6 +43,15 @@ run systemctl --user daemon-reload
 
 say "Removing programs and the extension"
 run gnome-extensions disable "$uuid" 2>/dev/null || true
+if command -v gsettings >/dev/null; then
+    enabled=$(gsettings get org.gnome.shell enabled-extensions)
+    if [[ $enabled == *"'$uuid'"* ]]; then
+        list=${enabled//", '$uuid'"/}
+        list=${list//"'$uuid', "/}
+        list=${list//"'$uuid'"/}
+        run gsettings set org.gnome.shell enabled-extensions "$list"
+    fi
+fi
 run rm -rf "$ext_dir"
 run rm -f "$bin_dir/flowbuddyd" "$bin_dir/flowbuddy"
 run rm -f "$share_dir/flowbuddy.bash"

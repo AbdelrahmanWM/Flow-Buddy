@@ -85,11 +85,27 @@ fi
 
 say "Installing the GNOME Shell extension"
 run mkdir -p "$ext_dir"
-for f in metadata.json extension.js daemon.js focus.js indicator.js; do
-    run install -m644 "$repo/gnome-extension/$f" "$ext_dir/$f"
+for f in "$repo"/gnome-extension/*.js "$repo"/gnome-extension/*.json "$repo"/gnome-extension/*.css; do
+    [[ -e $f ]] || continue
+    run install -m644 "$f" "$ext_dir/${f##*/}"
 done
-if command -v gnome-extensions >/dev/null; then
-    run gnome-extensions enable "$uuid" || echo "    will be enabled after you log out and back in"
+# A shell that hasn't seen the extension yet refuses to enable it, so also
+# add it to the list GNOME reads at login.
+if ! { command -v gnome-extensions >/dev/null && run gnome-extensions enable "$uuid" 2>/dev/null; }; then
+    if command -v gsettings >/dev/null; then
+        enabled=$(gsettings get org.gnome.shell enabled-extensions)
+        if [[ $enabled != *"'$uuid'"* ]]; then
+            if [[ $enabled == *"[]" ]]; then
+                list="['$uuid']"
+            else
+                list="${enabled%]}, '$uuid']"
+            fi
+            run gsettings set org.gnome.shell enabled-extensions "$list"
+        fi
+        echo "    enabled; it starts after you log out and back in"
+    else
+        echo "    enable it after logging back in: gnome-extensions enable $uuid"
+    fi
 fi
 
 say "Installing the systemd user service"

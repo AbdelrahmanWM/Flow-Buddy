@@ -46,7 +46,12 @@ All of this lives in `~/.local/share/flowbuddy/`.
 
 ## Keyboard access
 
-To read keys, the daemon needs access to `/dev/input/event*`. On Linux that usually means being in the `input` group. Be aware that being in that group lets **any** program you run read all keystrokes, not just Flow Buddy. Ticket #4 compares this with a narrower udev rule, and the setup docs will recommend the safer option.
+To read keys, the daemon needs access to `/dev/input/event*`. There are two ways to get it:
+
+- **Recommended:** `scripts/install.sh --with-udev` installs a udev rule that tags keyboards and mice with `uaccess`. systemd-logind then grants access only to the user sitting at the machine, and only while their session is active.
+- **Not recommended:** joining the `input` group. It lets **any** program you run read all keystrokes, at any time, including over ssh.
+
+The comparison, and what was found on a real machine, is in [spikes/evdev.md](spikes/evdev.md).
 
 ## Your control
 

@@ -168,6 +168,9 @@ pub struct State {
     pub rules: BTreeMap<String, RuleState>,
     /// Local date (YYYY-MM-DD) of the last end-of-day notification.
     pub last_summary_day: Option<String>,
+    /// Local date of the last weekly progress note, or when the first
+    /// week started.
+    pub last_weekly_day: Option<String>,
 }
 
 impl State {

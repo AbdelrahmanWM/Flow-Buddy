@@ -192,6 +192,45 @@ impl App {
         }
     }
 
+    /// Every mode but off: one note a week about progress, at `summary_time`.
+    fn weekly_note(&mut self, now_ms: u64) {
+        use chrono::{TimeZone, Timelike};
+        if self.mode == CoachingMode::Off || !self.capturing(now_ms) {
+            return;
+        }
+        let today = memory::day(now_ms);
+        let Some(last) = self.state.last_weekly_day.clone() else {
+            // The first week starts now.
+            self.state.last_weekly_day = Some(today);
+            self.save_state();
+            return;
+        };
+        let week_ago = flowbuddy_store::days::range(now_ms, 1, 7).0;
+        let Some(target) = config::parse_hm(&self.config.coaching.summary_time) else {
+            return;
+        };
+        let Some(local) = chrono::Local.timestamp_millis_opt(now_ms as i64).single() else {
+            return;
+        };
+        let minute = local.hour() * 60 + local.minute();
+        let quiet = self
+            .config
+            .coaching
+            .quiet_hours
+            .as_deref()
+            .and_then(config::parse_range)
+            .is_some_and(|q| q.contains(minute));
+        if last > week_ago || minute < target || quiet {
+            return;
+        }
+        self.state.last_weekly_day = Some(today);
+        self.save_state();
+        let describe = |id: &str| self.describe(id).to_lowercase();
+        if let Some(text) = self.memory.week_summary(now_ms, &describe) {
+            self.notifier.notify("Flow Buddy: your week", &text, 20_000);
+        }
+    }
+
     fn extension_connected(&self) -> bool {
         self.clients
             .values()
@@ -344,6 +383,7 @@ impl App {
         }
         self.memory.maintain(now_ms);
         self.end_of_day(now_ms);
+        self.weekly_note(now_ms);
     }
 
     fn capturing(&self, now_ms: u64) -> bool {
@@ -1245,6 +1285,54 @@ pub(crate) mod tests {
         let sent = recorder.0.borrow();
         assert_eq!(sent.len(), 1, "exactly once");
         assert!(sent[0].1.contains("1 habits spotted"), "{}", sent[0].1);
+    }
+
+    #[test]
+    fn weekly_note_once_a_week() {
+        use chrono::TimeZone;
+        let (mut app, recorder) = app_with_store(CoachingMode::Balanced);
+        let at = |d, h| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 10, d, h, 0, 0)
+                .unwrap()
+                .timestamp_millis() as u64
+        };
+        let x = |app: &mut App, t| {
+            let store = app.memory.store().unwrap();
+            let hit = flowbuddy_store::Event::Hit {
+                mode: "normal",
+                shape: "x×5",
+            };
+            store
+                .record(&memory::day(t), "vscode-vim", "vim.repeat-x", hit, t / 1000)
+                .unwrap();
+        };
+        // Last week: x streaks five times. This week: once.
+        for _ in 0..5 {
+            x(&mut app, at(14, 10));
+        }
+        x(&mut app, at(22, 10));
+        app.tick(at(15, 19));
+        assert!(
+            recorder.0.borrow().is_empty(),
+            "the first tick starts the week"
+        );
+        app.tick(at(21, 19));
+        assert!(recorder.0.borrow().is_empty(), "not a week yet");
+        app.tick(at(22, 17));
+        assert!(recorder.0.borrow().is_empty(), "not before summary_time");
+        app.tick(at(22, 19));
+        app.tick(at(22, 20));
+        let sent = recorder.0.borrow();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].0, "Flow Buddy: your week");
+        assert!(
+            sent[0]
+                .1
+                .contains("Less often than last week: deleting character by character"),
+            "{}",
+            sent[0].1
+        );
     }
 
     #[test]

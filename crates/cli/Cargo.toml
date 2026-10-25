@@ -13,7 +13,11 @@ path = "src/main.rs"
 
 [dependencies]
 flowbuddy-core.workspace = true
+flowbuddy-store.workspace = true
 clap.workspace = true
+anyhow = "1.0.104"
+serde_json.workspace = true
+chrono = "0.4.45"
 
 [lints]
 workspace = true

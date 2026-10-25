@@ -14,7 +14,7 @@ Flow Buddy reads your keyboard. That is a lot of trust to ask for, so this docum
 | Data | Source | Kept where | How long |
 |---|---|---|---|
 | Key events | Linux evdev (`/dev/input`) | In-memory ring buffer (last ~64 keys) | Until the context changes, you pause, or the daemon stops |
-| Focused app id, window title, PID | GNOME Shell extension | Memory only | Replaced on every focus change |
+| Focused app id and window PID (titles are not sent) | GNOME Shell extension | Memory only | Replaced on every focus change |
 | Terminal foreground command **name** (e.g. `vim`, never its arguments) | Bash hook | Memory only | Replaced on every command |
 
 The key buffer is only filled while a supported context is focused (VS Code with Vim, Vim in a terminal, bash vi-mode). In any other app, keys are dropped as soon as they are read.
@@ -40,9 +40,9 @@ All of this lives in `~/.local/share/flowbuddy/`.
 | Key buffer stays in memory | Buffer types have no serialization and no printable debug output in release builds | #8 |
 | Buffer cleared on context change, pause and shutdown | Unit tests | #8 |
 | Devices are only read, never grabbed | The daemon never calls `EVIOCGRAB`, so it can never block your input | #6 |
-| Stored data contains no typed text | Tests feed a typing session through the pipeline and check that none of its text appears in the database | #27, #30 |
+| Stored data contains no typed text | `database_never_contains_typed_text` types a session with a password, a file name, a search and shell commands, then checks every text value in the database | #27, #30 |
 | Socket is private | `$XDG_RUNTIME_DIR/flowbuddy.sock`, permissions `0600`, checked in tests | #10 |
-| No network | No networking dependencies; to be checked in CI | — |
+| No network | No networking dependencies; the systemd unit allows only Unix sockets (`RestrictAddressFamilies=AF_UNIX`) | #9 |
 
 ## Keyboard access
 
@@ -51,11 +51,12 @@ To read keys, the daemon needs access to `/dev/input/event*`. On Linux that usua
 ## Your control
 
 - `flowbuddy mode off` or `flowbuddy pause 1h`: stop capturing.
-- `flowbuddy memory show` / `export --json`: see everything that is stored.
-- `flowbuddy memory forget <rule>` / `flowbuddy forget --all`: delete it.
+- `flowbuddy memory show` / `flowbuddy memory export`: see everything that is stored.
+- `flowbuddy memory forget <rule>` / `flowbuddy memory forget --all`: delete it.
+- `flowbuddy rules mute <rule>` or `disable <rule>`: stop a rule from nudging, or from running at all.
 - Uninstalling offers to remove all data.
 
-These commands don't exist yet; they are planned in M4–M6.
+Details of the memory and its export format are in [memory.md](memory.md).
 
 ## Future AI features
 

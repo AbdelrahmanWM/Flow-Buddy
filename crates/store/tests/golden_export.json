@@ -1,0 +1,61 @@
+{
+  "format": "flowbuddy.memory",
+  "version": 1,
+  "generated_at": 1005000,
+  "summary": {
+    "patterns": 2,
+    "mastered": 1,
+    "improving": 0,
+    "regressed": 0,
+    "tracking_since": 1000000
+  },
+  "patterns": [
+    {
+      "rule": "vim.repeat-jk",
+      "context": "vscode-vim",
+      "description": "about vim.repeat-jk",
+      "stage": "new",
+      "stage_since": 1000000,
+      "first_seen": 1000000,
+      "last_seen": 1003600,
+      "total": {
+        "hits": 2,
+        "adoptions": 1
+      },
+      "last_7_days": {
+        "hits": 1,
+        "adoptions": 1
+      },
+      "nudges": 1,
+      "dismissed": 0,
+      "false_positives": 0,
+      "recent_shapes": [
+        "j×7",
+        "j×9"
+      ]
+    },
+    {
+      "rule": "vim.w-then-q",
+      "context": "terminal-vim",
+      "description": "about vim.w-then-q",
+      "stage": "mastered",
+      "stage_since": 1004000,
+      "first_seen": 1002000,
+      "last_seen": 1002000,
+      "total": {
+        "hits": 1,
+        "adoptions": 0
+      },
+      "last_7_days": {
+        "hits": 1,
+        "adoptions": 0
+      },
+      "nudges": 0,
+      "dismissed": 0,
+      "false_positives": 0,
+      "recent_shapes": [
+        ":w then :q"
+      ]
+    }
+  ]
+}

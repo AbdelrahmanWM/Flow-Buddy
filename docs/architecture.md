@@ -41,7 +41,7 @@ flowchart LR
 | Key ring buffer | `crates/daemon` | Holds the last ~64 keys in memory, and only while a supported context is focused (#8). |
 | IPC server | `crates/daemon` | Unix socket that speaks JSON lines; all other processes talk to the daemon through it (#10). |
 | Context resolver | `crates/daemon`, model in `crates/core` | Combines focus and terminal reports into a `Context`, and infers the Vim mode (#13–#16). |
-| Rule engine | `crates/core` (trait), `crates/daemon` (packs) | Turns keys plus context into findings and adoptions (#17–#22). |
+| Rule engine | `crates/core` (`rule`, `engine`, `rules/`) | Turns mode-tracker steps into findings and adoptions (#17–#22). Rules never see raw keys. |
 | Coaching policy | `crates/core` | Decides whether, when and what to nudge, based on the mode, rate limits and learning stage (#23, #25). |
 | Stats + mistake memory | `crates/daemon` | Stores aggregates, pattern records and abstract episodes in SQLite (#27, #30–#33). |
 | GNOME Shell extension | `gnome-extension/` | Reports the focused window and shows nudges in the top bar (#11, #24). |
@@ -139,9 +139,9 @@ The first message on every connection is `hello`. Short-lived clients (the CLI, 
 
 **`focus`**: the focused window changed. Sent by the extension.
 ```json
-{"v":0,"type":"focus","app_id":"code_code","title":"main.rs - Flow-Buddy - Visual Studio Code","pid":41230}
+{"v":0,"type":"focus","app_id":"code_code","pid":41230}
 ```
-`title` is used only for classification and is never stored. When nothing is focused, `app_id` is `null`.
+When nothing is focused, `app_id` is `null`. The protocol accepts an optional `title`, but the extension doesn't send it. Titles often contain file names, and the resolver doesn't need them.
 
 **`ctx`**: report from the shell hook. Sent once when a command starts and once when the prompt returns.
 ```json
@@ -206,7 +206,8 @@ In `balanced` mode, one batch may contain several `nudge` messages.
 
 | Path | Contents |
 |---|---|
-| `~/.config/flowbuddy/config.toml` | Mode, intervals, quiet hours, rule settings, app-id overrides, keyboard layout |
+| `~/.config/flowbuddy/config.toml` | Written by you: default mode, intervals, quiet hours, rule settings, app-id overrides, xkb options. Reloaded when it changes. |
+| `~/.local/state/flowbuddy/state.json` | Written by the daemon: current mode, pause, rules you enabled/disabled/muted from the CLI. The daemon never rewrites your config file. |
 | `~/.local/share/flowbuddy/flowbuddy.db` | Stats, pattern records and episodes (schemas in #27 and #30) |
 | `$XDG_RUNTIME_DIR/flowbuddy.sock` | IPC socket (exists only while the daemon runs) |
 

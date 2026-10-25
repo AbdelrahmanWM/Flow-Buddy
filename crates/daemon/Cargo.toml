@@ -13,7 +13,22 @@ path = "src/main.rs"
 
 [dependencies]
 flowbuddy-core.workspace = true
+flowbuddy-store.workspace = true
 clap.workspace = true
+evdev = { version = "0.13", features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "macros", "net", "signal", "sync", "time", "io-util", "fs"] }
+inotify = { version = "0.11", features = ["stream"] }
+anyhow = "1.0.104"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+futures-util = "0.3.34"
+serde_json.workspace = true
+serde.workspace = true
+xkbcommon = { version = "0.9", default-features = false, optional = true }
+chrono = "0.4.45"
 
 [lints]
 workspace = true
+
+[features]
+xkb = ["dep:xkbcommon"]

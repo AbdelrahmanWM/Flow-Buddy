@@ -1,0 +1,25 @@
+.flowbuddy-card {
+    background-color: rgba(30, 30, 30, 0.92);
+    color: #f2f2f2;
+    border-radius: 14px;
+    padding: 12px 18px;
+    max-width: 480px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.flowbuddy-card-title {
+    font-weight: bold;
+    padding-bottom: 2px;
+}
+
+.flowbuddy-card-text {
+    font-size: 0.95em;
+}
+
+.flowbuddy-unread {
+    background-color: #3584e4;
+    border-radius: 4px;
+    width: 8px;
+    height: 8px;
+    margin-left: 2px;
+}

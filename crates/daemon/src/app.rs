@@ -10,8 +10,8 @@ use flowbuddy_core::config::{self, Config, State};
 use flowbuddy_core::context::{ContextKind, VimMode};
 use flowbuddy_core::engine::Engine;
 use flowbuddy_core::ipc::{
-    ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, Nudge, NudgeAction, RuleAction, RuleInfo,
-    ServerMsg, Status,
+    ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, Nudge, NudgeAction, NudgeStyle,
+    RuleAction, RuleInfo, ServerMsg, Status,
 };
 use flowbuddy_core::key::{Key, KeyStroke, Sym};
 use flowbuddy_core::policy::{Coach, CoachingMode, Gate, PolicyConfig, RuleFacts};
@@ -190,6 +190,10 @@ impl App {
             title: f.title.into(),
             text: f.text.clone(),
             ttl_ms: u64::from(self.config.coaching.nudge_seconds) * 1000,
+            style: self.config.coaching.nudge_style.unwrap_or(match self.mode {
+                CoachingMode::Active => NudgeStyle::Card,
+                _ => NudgeStyle::Bar,
+            }),
         };
         if self.extension_connected() {
             self.broadcast(ServerMsg::Nudge(nudge.clone()));
@@ -855,6 +859,17 @@ pub(crate) mod tests {
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].rule_id, "vim.repeat-jk");
         assert!(n[0].text.contains("7j"));
+        assert_eq!(n[0].style, NudgeStyle::Card);
+    }
+
+    #[test]
+    fn nudge_style_can_be_configured() {
+        let mut app = test_app(CoachingMode::Active);
+        app.config.coaching.nudge_style = Some(NudgeStyle::Bar);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        keys(&mut app, "<Esc>jjjjjjjw");
+        assert_eq!(nudges(&mut ext)[0].style, NudgeStyle::Bar);
     }
 
     #[test]

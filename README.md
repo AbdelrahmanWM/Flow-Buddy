@@ -90,6 +90,7 @@ Settings live in `~/.config/flowbuddy/config.toml` and are reloaded automaticall
 default_mode = "balanced"
 balanced_interval_minutes = 30
 quiet_hours = "22:00-08:00"
+nudge_style = "card"              # or "bar"; default: card in active mode
 
 [rules."vim.repeat-jk"]
 threshold = 8

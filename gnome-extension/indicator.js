@@ -1,8 +1,9 @@
 // Top-bar indicator: shows nudges briefly and offers quick controls.
 //
-// A nudge appears as a short label next to the icon and fades after its
-// ttl. The menu holds the full tip and lets you dismiss it, mute that
-// rule, mark it as not helpful, switch mode or pause.
+// A nudge appears as a short label next to the icon (or as a card, see
+// card.js) and fades after its ttl. A dot stays on the icon until the menu
+// is opened. The menu holds the full tip and lets you dismiss it, mute
+// that rule, mark it as not helpful, switch mode or pause.
 
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
@@ -37,9 +38,19 @@ class FlowBuddyIndicator extends PanelMenu.Button {
             y_align: Clutter.ActorAlign.CENTER,
             visible: false,
         });
+        this._dot = new St.Widget({
+            style_class: 'flowbuddy-unread',
+            y_align: Clutter.ActorAlign.CENTER,
+            visible: false,
+        });
         box.add_child(this._icon);
+        box.add_child(this._dot);
         box.add_child(this._label);
         this.add_child(box);
+        this.menu.connect('open-state-changed', (_menu, open) => {
+            if (open)
+                this._dot.visible = false;
+        });
 
         this._tip = new PopupMenu.PopupMenuItem('No tips yet', {reactive: false});
         this._tip.label.clutter_text.line_wrap = true;
@@ -116,14 +127,18 @@ class FlowBuddyIndicator extends PanelMenu.Button {
             this._tip.label.text = this._paused ? 'Paused' : 'No tips right now';
     }
 
-    showNudge(nudge) {
+    // `inBar`: also show the title next to the icon for the nudge's ttl.
+    showNudge(nudge, inBar) {
         if (this._nudge)
             this._link.send({type: 'nudge_response', nudge_id: this._nudge.nudge_id, action: 'seen'});
         this._nudge = nudge;
-        this._label.text = ` ${nudge.title}`;
-        this._label.visible = true;
         this._tip.label.text = nudge.text;
         this._setNudgeActions(true);
+        this._dot.visible = !this.menu.isOpen;
+        if (!inBar)
+            return;
+        this._label.text = ` ${nudge.title}`;
+        this._label.visible = true;
         if (this._hideId)
             GLib.source_remove(this._hideId);
         this._hideId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, nudge.ttl_ms, () => {
@@ -141,6 +156,7 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         }
         this._nudge = null;
         this._label.visible = false;
+        this._dot.visible = false;
         this._setNudgeActions(false);
         this._tip.label.text = 'No tips right now';
     }

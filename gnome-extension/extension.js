@@ -9,6 +9,7 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 import {DaemonLink} from './daemon.js';
 import {FocusReporter} from './focus.js';
+import {Card} from './card.js';
 import {Indicator} from './indicator.js';
 
 export default class FlowBuddyExtension extends Extension {
@@ -25,6 +26,7 @@ export default class FlowBuddyExtension extends Extension {
         });
         this._indicator = new Indicator(this._link);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
+        this._card = new Card();
         this._focus = new FocusReporter(this._link);
         this._focus.enable();
         this._link.start();
@@ -34,6 +36,8 @@ export default class FlowBuddyExtension extends Extension {
         this._focus?.disable();
         this._link?.stop();
         this._indicator?.destroy();
+        this._card?.destroy();
+        this._card = null;
         this._focus = null;
         this._link = null;
         this._indicator = null;
@@ -48,7 +52,13 @@ export default class FlowBuddyExtension extends Extension {
             this._indicator.setMode(msg.mode, msg.paused_until);
             break;
         case 'nudge':
-            this._indicator.showNudge(msg);
+            // `style` is newer than protocol v0; treat it as missing = bar.
+            if (msg.style === 'card') {
+                this._card.show(msg);
+                this._indicator.showNudge(msg, false);
+            } else {
+                this._indicator.showNudge(msg, true);
+            }
             break;
         }
     }

@@ -67,7 +67,7 @@ scripts/install.sh --with-udev    # install; --with-udev lets the active session
 Then log out and back in so GNOME loads the extension, and check:
 
 ```sh
-flowbuddy status
+flowbuddy status          # or --watch, then switch windows
 ```
 
 `scripts/uninstall.sh` removes everything, and `--purge` also deletes your data.

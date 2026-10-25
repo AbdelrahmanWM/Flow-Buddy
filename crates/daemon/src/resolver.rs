@@ -138,6 +138,10 @@ impl Resolver {
         self.focus = Focus { app_id, pid };
     }
 
+    pub fn focused_app(&self) -> Option<&str> {
+        self.focus.app_id.as_deref()
+    }
+
     pub fn shell_report(&mut self, shell_pid: u32, state: ShellState, now_ms: u64) {
         self.shells.insert(
             shell_pid,

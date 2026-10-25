@@ -14,7 +14,6 @@ use flowbuddy_core::ipc::{
     ServerMsg, Status,
 };
 use flowbuddy_core::key::{Key, KeyStroke, Sym};
-use flowbuddy_core::learning::Stage;
 use flowbuddy_core::policy::{Coach, CoachingMode, Gate, PolicyConfig, RuleFacts};
 use flowbuddy_core::rule::{Finding, RuleEvent};
 use flowbuddy_core::vim::{Flavor, Tracker};
@@ -23,6 +22,7 @@ use tokio::sync::mpsc;
 
 use crate::buffer::{ClearReason, KeyBuffer};
 use crate::ipc_server::{ConnEvent, ConnId};
+use crate::memory::{self, Memory};
 use crate::notify::Notifier;
 use crate::resolver::{AppIds, Resolved, Resolver, ShellState};
 
@@ -51,8 +51,7 @@ pub struct App {
     /// Recent nudges (id, rule), newest last, for responses and reports.
     nudges: VecDeque<(String, &'static str)>,
     nudge_seq: u64,
-    /// Learning stage per rule. Loaded from the mistake memory.
-    stages: HashMap<String, Stage>,
+    memory: Memory,
 }
 
 const NUDGE_HISTORY: usize = 20;
@@ -115,8 +114,20 @@ impl App {
             notifier,
             nudges: VecDeque::new(),
             nudge_seq: 0,
-            stages: HashMap::new(),
+            memory: Memory::new(None, &Config::default()),
         }
+        .with_memory_config()
+    }
+
+    fn with_memory_config(mut self) -> Self {
+        self.memory.set_config(&self.config);
+        self
+    }
+
+    /// Record stats and the mistake memory in `store`.
+    pub fn with_store(mut self, store: flowbuddy_store::Store) -> Self {
+        self.memory = Memory::new(Some(store), &self.config);
+        self
     }
 
     fn gate(&self, now_ms: u64) -> Gate {
@@ -129,8 +140,38 @@ impl App {
         }
     }
 
-    fn stage(&self, rule_id: &str) -> Stage {
-        self.stages.get(rule_id).copied().unwrap_or_default()
+    fn describe(&self, rule_id: &str) -> String {
+        self.engine
+            .rules()
+            .find(|r| r.id() == rule_id)
+            .map_or_else(|| rule_id.to_string(), |r| r.description().to_string())
+    }
+
+    /// Passive mode: one notification about the day, at `summary_time`.
+    fn end_of_day(&mut self, now_ms: u64) {
+        use chrono::{TimeZone, Timelike};
+        if self.mode != CoachingMode::Passive {
+            return;
+        }
+        let Some(target) = config::parse_hm(&self.config.coaching.summary_time) else {
+            return;
+        };
+        let Some(local) = chrono::Local.timestamp_millis_opt(now_ms as i64).single() else {
+            return;
+        };
+        let today = memory::day(now_ms);
+        if local.hour() * 60 + local.minute() < target
+            || self.state.last_summary_day.as_deref() == Some(today.as_str())
+        {
+            return;
+        }
+        self.state.last_summary_day = Some(today);
+        self.save_state();
+        let describe = |id: &str| self.describe(id).to_lowercase();
+        let summary = self.memory.today_summary(now_ms, &describe);
+        if let Some(text) = summary {
+            self.notifier.notify("Flow Buddy: your day", &text, 15_000);
+        }
     }
 
     fn extension_connected(&self) -> bool {
@@ -160,9 +201,7 @@ impl App {
             self.nudges.pop_front();
         }
         self.nudges.push_back((nudge.nudge_id, f.rule_id));
-        if self.stage(f.rule_id) == Stage::New {
-            self.stages.insert(f.rule_id.into(), Stage::Nudged);
-        }
+        self.memory.nudged(f.rule_id, now_ms);
     }
 
     fn nudge_rule(&self, nudge_id: &str) -> Option<&'static str> {
@@ -172,10 +211,11 @@ impl App {
             .map(|(_, rule)| *rule)
     }
 
-    fn on_nudge_response(&mut self, nudge_id: &str, action: NudgeAction) {
+    fn on_nudge_response(&mut self, nudge_id: &str, action: NudgeAction, now_ms: u64) {
         let Some(rule_id) = self.nudge_rule(nudge_id) else {
             return;
         };
+        self.memory.response(rule_id, action, now_ms);
         if action == NudgeAction::MuteRule {
             self.set_rule(rule_id, RuleAction::Mute);
         }
@@ -202,6 +242,7 @@ impl App {
             .apply(&config::rule_settings(&config, &self.state));
         self.resolver.set_ids(app_ids(&config));
         self.coach.set_config(PolicyConfig::from(&config.coaching));
+        self.memory.set_config(&config);
         self.config = config;
         tracing::info!("config reloaded");
     }
@@ -211,16 +252,21 @@ impl App {
     fn on_rule_events(&mut self, events: &[RuleEvent], now_ms: u64) {
         let gate = self.gate(now_ms);
         let muted = self.state.muted();
+        let ctx = self.resolved.kind;
         for ev in events {
-            if let RuleEvent::Finding(f) = ev {
-                tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
-                let facts = RuleFacts {
-                    muted: muted.contains(f.rule_id),
-                    stage: self.stage(f.rule_id),
-                };
-                if let Some(f) = self.coach.on_finding(f, facts, &gate, now_ms) {
-                    self.deliver(&f, now_ms);
+            match ev {
+                RuleEvent::Finding(f) => {
+                    tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
+                    self.memory.hit(f, ctx, now_ms);
+                    let facts = RuleFacts {
+                        muted: muted.contains(f.rule_id),
+                        stage: self.memory.stage(f.rule_id, ctx),
+                    };
+                    if let Some(f) = self.coach.on_finding(f, facts, &gate, now_ms) {
+                        self.deliver(&f, now_ms);
+                    }
                 }
+                RuleEvent::Adoption { rule_id, .. } => self.memory.adoption(rule_id, ctx, now_ms),
             }
         }
     }
@@ -239,6 +285,8 @@ impl App {
         for f in self.coach.on_tick(&gate, now_ms) {
             self.deliver(&f, now_ms);
         }
+        self.memory.maintain(now_ms);
+        self.end_of_day(now_ms);
     }
 
     fn capturing(&self, now_ms: u64) -> bool {
@@ -259,6 +307,7 @@ impl App {
             self.engine.reset();
             return Vec::new();
         }
+        self.memory.active(kind, now_ms);
         let step = self.tracker.feed(stroke);
         let events = self.engine.on_step(kind, &step);
         self.on_rule_events(&events, now_ms);
@@ -371,7 +420,7 @@ impl App {
                 self.update_context(Some((shell_pid, known)), now_ms);
             }
             ClientMsg::NudgeResponse { nudge_id, action } => {
-                self.on_nudge_response(&nudge_id, action);
+                self.on_nudge_response(&nudge_id, action, now_ms);
             }
             ClientMsg::Command { id, command } => {
                 let reply = self.on_command(id, command, now_ms);
@@ -419,7 +468,7 @@ impl App {
             Command::ReportFalsePositive => match self.nudges.back() {
                 Some((nudge_id, _)) => {
                     let nudge_id = nudge_id.clone();
-                    self.on_nudge_response(&nudge_id, NudgeAction::FalsePositive);
+                    self.on_nudge_response(&nudge_id, NudgeAction::FalsePositive, now_ms);
                     ServerMsg::Ack { id }
                 }
                 None => ServerMsg::Error {
@@ -498,6 +547,7 @@ impl App {
 pub(crate) mod tests {
     use super::*;
     use crate::resolver::AppIds;
+    use flowbuddy_core::learning::Stage;
     use flowbuddy_core::vim::notation::strokes;
     use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -871,5 +921,148 @@ pub(crate) mod tests {
             app.on_key(s, s.at_ms);
         }
         assert!(nudges(&mut ext).is_empty());
+    }
+
+    fn app_with_store(mode: CoachingMode) -> (App, crate::notify::fake::Recorder) {
+        let recorder = crate::notify::fake::Recorder::default();
+        let state = State {
+            mode: Some(mode),
+            ..Default::default()
+        };
+        let store = flowbuddy_store::Store::open_in_memory().unwrap();
+        let app = App::new(
+            Config::default(),
+            state,
+            test_resolver(),
+            Box::new(recorder.clone()),
+        )
+        .with_store(store);
+        (app, recorder)
+    }
+
+    fn type_at(app: &mut App, s: &str, t0: u64) -> Vec<RuleEvent> {
+        strokes(s, t0)
+            .into_iter()
+            .flat_map(|k| app.on_key(k, k.at_ms))
+            .collect()
+    }
+
+    /// Acceptance test for #27/#30: a whole typing session, and no typed
+    /// text anywhere in the database.
+    #[test]
+    fn database_never_contains_typed_text() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let _ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        type_at(
+            &mut app,
+            "<Esc>isecretpassword hunter2<BS><BS><BS><BS><BS><BS><BS><Esc>\
+             :e secretfile.txt<CR>/secretsearch<CR>jjjjjjjxxxxxdddddd:w<CR>:q<CR>w",
+            1_000,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        ctx(&mut app, CtxEvent::Prompt, None, 200);
+        type_at(&mut app, "ssh secrethost<Up><Up><Up><Up><Up><CR>", 60_000);
+        app.tick(120_000);
+
+        let store = app.memory.store().unwrap();
+        let text = store.all_text().unwrap();
+        assert!(!text.is_empty(), "the session was recorded");
+        for t in &text {
+            for secret in ["secret", "hunter", "password", "file.txt", "ssh"] {
+                assert!(!t.contains(secret), "{t:?} leaks {secret:?}");
+            }
+        }
+        let rules: Vec<_> = store
+            .patterns()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.rule_id)
+            .collect();
+        for expected in [
+            "vim.repeat-jk",
+            "vim.repeat-x",
+            "vim.repeat-dd",
+            "vim.backspace-streak",
+            "vim.w-then-q",
+            "bash.up-history",
+        ] {
+            assert!(
+                rules.iter().any(|r| r == expected),
+                "{expected} missing from {rules:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hits_adoptions_nudges_and_responses_are_recorded() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>jjjjjjjw5j", 1_000);
+        let n = nudges(&mut ext).remove(0);
+        send(
+            &mut app,
+            1,
+            ClientMsg::NudgeResponse {
+                nudge_id: n.nudge_id,
+                action: NudgeAction::Dismiss,
+            },
+            5_000,
+        );
+        let store = app.memory.store().unwrap();
+        let p = store
+            .patterns()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.rule_id == "vim.repeat-jk")
+            .unwrap();
+        assert_eq!(p.context, "vscode-vim");
+        assert_eq!(
+            (p.occurrences, p.adoptions, p.nudges, p.dismissed),
+            (1, 1, 1, 1)
+        );
+        assert_eq!(p.stage, Stage::Nudged);
+        let shapes = store
+            .recent_episodes("vim.repeat-jk", "vscode-vim", 5)
+            .unwrap();
+        assert_eq!(shapes[0].shape, "j×7");
+    }
+
+    #[test]
+    fn passive_mode_sends_one_end_of_day_summary() {
+        use chrono::TimeZone;
+        let (mut app, recorder) = app_with_store(CoachingMode::Passive);
+        app.config.coaching.summary_time = "18:00".into();
+        let at = |h, m| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 10, 24, h, m, 0)
+                .unwrap()
+                .timestamp_millis() as u64
+        };
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>xxxxxw", at(10, 0));
+        app.tick(at(17, 59));
+        assert!(recorder.0.borrow().is_empty(), "not before summary_time");
+        app.tick(at(18, 1));
+        app.tick(at(18, 2));
+        let sent = recorder.0.borrow();
+        assert_eq!(sent.len(), 1, "exactly once");
+        assert!(sent[0].1.contains("1 habits spotted"), "{}", sent[0].1);
+    }
+
+    #[test]
+    fn maintenance_moves_patterns_to_improving() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let _ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        // One nudged streak, then the better way used repeatedly.
+        type_at(&mut app, "<Esc>jjjjjjjw", 1_000);
+        type_at(&mut app, "5j3j}{8j", 20_000);
+        app.tick(30_000);
+        assert_eq!(
+            app.memory.stage("vim.repeat-jk", ContextKind::VsCodeVim),
+            Stage::Improving
+        );
     }
 }

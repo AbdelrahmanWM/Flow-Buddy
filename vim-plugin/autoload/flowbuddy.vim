@@ -383,6 +383,22 @@ function! s:facts(start, end, jump) abort
       endif
     endfor
   endif
+  " n/N: matches of the last search pattern, which stays here.
+  let pattern = getreg('/')
+  if !empty(pattern)
+    call cursor(a:start[0], a:start[1])
+    let back = lines < 0 || (lines == 0 && a:end[1] < a:start[1])
+    for n in range(1, s:MAX_HOPS)
+      let pos = searchpos(pattern, back ? 'bW' : 'W', 0, 20)
+      if pos == [0, 0]
+        break
+      endif
+      if pos == a:end
+        let f.search_hops = n
+        break
+      endif
+    endfor
+  endif
   let f.jump_back = a:jump == a:end && a:jump != [0, 0] ? v:true : v:false
   return f
 endfunction

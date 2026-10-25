@@ -74,6 +74,16 @@ function! Test_file_and_jump() abort
   call assert_false(flowbuddy#facts([5, 1], [3, 1], [2, 1]).jump_back)
 endfunction
 
+function! Test_search_hops() abort
+  call s:buf(['TODO one', 'x', 'TODO two', 'y', 'TODO three'])
+  let @/ = 'TODO'
+  call assert_equal(2, s:facts([1, 1], [5, 1]).search_hops)
+  call assert_equal(1, s:facts([5, 1], [3, 1]).search_hops)
+  call assert_equal('TODO', @/)
+  let @/ = ''
+  call assert_false(has_key(s:facts([1, 1], [5, 1]), 'search_hops'))
+endfunction
+
 function! Test_facts_leave_no_trace() abort
   call s:buf(['a', '', 'b', '', 'c'])
   call cursor(1, 1)

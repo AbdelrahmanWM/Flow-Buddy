@@ -32,10 +32,12 @@ pub enum Category {
     Bracket,
     Star,
     JumpBack,
+    Page,
+    Search,
 }
 
 impl Category {
-    pub const ALL: [Category; 10] = [
+    pub const ALL: [Category; 12] = [
         Category::Count,
         Category::Paragraph,
         Category::Screen,
@@ -46,6 +48,8 @@ impl Category {
         Category::Bracket,
         Category::Star,
         Category::JumpBack,
+        Category::Page,
+        Category::Search,
     ];
 
     pub fn id(self) -> &'static str {
@@ -60,6 +64,8 @@ impl Category {
             Category::Bracket => "motion.bracket",
             Category::Star => "motion.star",
             Category::JumpBack => "motion.jump-back",
+            Category::Page => "motion.page",
+            Category::Search => "motion.search",
         }
     }
 
@@ -75,6 +81,8 @@ impl Category {
             Category::Bracket => "Jump to the matching bracket",
             Category::Star => "Search the word under the cursor",
             Category::JumpBack => "Jump back",
+            Category::Page => "Move by half a page",
+            Category::Search => "Repeat the search",
         }
     }
 
@@ -94,6 +102,8 @@ impl Category {
             Category::Bracket => "Moving to a matching bracket without %",
             Category::Star => "Moving to the next use of a word without * or #",
             Category::JumpBack => "Walking back to where you were without Ctrl-o",
+            Category::Page => "Moving many lines where Ctrl-d or Ctrl-u land",
+            Category::Search => "Moving to the next search match without n or N",
         }
     }
 
@@ -110,6 +120,8 @@ impl Category {
             Category::Bracket => "keys for %",
             Category::Star => "keys for */#",
             Category::JumpBack => "keys for Ctrl-o",
+            Category::Page => "keys for Ctrl-d/u",
+            Category::Search => "keys for n/N",
         }
     }
 }
@@ -193,6 +205,21 @@ fn vertical(lines: i64, f: &MotionFacts) -> Vec<Part> {
             category: Category::Screen,
             keys: key.into(),
             cost: 1,
+        });
+    }
+    // Ctrl-d and Ctrl-u move by half the window ('scroll').
+    if let Some(half) = f.window_lines.map(|w| w / 2).filter(|h| *h > 0)
+        && n % half == 0
+    {
+        let key = if down { "Ctrl-d" } else { "Ctrl-u" };
+        parts.push(Part {
+            category: Category::Page,
+            keys: if n / half == 1 {
+                key.into()
+            } else {
+                format!("{key}×{}", n / half)
+            },
+            cost: n / half,
         });
     }
     if f.file_start && !down {
@@ -291,6 +318,14 @@ pub fn cheapest(m: &Motion) -> Option<Plan> {
     }
     if let Some(k) = f.star_hops {
         let p = repeated(Category::Star, if back { "#" } else { "*" }, 1, k);
+        plans.push(Plan {
+            category: p.category,
+            keys: p.keys,
+            cost: p.cost,
+        });
+    }
+    if let Some(k) = f.search_hops {
+        let p = repeated(Category::Search, "n", 1, k);
         plans.push(Plan {
             category: p.category,
             keys: p.keys,
@@ -572,6 +607,29 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(plan(-15, 2, f), (Category::Star, "#".into(), 1));
+    }
+
+    #[test]
+    fn half_pages_and_search() {
+        let f = MotionFacts {
+            window_lines: Some(40),
+            ..Default::default()
+        };
+        assert_eq!(
+            plan(40, 0, f.clone()),
+            (Category::Page, "Ctrl-d×2".into(), 2)
+        );
+        assert_eq!(
+            plan(-20, 0, f.clone()),
+            (Category::Page, "Ctrl-u".into(), 1)
+        );
+        // Not a multiple of half a page: a count.
+        assert_eq!(plan(25, 0, f).1, "25j");
+        let f = MotionFacts {
+            search_hops: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(plan(30, 5, f), (Category::Search, "nn".into(), 2));
     }
 
     fn run(keys_used: u32, lines: i64, cols: i64, facts: MotionFacts) -> Vec<RuleEvent> {

@@ -1,0 +1,10 @@
+{
+  "name": "flowbuddy-vscode-probe",
+  "displayName": "Flow Buddy probe (spike)",
+  "description": "Logs which editor events fire, for the Flow Buddy spike. Kinds and numbers only, never text.",
+  "version": "0.0.1",
+  "publisher": "flowbuddy",
+  "engines": { "vscode": "^1.90.0" },
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js"
+}

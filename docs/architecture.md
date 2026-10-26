@@ -113,6 +113,7 @@ The app ids are defaults and can be overridden in the config. The values seen on
 - **Esc** (or `Ctrl-[`) always resyncs to Normal and sets `confident = true`.
 - Anything the daemon can't see sets `confident = false` until the next Esc. Examples: a mouse click, opening the VS Code command palette, a focus change, or an unrecognized key sequence (#16).
 - Rules never fire while `confident` is false. This avoids false nudges, at the cost of missing some real ones.
+- Every mode an editor reports is compared with the guess from keys first. `flowbuddy status` shows how often the guess was right since the daemon started, how often it was unsure, and how many keys were skipped while unsure. That's how to tell whether the key-only guess can be trusted in contexts without a plugin (Claude Code, the shell).
 
 ## Coaching modes
 

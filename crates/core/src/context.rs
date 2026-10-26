@@ -71,6 +71,17 @@ impl VimMode {
         )
     }
 
+    /// The same mode for coaching: Normal and operator-pending are one,
+    /// and so are the Visual modes.
+    pub fn same_kind(self, other: VimMode) -> bool {
+        let kind = |m: VimMode| match m {
+            VimMode::OpPending => VimMode::Normal,
+            m if m.is_visual() => VimMode::Visual,
+            m => m,
+        };
+        kind(self) == kind(other)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             VimMode::Normal => "normal",

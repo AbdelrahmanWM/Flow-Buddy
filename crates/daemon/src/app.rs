@@ -15,7 +15,7 @@ use flowbuddy_core::ipc::{
     ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, Nudge, NudgeAction, NudgeStyle,
     RuleAction, RuleInfo, ServerMsg, Status,
 };
-use flowbuddy_core::ipc::{Panel, Recording, UiEvent};
+use flowbuddy_core::ipc::{ModeGuess, Panel, Recording, UiEvent};
 use flowbuddy_core::key::{Key, KeyStroke, Sym};
 use flowbuddy_core::motion::{self, MotionEvent, OperatorEvent};
 use flowbuddy_core::policy::{Coach, CoachingMode, Gate, PolicyConfig, RuleFacts};
@@ -69,6 +69,8 @@ pub struct App {
     /// shortcut (Ctrl-P, Ctrl-`) as its letter and time.
     last_click_ms: Option<u64>,
     last_shortcut: Option<(char, u64)>,
+    /// How the mode guessed from keys compares with editors' reports.
+    mode_guess: ModeGuess,
     /// A session being recorded (`flowbuddy record`), and where to.
     recorder: Option<crate::recorder::Recorder>,
     recordings: PathBuf,
@@ -216,6 +218,7 @@ impl App {
             claude_probe: crate::claude::vim_mode_on,
             last_click_ms: None,
             last_shortcut: None,
+            mode_guess: ModeGuess::default(),
             recorder: None,
             recordings: flowbuddy_core::paths::recordings_dir(),
             last_nudge_ms: None,
@@ -848,6 +851,9 @@ impl App {
         }
         self.memory.active(kind, now_ms);
         let step = self.tracker.feed(stroke);
+        if !step.confident {
+            self.mode_guess.keys_unsure += 1;
+        }
         if step.confident
             && matches!(
                 kind,
@@ -1114,6 +1120,16 @@ impl App {
                 self.release_held(now_ms);
             }
             ClientMsg::EditorMode { mode } => {
+                if self.resolved.editor == Some(conn)
+                    && let Some(m) = mode.vim_mode()
+                {
+                    let g = &mut self.mode_guess;
+                    match (self.tracker.confident(), self.tracker.mode().same_kind(m)) {
+                        (false, _) => g.unsure += 1,
+                        (true, true) => g.right += 1,
+                        (true, false) => g.wrong += 1,
+                    }
+                }
                 self.resolver.editor_mode(conn, mode.vim_mode(), now_ms);
                 if self.resolved.editor == Some(conn) {
                     self.apply_editor_mode();
@@ -1313,6 +1329,7 @@ impl App {
                 .and_then(|id| self.resolver.editor(id)?.mode)
                 .is_some(),
             confident: self.tracker.confident(),
+            mode_guess: (self.mode_guess != ModeGuess::default()).then_some(self.mode_guess),
             keyboards: self.keyboards,
             clients,
         }
@@ -2186,6 +2203,21 @@ pub(crate) mod tests {
         // A click no longer loses the mode: the editor still knows it.
         app.on_pointer_click(0);
         assert_eq!(app.mode_known(), (VimMode::Insert, true));
+        // The guess from keys is scored against what the editor says.
+        let mode = |app: &mut App, mode| send(app, 2, ClientMsg::EditorMode { mode }, 0);
+        keys(&mut app, "<Esc>");
+        mode(&mut app, EditorMode::Normal);
+        keys(&mut app, "v");
+        mode(&mut app, EditorMode::VisualLine);
+        // A mapping we didn't know about: `;` entered Insert mode.
+        keys(&mut app, "<Esc>;");
+        mode(&mut app, EditorMode::Insert);
+        let g = app.status(0).mode_guess.unwrap();
+        assert_eq!((g.right, g.wrong, g.unsure), (2, 1, 1), "{g:?}");
+        assert_eq!(
+            g.describe().unwrap(),
+            "67% right over 3 mode changes, 1 while unsure"
+        );
     }
 
     #[test]

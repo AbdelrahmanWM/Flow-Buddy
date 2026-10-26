@@ -336,6 +336,9 @@ fn print_status(s: &Status) {
     println!("  mode:      {}{paused}", s.mode.as_str());
     println!("  focused:   {}", s.app.as_deref().unwrap_or("nothing"));
     println!("  context:   {}", context_line(s));
+    if let Some(guess) = s.mode_guess.and_then(|g| g.describe()) {
+        println!("  guessing:  {guess}");
+    }
     println!("  keyboards: {}", s.keyboards);
     if let Some(filter) = &s.tip_filter {
         println!("  filter:    {filter}");
@@ -986,6 +989,7 @@ mod status_tests {
             layout: None,
             layout_note: None,
             tip_filter: None,
+            mode_guess: None,
             keyboards: 1,
             clients: vec![],
         }

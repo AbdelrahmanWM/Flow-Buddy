@@ -313,8 +313,46 @@ pub struct Status {
     /// What the learned tip filter is doing.
     #[serde(default)]
     pub tip_filter: Option<String>,
+    /// How the mode guessed from keys compared with editors' reports,
+    /// since the daemon started; `None` before any report.
+    #[serde(default)]
+    pub mode_guess: Option<ModeGuess>,
     pub keyboards: usize,
     pub clients: Vec<ClientKind>,
+}
+
+/// Mode changes an editor reported, by whether the guess from keys had
+/// it already.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModeGuess {
+    pub right: u32,
+    pub wrong: u32,
+    /// The guess wasn't sure (after a click, or before the first Esc).
+    pub unsure: u32,
+    /// Keys in Vim contexts while unsure: no rule looks at them.
+    #[serde(default)]
+    pub keys_unsure: u32,
+}
+
+impl ModeGuess {
+    /// "96% right over 120 mode changes", if there's anything to say.
+    pub fn describe(&self) -> Option<String> {
+        let sure = self.right + self.wrong;
+        if sure + self.unsure == 0 {
+            return None;
+        }
+        let mut s = match (self.right * 100 + sure / 2).checked_div(sure) {
+            Some(pct) => format!("{pct}% right over {sure} mode changes"),
+            None => "no sure guesses yet".into(),
+        };
+        if self.unsure > 0 {
+            s.push_str(&format!(", {} while unsure", self.unsure));
+        }
+        if self.keys_unsure > 0 {
+            s.push_str(&format!(" ({} keys skipped)", self.keys_unsure));
+        }
+        Some(s)
+    }
 }
 
 /// One rule as listed by [`Command::Rules`].
@@ -514,5 +552,20 @@ mod tests {
 
         let e = decode_client(r#"{"v":0,"type":"ctx","event":"fg"}"#).unwrap_err();
         assert_eq!(e.code, ErrorCode::BadRequest);
+    }
+
+    #[test]
+    fn mode_guess_lines() {
+        assert_eq!(ModeGuess::default().describe(), None);
+        let g = ModeGuess {
+            right: 95,
+            wrong: 5,
+            unsure: 0,
+            keys_unsure: 12,
+        };
+        assert_eq!(
+            g.describe().unwrap(),
+            "95% right over 100 mode changes (12 keys skipped)"
+        );
     }
 }

@@ -98,6 +98,9 @@ pub struct AiConfig {
     /// The learned tip filter (no LLM involved): skip tips your history says
     /// you'd dismiss. On by default; it does nothing until it has learned.
     pub filter: bool,
+    /// Once a day, the model writes a personal sentence for each recent
+    /// habit, added to its tips.
+    pub tips: bool,
 }
 
 impl Default for AiConfig {
@@ -112,6 +115,7 @@ impl Default for AiConfig {
             timeout_seconds: 120,
             weekly: false,
             filter: true,
+            tips: false,
         }
     }
 }

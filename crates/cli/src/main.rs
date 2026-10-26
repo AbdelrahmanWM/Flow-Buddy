@@ -2,6 +2,7 @@ mod client;
 mod coach;
 mod report;
 mod review;
+mod tips;
 
 use clap::{Parser, Subcommand};
 use flowbuddy_core::ipc::{ClientKind, ClientMsg, Command, CtxEvent, RuleAction, RuleInfo, Status};
@@ -51,6 +52,10 @@ enum Cmd {
         /// `[ai] weekly` is on (run by flowbuddy-weekly.service).
         #[arg(long, hide = true)]
         weekly_note: bool,
+        /// Have the model write today's personal tips, if `[ai] tips` is on
+        /// (run daily by flowbuddy-tips.timer).
+        #[arg(long, hide = true)]
+        write_tips: bool,
     },
     /// Ask your AI how to tune the tips; apply what you agree with.
     Review {
@@ -174,6 +179,9 @@ fn main() {
         Cmd::Coach {
             weekly_note: true, ..
         } => weekly_note(),
+        Cmd::Coach {
+            write_tips: true, ..
+        } => write_tips(),
         Cmd::Coach {
             question, prompt, ..
         } => coach(&question.join(" "), prompt),
@@ -419,6 +427,55 @@ fn explain(keys: &str, insert: bool) {
     for (piece, meaning) in pieces {
         println!("{piece:<width$}  {meaning}");
     }
+}
+
+/// Where today's model-written tips are kept for the daemon.
+fn tips_file() -> std::path::PathBuf {
+    flowbuddy_core::paths::state_file().with_file_name("tips.json")
+}
+
+fn write_tips() -> anyhow::Result<()> {
+    let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
+        .unwrap_or_default();
+    if !config.ai.tips {
+        return Ok(());
+    }
+    let Some(store) = open_db()? else {
+        return Ok(());
+    };
+    let now = now_ms();
+    let week = flowbuddy_store::days::range(now, 14, 0);
+    let describe = |id: &str| Some(report::describe(id));
+    let export = flowbuddy_store::Export::build(&store, &describe, (&week.0, &week.1), now / 1000)?;
+    let mut rules: Vec<(String, String)> = export
+        .patterns
+        .iter()
+        .filter(|p| p.last_7_days.hits > 0)
+        .map(|p| (p.rule.clone(), p.description.clone()))
+        .collect();
+    rules.dedup_by(|a, b| a.0 == b.0);
+    rules.truncate(8);
+    if rules.is_empty() {
+        return Ok(());
+    }
+    let prompt = tips::prompt(&coach::facts(&export), &rules);
+    let mut answer = Vec::new();
+    match coach::ask(&config.ai, &prompt, &mut answer) {
+        None => return Ok(()),
+        Some(r) => r.map_err(|e| anyhow::anyhow!("{e}"))?,
+    }
+    let (cache, dropped) =
+        tips::parse(&String::from_utf8_lossy(&answer), now / 1000).map_err(anyhow::Error::msg)?;
+    for why in dropped {
+        eprintln!("flowbuddy: left out a tip ({why})");
+    }
+    let path = tips_file();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&cache)?)?;
+    println!("{} personal tips written", cache.tips.len());
+    Ok(())
 }
 
 /// Where the last review's proposals are kept until applied.

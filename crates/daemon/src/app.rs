@@ -70,6 +70,8 @@ pub struct App {
     last_shortcut: Option<(char, u64)>,
     /// When the last tip was shown.
     last_nudge_ms: Option<u64>,
+    /// Personal sentences your AI wrote for each rule (`[ai] tips`).
+    personal_tips: HashMap<String, String>,
     /// Curriculum items used since the last write, by id.
     usage: HashMap<&'static str, u64>,
     /// Opt-in typing accuracy, written once a minute.
@@ -203,6 +205,7 @@ impl App {
             last_click_ms: None,
             last_shortcut: None,
             last_nudge_ms: None,
+            personal_tips: HashMap::new(),
             usage: HashMap::new(),
             typing: crate::typing::Typing::default(),
             typing_flushed_ms: 0,
@@ -333,16 +336,41 @@ impl App {
         {
             return;
         }
-        self.show(
-            f.rule_id,
-            f.title,
-            &f.text,
-            f.mode == VimMode::Insert,
-            now_ms,
-        );
+        let text = match self.personal_tips.get(f.rule_id) {
+            Some(personal) => format!("{} {personal}", f.text),
+            None => f.text.clone(),
+        };
+        self.show(f.rule_id, f.title, &text, f.mode == VimMode::Insert, now_ms);
         self.memory.nudged(f.rule_id, now_ms);
         self.memory
             .tip_shown(f.rule_id, self.mode.as_str(), hour, now_ms);
+    }
+
+    /// Today's sentences from `tips.json`, written by `flowbuddy coach
+    /// --write-tips`; older than three days, they're not used.
+    fn load_personal_tips(&mut self, now_ms: u64) {
+        #[derive(serde::Deserialize)]
+        struct Cache {
+            generated_at: u64,
+            tips: HashMap<String, String>,
+        }
+        self.personal_tips.clear();
+        if !self.config.ai.tips {
+            return;
+        }
+        let path = match &self.state_path {
+            Some(p) => p.with_file_name("tips.json"),
+            None => return,
+        };
+        let Some(cache) = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Cache>(&t).ok())
+        else {
+            return;
+        };
+        if (now_ms / 1000).saturating_sub(cache.generated_at) <= 3 * 86_400 {
+            self.personal_tips = cache.tips;
+        }
     }
 
     /// Put a tip on screen: through the extension, or as a notification.
@@ -654,6 +682,7 @@ impl App {
             self.memory.typing(counts, now_ms);
             let usage = std::mem::take(&mut self.usage);
             self.memory.command_uses(usage, now_ms);
+            self.load_personal_tips(now_ms);
         }
         // Switching tmux panes tells no one; look again.
         if self.resolver.via_tmux() {
@@ -2405,5 +2434,37 @@ pub(crate) mod tests {
         );
         rx.try_recv().unwrap();
         assert!(matches!(rx.try_recv().unwrap(), ServerMsg::Error { .. }));
+    }
+
+    #[test]
+    fn personal_tips_are_added_when_fresh() {
+        let dir = std::env::temp_dir().join(format!("flowbuddy-tips-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = test_app(CoachingMode::Active).with_state_path(dir.join("state.json"));
+        app.config.ai.tips = true;
+        let now = 1_800_000_000_000u64;
+        std::fs::write(
+            dir.join("tips.json"),
+            format!(
+                r#"{{"generated_at": {}, "tips": {{"vim.repeat-x": "You did this 30 times; `dw` is your friend."}}}}"#,
+                now / 1000 - 3600
+            ),
+        )
+        .unwrap();
+        app.tick(now);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>xxxxxw", now);
+        let n = nudges(&mut ext);
+        assert!(
+            n[0].text
+                .ends_with("You did this 30 times; `dw` is your friend."),
+            "{}",
+            n[0].text
+        );
+        // Stale: not used.
+        app.tick(now + 4 * 86_400_000);
+        assert!(app.personal_tips.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

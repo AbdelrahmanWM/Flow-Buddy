@@ -69,7 +69,8 @@ accuracy = false                              # true: count corrections (counts 
 [ai]
 provider = "claude-code"     # your Claude subscription via `claude -p`; or "anthropic" / "openai" with a key
 # command = ["ollama", "run", "llama3.2:3b"]  # or any local program: prompt on stdin, answer on stdout
-weekly = false               # true: the model writes the weekly progress note
+weekly = false               # true: the model writes the weekly progress note and reviews the tips
+tips = false                 # true: once a day the model writes a personal sentence for each recent habit
 filter = true                # the learned tip filter (no LLM); skips tips you tend to dismiss
 ```
 

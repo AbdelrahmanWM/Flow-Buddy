@@ -123,6 +123,18 @@ pub struct LearnRow {
     pub learned_at: Option<u64>,
 }
 
+/// A day whose adoptions were counted per key (see
+/// [`Store::inflated_adoptions`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InflatedDay {
+    pub day: String,
+    pub context: String,
+    pub rule_id: String,
+    pub adoptions: u64,
+    /// What it would be capped at.
+    pub capped: u64,
+}
+
 /// A tip as shown, for the learned filter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TipShown<'a> {
@@ -270,17 +282,20 @@ impl Store {
 
     /// Days before `before_day` whose adoptions are implausibly high next to
     /// their hits (over 10 × hits + 20: counted per key before the fix in
-    /// #48), as (day, context, rule, adoptions, capped at 3 × hits + 3).
-    pub fn inflated_adoptions(
-        &self,
-        before_day: &str,
-    ) -> Result<Vec<(String, String, String, u64, u64)>> {
+    /// #48); they'd be capped at 3 × hits + 3.
+    pub fn inflated_adoptions(&self, before_day: &str) -> Result<Vec<InflatedDay>> {
         let mut stmt = self.conn.prepare(
             "SELECT day, context, rule_id, adoptions, hits * 3 + 3 FROM daily_stats
              WHERE day < ?1 AND adoptions > hits * 10 + 20 ORDER BY day, rule_id",
         )?;
         let rows = stmt.query_map(params![before_day], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok(InflatedDay {
+                day: r.get(0)?,
+                context: r.get(1)?,
+                rule_id: r.get(2)?,
+                adoptions: r.get(3)?,
+                capped: r.get(4)?,
+            })
         })?;
         rows.collect()
     }
@@ -1065,7 +1080,7 @@ mod tests {
         }
         let found = s.inflated_adoptions("2026-10-26").unwrap();
         assert_eq!(found.len(), 1);
-        assert_eq!((found[0].3, found[0].4), (600, 6));
+        assert_eq!((found[0].adoptions, found[0].capped), (600, 6));
         assert_eq!(s.fix_adoptions("2026-10-26").unwrap(), 1);
         let p = &s.patterns().unwrap()[0];
         assert_eq!(p.adoptions, 56);

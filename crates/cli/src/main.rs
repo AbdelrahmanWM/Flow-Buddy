@@ -681,8 +681,11 @@ fn memory(cmd: MemoryCmd) -> anyhow::Result<()> {
                 println!("Nothing to fix.");
                 return Ok(());
             }
-            for (day, ctx, rule, adoptions, capped) in &found {
-                println!("  {day} {rule} ({ctx}): better way {adoptions} → {capped}");
+            for d in &found {
+                println!(
+                    "  {} {} ({}): better way {} → {}",
+                    d.day, d.rule_id, d.context, d.adoptions, d.capped
+                );
             }
             let days = if found.len() == 1 {
                 "this day".to_string()

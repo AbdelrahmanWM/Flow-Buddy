@@ -471,7 +471,7 @@ fn review_prompt(
     let stats = review::tip_stats(&tips);
     let state = flowbuddy_core::config::State::load(&flowbuddy_core::paths::state_file());
     let mut engine = flowbuddy_core::engine::Engine::standard();
-    engine.apply(&flowbuddy_core::config::rule_settings(&config, &state));
+    engine.apply(&flowbuddy_core::config::rule_settings(config, &state));
     let muted = state.muted();
     let settings: BTreeMap<String, review::RuleSetting> = engine
         .rules()

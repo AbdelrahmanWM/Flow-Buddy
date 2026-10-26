@@ -248,6 +248,16 @@ pub fn memory_show(store: &Store, now_ms: u64) -> anyhow::Result<String> {
             "  last week  {} times, better way {} times",
             w.hits, w.adoptions
         )?;
+        if let Some(e) = w.estimate() {
+            let pct = |x: f64| (x * 100.0).round() as u32;
+            writeln!(
+                out,
+                "  progress   the better way {}% of the time (likely {}–{}%)",
+                pct(e.ratio),
+                pct(e.low),
+                pct(e.high)
+            )?;
+        }
         writeln!(
             out,
             "  nudges     {} shown, {} dismissed, {} not helpful",

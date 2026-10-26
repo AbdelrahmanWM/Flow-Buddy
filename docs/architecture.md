@@ -138,7 +138,7 @@ These apply in every mode:
 
 Nudges come back once a pattern `regressed`.
 
-**Learning stages** (#31): `new → nudged → improving → mastered`, and `mastered → regressed → improving`. Moving between stages depends on how often the mistake happens and how often you adopt the better command, measured over sliding windows.
+**Learning stages** (#31): `new → nudged → improving → mastered`, and `mastered → regressed → improving`. Moving between stages depends on how often the mistake happens and how often you adopt the better command, measured over sliding windows. Strong evidence moves a stage sooner: when even the low end of an 80% Wilson interval on the adoption ratio clears the bar (a little below the fixed ratios), so eight better-way uses with no slips count as mastered without waiting for ten events. `flowbuddy memory show` shows each habit's ratio and its likely range.
 
 ## IPC protocol v0
 

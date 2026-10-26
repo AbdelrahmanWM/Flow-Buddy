@@ -138,6 +138,8 @@ fn phrase(keys: &str) -> Option<&'static str> {
         "Alt-." => "insert the previous command's last argument (again for older ones)",
         "^old^new" => "rerun the last command with old replaced by new",
         "Up" => "bring back the previous command to edit",
+        "Ctrl-P" => "open a file by typing part of its name (VS Code)",
+        "Ctrl-`" => "jump to the terminal and back (VS Code)",
         _ => return None,
     })
 }

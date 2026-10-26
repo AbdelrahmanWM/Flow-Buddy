@@ -108,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
                     let stroke = KeyStroke { key, repeat: raw.value == 2, at_ms: raw.at_ms };
                     app.on_key(stroke, now_ms());
                 }
-                Some(CaptureEvent::PointerClick) => app.on_pointer_click(),
+                Some(CaptureEvent::PointerClick) => app.on_pointer_click(now_ms()),
                 Some(CaptureEvent::Keyboards(n)) => app.set_keyboards(n),
                 None => break,
             },

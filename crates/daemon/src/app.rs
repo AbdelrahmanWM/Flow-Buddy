@@ -15,10 +15,12 @@ use flowbuddy_core::ipc::{
     ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, Nudge, NudgeAction, NudgeStyle,
     RuleAction, RuleInfo, ServerMsg, Status,
 };
+use flowbuddy_core::ipc::{Panel, UiEvent};
 use flowbuddy_core::key::{Key, KeyStroke, Sym};
 use flowbuddy_core::motion::{self, MotionEvent, OperatorEvent};
 use flowbuddy_core::policy::{Coach, CoachingMode, Gate, PolicyConfig, RuleFacts};
 use flowbuddy_core::rule::{Finding, RuleEvent};
+use flowbuddy_core::rules::vscode::{How, UiAction, UiWhat};
 use flowbuddy_core::vim::{Flavor, Tracker, VimEvent};
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -62,6 +64,10 @@ pub struct App {
     claude_checked_ms: Option<u64>,
     /// Reads Claude Code's settings; replaced in tests.
     claude_probe: fn() -> bool,
+    /// For the VS Code pack: when the last click came, and the last VS Code
+    /// shortcut (Ctrl-P, Ctrl-`) as its letter and time.
+    last_click_ms: Option<u64>,
+    last_shortcut: Option<(char, u64)>,
     /// The layout the extension reports, and whether the keymap should
     /// follow it (main rebuilds it).
     layout: Option<(String, String)>,
@@ -90,6 +96,11 @@ enum CmdKind {
 
 /// The most a threshold is raised after "not helpful" reports.
 const MAX_RAISE: u32 = 3;
+
+/// A shortcut this recent led to the UI event (Ctrl-P, then typing a name).
+const UI_SHORTCUT_MS: u64 = 15_000;
+/// A click this recent did.
+const UI_CLICK_MS: u64 = 1500;
 
 /// How often to look at Claude Code's settings for its Vim mode.
 const CLAUDE_CHECK_MS: u64 = 5000;
@@ -171,6 +182,8 @@ impl App {
             claude_vim: false,
             claude_checked_ms: None,
             claude_probe: crate::claude::vim_mode_on,
+            last_click_ms: None,
+            last_shortcut: None,
             layout: None,
             layout_changed: false,
             keymap_layout: ("us".into(), None),
@@ -397,15 +410,21 @@ impl App {
     /// Findings and adoptions go here: coaching policy and storage hook in
     /// at this point.
     fn on_rule_events(&mut self, events: &[RuleEvent], now_ms: u64) {
-        self.on_rule_events_in(self.resolved.kind, events, now_ms);
+        self.on_rule_events_in(self.resolved.kind, events, now_ms, true);
     }
 
-    /// Rule events from `ctx`, which is the focused context except for the
-    /// shell pack's (see [`ContextKind::Shell`]).
-    fn on_rule_events_in(&mut self, ctx: ContextKind, events: &[RuleEvent], now_ms: u64) {
+    /// Rule events from `ctx`, which is the focused context except for
+    /// events that don't come from keys (the shell and VS Code packs).
+    /// `keyed`: they come from keys, so check the keys reached the editor.
+    fn on_rule_events_in(
+        &mut self,
+        ctx: ContextKind,
+        events: &[RuleEvent],
+        now_ms: u64,
+        keyed: bool,
+    ) {
         let gate = self.gate(now_ms);
         let muted = self.state.muted();
-        let keyed = ctx != ContextKind::Shell;
         for ev in events {
             match ev {
                 RuleEvent::Finding(f) if keyed && !self.editor_saw(f.at_ms) => {
@@ -431,6 +450,38 @@ impl App {
                 RuleEvent::Adoption { rule_id, .. } => self.memory.adoption(rule_id, ctx, now_ms),
             }
         }
+    }
+
+    fn is_vscode(&self, conn: ConnId) -> bool {
+        self.resolver
+            .editor(conn)
+            .is_some_and(|e| e.kind == EditorKind::Vscode)
+    }
+
+    /// A VS Code UI event for the VS Code pack: did the shortcut (`key`
+    /// with Ctrl) or a click lead to it?
+    fn on_ui(&mut self, what: UiWhat, key: char, now_ms: u64) {
+        if !self.capturing(now_ms) {
+            return;
+        }
+        let recent = |t: u64, ms: u64| now_ms.saturating_sub(t) <= ms;
+        let how = if self
+            .last_shortcut
+            .is_some_and(|(k, t)| k == key && recent(t, UI_SHORTCUT_MS))
+        {
+            How::Shortcut
+        } else if self.last_click_ms.is_some_and(|t| recent(t, UI_CLICK_MS)) {
+            How::Click
+        } else {
+            How::Other
+        };
+        let action = UiAction {
+            what,
+            how,
+            at_ms: now_ms,
+        };
+        let events = self.engine.on_ui(&action);
+        self.on_rule_events_in(ContextKind::VsCodeVim, &events, now_ms, false);
     }
 
     /// Keys pressed for a movement: the motion commands just before its end,
@@ -545,6 +596,9 @@ impl App {
             return Vec::new();
         }
         if kind == ContextKind::VsCodeVim && is_vscode_ui_shortcut(&stroke.key) {
+            if let Sym::Char(c) = stroke.key.sym {
+                self.last_shortcut = Some((c.to_ascii_lowercase(), stroke.at_ms));
+            }
             self.tracker.invalidate();
             self.engine.reset();
             return Vec::new();
@@ -576,7 +630,8 @@ impl App {
     }
 
     /// A mouse click may have changed the editor's mode or focus.
-    pub fn on_pointer_click(&mut self) {
+    pub fn on_pointer_click(&mut self, now_ms: u64) {
+        self.last_click_ms = Some(now_ms);
         self.tracker.invalidate();
         self.engine.reset();
         // An editor that reports its mode still knows it.
@@ -721,7 +776,7 @@ impl App {
                         at_ms: now_ms,
                     };
                     let events = self.engine.on_shell(&ev);
-                    self.on_rule_events_in(ContextKind::Shell, &events, now_ms);
+                    self.on_rule_events_in(ContextKind::Shell, &events, now_ms, false);
                 }
                 let (state, known) = match event {
                     // Vim starts in Normal mode; Claude Code's prompt in Insert.
@@ -747,7 +802,11 @@ impl App {
             ClientMsg::NudgeResponse { nudge_id, action } => {
                 self.on_nudge_response(&nudge_id, action, now_ms);
             }
-            ClientMsg::PointerClick => self.on_pointer_click(),
+            ClientMsg::PointerClick => self.on_pointer_click(now_ms),
+            ClientMsg::EditorEvent {
+                event: UiEvent::FileOpened,
+            } if self.is_vscode(conn) => self.on_ui(UiWhat::FileOpened, 'p', now_ms),
+            ClientMsg::EditorEvent { .. } => {}
             ClientMsg::InputSource { layout, variant } => {
                 // xkb names only: anything else is ignored.
                 let name = |s: Option<String>| {
@@ -764,6 +823,9 @@ impl App {
                 }
             }
             ClientMsg::EditorFocus { focused, panel } => {
+                if !focused && panel == Some(Panel::Terminal) && self.is_vscode(conn) {
+                    self.on_ui(UiWhat::TerminalFocused, '`', now_ms);
+                }
                 self.resolver.editor_focus(conn, focused, panel, now_ms);
                 self.update_context(None, now_ms);
             }
@@ -1124,7 +1186,7 @@ pub(crate) mod tests {
         assert!(app.on_key(palette, 0).is_empty());
         assert!(!app.mode_known().1);
         keys(&mut app, "<Esc>");
-        app.on_pointer_click();
+        app.on_pointer_click(0);
         assert!(!app.mode_known().1);
     }
 
@@ -1782,7 +1844,7 @@ pub(crate) mod tests {
         );
         assert_eq!(app.mode_known(), (VimMode::Insert, true));
         // A click no longer loses the mode: the editor still knows it.
-        app.on_pointer_click();
+        app.on_pointer_click(0);
         assert_eq!(app.mode_known(), (VimMode::Insert, true));
     }
 
@@ -1964,5 +2026,42 @@ pub(crate) mod tests {
             (st.layout.as_deref(), st.layout_note.as_deref()),
             (Some("us"), Some("a note"))
         );
+    }
+
+    #[test]
+    fn clicking_files_open_suggests_quick_open() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
+        focus(&mut app, "code_code", 500);
+        let opened = |app: &mut App, at| {
+            send(
+                app,
+                2,
+                ClientMsg::EditorEvent {
+                    event: UiEvent::FileOpened,
+                },
+                at,
+            )
+        };
+        for at in [10_000, 20_000, 30_000] {
+            app.on_pointer_click(at - 200);
+            opened(&mut app, at);
+        }
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].rule_id, "vscode.quick-open");
+        // With Ctrl-P first it's the better way, even after a click.
+        app.on_pointer_click(39_000);
+        let ctrl_p = KeyStroke {
+            key: Key::ctrl('p'),
+            repeat: false,
+            at_ms: 39_500,
+        };
+        app.on_key(ctrl_p, 39_500);
+        for at in [40_000, 41_000, 42_000] {
+            opened(&mut app, at);
+        }
+        assert!(nudges(&mut ext).is_empty());
     }
 }

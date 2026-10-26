@@ -98,6 +98,15 @@ impl Engine {
         })
     }
 
+    /// A command the shell hook reported.
+    pub fn on_shell(&mut self, ev: &crate::rules::shell::ShellEvent) -> Vec<RuleEvent> {
+        let mut out = Vec::new();
+        for rule in self.active(ContextKind::Shell) {
+            rule.on_shell(ev, &mut out);
+        }
+        out
+    }
+
     /// An operator reported by an editor plugin.
     pub fn on_operator(&mut self, context: ContextKind, ev: &OperatorEvent) -> Vec<RuleEvent> {
         let mut out = Vec::new();

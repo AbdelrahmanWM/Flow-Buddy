@@ -105,7 +105,8 @@ pub fn app_ids(config: &Config) -> AppIds {
 
 fn flavor(kind: ContextKind) -> Flavor {
     match kind {
-        ContextKind::BashVi => Flavor::Readline,
+        // Like readline vi-mode: Insert to start with, a small Normal mode.
+        ContextKind::BashVi | ContextKind::ClaudeVim => Flavor::Readline,
         _ => Flavor::Vim,
     }
 }
@@ -376,18 +377,24 @@ impl App {
     /// Findings and adoptions go here: coaching policy and storage hook in
     /// at this point.
     fn on_rule_events(&mut self, events: &[RuleEvent], now_ms: u64) {
+        self.on_rule_events_in(self.resolved.kind, events, now_ms);
+    }
+
+    /// Rule events from `ctx`, which is the focused context except for the
+    /// shell pack's (see [`ContextKind::Shell`]).
+    fn on_rule_events_in(&mut self, ctx: ContextKind, events: &[RuleEvent], now_ms: u64) {
         let gate = self.gate(now_ms);
         let muted = self.state.muted();
-        let ctx = self.resolved.kind;
+        let keyed = ctx != ContextKind::Shell;
         for ev in events {
             match ev {
-                RuleEvent::Finding(f) if !self.editor_saw(f.at_ms) => {
+                RuleEvent::Finding(f) if keyed && !self.editor_saw(f.at_ms) => {
                     tracing::debug!(
                         rule = f.rule_id,
                         "finding dropped: keys didn't reach the editor"
                     );
                 }
-                RuleEvent::Adoption { at_ms, .. } if !self.editor_saw(*at_ms) => {}
+                RuleEvent::Adoption { at_ms, .. } if keyed && !self.editor_saw(*at_ms) => {}
                 RuleEvent::Finding(f) => {
                     tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
                     self.memory.hit(f, ctx, now_ms);
@@ -645,8 +652,17 @@ impl App {
                 command,
                 vi_mode,
                 shell_pid,
+                shape,
                 ..
             } => {
+                if let Some(shape) = shape.filter(|_| self.capturing(now_ms)) {
+                    let ev = flowbuddy_core::rules::shell::ShellEvent {
+                        shape,
+                        at_ms: now_ms,
+                    };
+                    let events = self.engine.on_shell(&ev);
+                    self.on_rule_events_in(ContextKind::Shell, &events, now_ms);
+                }
                 let (state, known) = match event {
                     CtxEvent::Fg => (ShellState::Fg(command.unwrap_or_default()), VimMode::Normal),
                     CtxEvent::Prompt => (
@@ -949,6 +965,7 @@ pub(crate) mod tests {
                 vi_mode: Some(true),
                 shell_pid,
                 tty: None,
+                shape: None,
             },
             0,
         );
@@ -1466,6 +1483,42 @@ pub(crate) mod tests {
             );
         }
         assert_eq!(threshold(&app, "vim.repeat-x"), Some(6));
+    }
+
+    #[test]
+    fn shell_shapes_are_coached_from_any_window() {
+        use flowbuddy_core::ipc::CommandShape;
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "firefox", 900);
+        let cd = |app: &mut App, at| {
+            send(
+                app,
+                1,
+                ClientMsg::Ctx {
+                    event: CtxEvent::Fg,
+                    command: Some("cd".into()),
+                    vi_mode: None,
+                    shell_pid: 200,
+                    tty: None,
+                    shape: Some(CommandShape::CdUp),
+                },
+                at,
+            )
+        };
+        cd(&mut app, 1_000);
+        cd(&mut app, 3_000);
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].rule_id, "shell.cd-up");
+        let store = app.memory.store().unwrap();
+        assert!(
+            store
+                .patterns()
+                .unwrap()
+                .iter()
+                .any(|p| p.context == "shell")
+        );
     }
 
     #[test]

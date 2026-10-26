@@ -30,6 +30,20 @@ pub enum CtxEvent {
     Prompt,
 }
 
+/// The shape of a command line, from the shell hook.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CommandShape {
+    /// Exactly `cd ..`.
+    CdUp,
+    /// `cd ../..` or further up in one go: the better way.
+    CdUpMany,
+    /// Its last argument is the previous command's long last argument.
+    ReusedArg,
+    /// The previous command with one word changed.
+    OneWordChanged,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NudgeAction {
@@ -101,6 +115,10 @@ pub enum ClientMsg {
         shell_pid: u32,
         #[serde(default)]
         tty: Option<String>,
+        /// What kind of command line it was, worked out by the hook from a
+        /// fixed list; the command line itself is never sent.
+        #[serde(default)]
+        shape: Option<CommandShape>,
     },
     NudgeResponse {
         nudge_id: String,
@@ -338,6 +356,7 @@ mod tests {
             r#"{"v":0,"type":"hello","client":"gnome-extension","client_version":"0.1.0"}"#,
             r#"{"v":0,"type":"focus","app_id":"code_code","title":"main.rs - Flow-Buddy - Visual Studio Code","pid":41230}"#,
             r#"{"v":0,"type":"ctx","event":"fg","command":"vim","shell_pid":51002,"tty":"/dev/pts/3"}"#,
+            r#"{"v":0,"type":"ctx","event":"fg","command":"cd","shell_pid":51002,"shape":"cd-up"}"#,
             r#"{"v":0,"type":"ctx","event":"prompt","vi_mode":true,"shell_pid":51002,"tty":"/dev/pts/3"}"#,
             r#"{"v":0,"type":"nudge_response","nudge_id":"n-1729740000-3","action":"dismiss"}"#,
             r#"{"v":0,"type":"pointer_click"}"#,

@@ -161,8 +161,9 @@ When nothing is focused, `app_id` is `null`. The protocol accepts an optional `t
 ```json
 {"v":0,"type":"ctx","event":"fg","command":"vim","shell_pid":51002,"tty":"/dev/pts/3"}
 {"v":0,"type":"ctx","event":"prompt","vi_mode":true,"shell_pid":51002,"tty":"/dev/pts/3"}
+{"v":0,"type":"ctx","event":"fg","command":"cd","shell_pid":51002,"shape":"cd-up"}
 ```
-`command` is the basename of the command only, never its arguments. `vi_mode` comes from checking `$SHELLOPTS` for `vi`. If it's false, the daemon treats the prompt as `Unsupported`.
+`command` is the basename of the command only, never its arguments. `vi_mode` comes from the shell (`$SHELLOPTS` in bash, `bindkey` in zsh, `$fish_key_bindings` in fish). If it's false, the daemon treats the prompt as `Unsupported`. `shape` (optional) is one of `cd-up`, `cd-up-many`, `reused-arg` and `one-word-changed`, worked out by the hook from the command line and the one before it, which stay in the shell; it feeds the `shell` pack.
 
 **`nudge_response`**: the user acted on a nudge in the indicator.
 ```json

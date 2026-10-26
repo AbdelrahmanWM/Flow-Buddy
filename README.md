@@ -39,7 +39,7 @@ Details, including the IPC protocol and the context model, are in [docs/architec
 
 ## What it coaches
 
-Vim in VS Code (vscodevim), Vim and Neovim in the terminal, and bash vi-mode.
+Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh and fish, and a few shell habits such as `cd ..` again and again.
 
 | You did | Try |
 |---|---|
@@ -71,7 +71,7 @@ Linux, initially Ubuntu with GNOME on Wayland.
 
 ## Install
 
-Requires Rust (via [rustup](https://rustup.rs)), GNOME Shell 50 and bash.
+Requires Rust (via [rustup](https://rustup.rs)), GNOME Shell 50, and bash, zsh or fish.
 
 ```sh
 scripts/install.sh --dry-run      # see what it will do

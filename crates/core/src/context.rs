@@ -8,8 +8,14 @@ pub enum ContextKind {
     VsCodeVim,
     /// Terminal focused, foreground command is vim/vi/nvim.
     TerminalVim,
-    /// Terminal focused, bash at the prompt with `set -o vi`.
+    /// Terminal focused, a shell (bash, zsh or fish) at the prompt in
+    /// vi-mode. Called bash-vi for history's sake.
     BashVi,
+    /// Claude Code's prompt with its Vim mode on.
+    ClaudeVim,
+    /// The shell's own commands as the hook reports them (`cd ..` again
+    /// and again). Never a focus context: no keys are read for it.
+    Shell,
     /// Anything else: keys are dropped.
     Unsupported,
 }
@@ -25,6 +31,8 @@ impl ContextKind {
             ContextKind::VsCodeVim => "vscode-vim",
             ContextKind::TerminalVim => "terminal-vim",
             ContextKind::BashVi => "bash-vi",
+            ContextKind::ClaudeVim => "claude-vim",
+            ContextKind::Shell => "shell",
             ContextKind::Unsupported => "unsupported",
         }
     }
@@ -34,6 +42,8 @@ impl ContextKind {
             ContextKind::VsCodeVim,
             ContextKind::TerminalVim,
             ContextKind::BashVi,
+            ContextKind::ClaudeVim,
+            ContextKind::Shell,
             ContextKind::Unsupported,
         ]
         .into_iter()

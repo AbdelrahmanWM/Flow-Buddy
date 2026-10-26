@@ -56,7 +56,7 @@ if command -v gsettings >/dev/null; then
 fi
 run rm -rf "$ext_dir"
 run rm -f "$bin_dir/flowbuddyd" "$bin_dir/flowbuddy"
-run rm -f "$share_dir/flowbuddy.bash"
+run rm -f "$share_dir/flowbuddy.bash" "$share_dir/flowbuddy.zsh" "$share_dir/flowbuddy.fish"
 
 vscode_exts=("$vscode_dir"/flowbuddy.flowbuddy-vscode-*)
 if [[ -e ${vscode_exts[0]} ]]; then
@@ -85,10 +85,13 @@ for pack in "$HOME/.vim/pack/flowbuddy" "${XDG_DATA_HOME:-$HOME/.local/share}/nv
     fi
 done
 
-say "Removing the ~/.bashrc block"
-if grep -qF "# >>> flowbuddy >>>" "$bashrc" 2>/dev/null; then
-    run sed -i '/# >>> flowbuddy >>>/,/# <<< flowbuddy <<</d' "$bashrc"
-fi
+say "Removing the shell hooks"
+for rc in "$bashrc" "${ZDOTDIR:-$HOME}/.zshrc"; do
+    if grep -qF "# >>> flowbuddy >>>" "$rc" 2>/dev/null; then
+        run sed -i '/# >>> flowbuddy >>>/,/# <<< flowbuddy <<</d' "$rc"
+    fi
+done
+run rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/flowbuddy.fish"
 
 if [[ -f $udev_rule ]]; then
     say "Removing the keyboard access rule (needs sudo)"

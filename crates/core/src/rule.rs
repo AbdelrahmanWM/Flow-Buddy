@@ -95,6 +95,9 @@ pub trait Rule: Send {
     /// A movement an editor plugin reported, with the keys pressed for it.
     fn on_motion(&mut self, _ev: &MotionEvent, _out: &mut Vec<RuleEvent>) {}
 
+    /// A command the shell hook reported, by its shape.
+    fn on_shell(&mut self, _ev: &crate::rules::shell::ShellEvent, _out: &mut Vec<RuleEvent>) {}
+
     /// An operator an editor plugin reported, with the text objects its
     /// range matched and the keys pressed for it.
     fn on_operator(&mut self, _ev: &OperatorEvent, _out: &mut Vec<RuleEvent>) {}

@@ -106,6 +106,10 @@ pub fn mark(cmd: &str) -> String {
 /// with what it does. Unknown keys are left out.
 pub fn explain_keys(keys: &str, insert: bool) -> Vec<(String, &'static str)> {
     let mut out = Vec::new();
+    if let Some(m) = phrase(keys) {
+        out.push((keys.to_string(), m));
+        return out;
+    }
     for word in keys.split_whitespace() {
         if matches!(word, "then" | "or" | "…" | "and") {
             continue;
@@ -122,6 +126,20 @@ pub fn explain_keys(keys: &str, insert: bool) -> Vec<(String, &'static str)> {
         parse(word, &mut out);
     }
     out
+}
+
+/// Shell commands explained as a whole.
+fn phrase(keys: &str) -> Option<&'static str> {
+    Some(match keys {
+        "cd ../.." => "go up two folders at once (add more ../ for more)",
+        "cd -" => "go back to the folder you were in before",
+        "cd .." => "go up one folder",
+        "!$" => "the previous command's last argument",
+        "Alt-." => "insert the previous command's last argument (again for older ones)",
+        "^old^new" => "rerun the last command with old replaced by new",
+        "Up" => "bring back the previous command to edit",
+        _ => return None,
+    })
 }
 
 /// Commands that are explained as a whole.

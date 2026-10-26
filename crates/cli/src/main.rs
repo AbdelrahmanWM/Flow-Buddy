@@ -37,6 +37,8 @@ enum Cmd {
     ReportFp,
     /// The one habit worth working on now.
     Next,
+    /// Your daily "something new" and your progress through Vim's features.
+    Learn,
     /// Ask a local model about your habits (set `[ai] command` first).
     Coach {
         /// A question, e.g. "how do I move faster in big files?"
@@ -151,6 +153,7 @@ fn main() {
         Cmd::Mode { mode } => set_mode(mode),
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),
+        Cmd::Learn => learn(),
         Cmd::Coach {
             weekly_note: true, ..
         } => weekly_note(),
@@ -273,7 +276,14 @@ fn open_db() -> anyhow::Result<Option<flowbuddy_store::Store>> {
     if !path.exists() {
         return Ok(None);
     }
-    Ok(Some(flowbuddy_store::Store::open_read_only(&path)?))
+    let store = flowbuddy_store::Store::open_read_only(&path)?;
+    if !store.is_current() {
+        anyhow::bail!(
+            "the daemon hasn't updated the database yet: restart it after updating \
+             (systemctl --user restart flowbuddyd)"
+        );
+    }
+    Ok(Some(store))
 }
 
 fn summary(week: bool) -> anyhow::Result<()> {
@@ -380,6 +390,14 @@ fn explain(keys: &str, insert: bool) {
     for (piece, meaning) in pieces {
         println!("{piece:<width$}  {meaning}");
     }
+}
+
+fn learn() -> anyhow::Result<()> {
+    match open_db()? {
+        Some(store) => print!("{}", report::learn(&store, now_ms())?),
+        None => println!("Nothing recorded yet. Is flowbuddyd running? Try `flowbuddy status`."),
+    }
+    Ok(())
 }
 
 fn next() -> anyhow::Result<()> {

@@ -26,6 +26,21 @@ pub struct Config {
     pub learning: LearningConfig,
     pub ai: AiConfig,
     pub typing: TypingConfig,
+    pub learn: LearnConfig,
+}
+
+/// The daily "something new".
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LearnConfig {
+    /// One small unused Vim feature a day, in every mode but off.
+    pub daily: bool,
+}
+
+impl Default for LearnConfig {
+    fn default() -> Self {
+        LearnConfig { daily: true }
+    }
 }
 
 /// Opt-in typing statistics.
@@ -251,6 +266,8 @@ pub struct State {
     /// Local date of the last weekly progress note, or when the first
     /// week started.
     pub last_weekly_day: Option<String>,
+    /// Local date of the last "something new".
+    pub last_learn_day: Option<String>,
 }
 
 impl State {

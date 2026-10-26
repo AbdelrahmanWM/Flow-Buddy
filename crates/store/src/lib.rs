@@ -95,7 +95,33 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX tip_outcomes_shown ON tip_outcomes (shown_at);
 "#,
+    r#"
+    -- Which curriculum items you use, and the daily "something new" tips.
+    CREATE TABLE commands_used (
+        day     TEXT    NOT NULL,
+        item_id TEXT    NOT NULL,  -- a curriculum id such as ci-quote
+        count   INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day, item_id)
+    );
+    CREATE TABLE learn_items (
+        item_id     TEXT    PRIMARY KEY,
+        first_shown INTEGER NOT NULL,  -- unix seconds
+        last_shown  INTEGER NOT NULL,
+        times_shown INTEGER NOT NULL DEFAULT 1,
+        learned_at  INTEGER            -- when you started using it
+    );
+"#,
 ];
+
+/// Progress on one curriculum item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LearnRow {
+    pub item_id: String,
+    pub first_shown: u64,
+    pub last_shown: u64,
+    pub times_shown: u32,
+    pub learned_at: Option<u64>,
+}
 
 /// A tip as shown, for the learned filter.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -240,6 +266,14 @@ impl Store {
         let store = Store { conn };
         store.migrate()?;
         Ok(store)
+    }
+
+    /// Whether the database has every table this version knows. A database
+    /// opened read-only by the CLI is only migrated by the daemon.
+    pub fn is_current(&self) -> bool {
+        self.conn
+            .pragma_query_value(None, "user_version", |r| r.get::<_, usize>(0))
+            .is_ok_and(|v| v >= MIGRATIONS.len())
     }
 
     fn migrate(&self) -> Result<()> {
@@ -471,11 +505,64 @@ impl Store {
         self.conn.execute_batch(
             "DELETE FROM daily_stats; DELETE FROM activity; DELETE FROM patterns;
              DELETE FROM episodes; DELETE FROM typing; DELETE FROM typo_pairs;
-             DELETE FROM tip_outcomes;",
+             DELETE FROM tip_outcomes; DELETE FROM commands_used; DELETE FROM learn_items;",
         )?;
         self.conn.execute_batch("VACUUM")?;
         let _ = self.conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
         Ok(())
+    }
+
+    pub fn add_command_use(&self, day: &str, item_id: &str, count: u64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO commands_used (day, item_id, count) VALUES (?1, ?2, ?3)
+             ON CONFLICT (day, item_id) DO UPDATE SET count = count + excluded.count",
+            params![day, item_id, count],
+        )?;
+        Ok(())
+    }
+
+    /// Uses of each curriculum item from `from_day` on.
+    pub fn command_uses(&self, from_day: &str) -> Result<HashMap<String, u64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT item_id, SUM(count) FROM commands_used WHERE day >= ?1 GROUP BY item_id",
+        )?;
+        let rows = stmt.query_map(params![from_day], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    /// A curriculum item was shown as the day's "something new".
+    pub fn learn_shown(&self, item_id: &str, now_s: u64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO learn_items (item_id, first_shown, last_shown) VALUES (?1, ?2, ?2)
+             ON CONFLICT (item_id) DO UPDATE SET last_shown = ?2, times_shown = times_shown + 1",
+            params![item_id, now_s],
+        )?;
+        Ok(())
+    }
+
+    pub fn learn_learned(&self, item_id: &str, now_s: u64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE learn_items SET learned_at = ?2 WHERE item_id = ?1 AND learned_at IS NULL",
+            params![item_id, now_s],
+        )?;
+        Ok(())
+    }
+
+    pub fn learn_items(&self) -> Result<Vec<LearnRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT item_id, first_shown, last_shown, times_shown, learned_at FROM learn_items
+             ORDER BY first_shown",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(LearnRow {
+                item_id: r.get(0)?,
+                first_shown: r.get(1)?,
+                last_shown: r.get(2)?,
+                times_shown: r.get(3)?,
+                learned_at: r.get(4)?,
+            })
+        })?;
+        rows.collect()
     }
 
     /// A tip was shown; returns its row, for [`Store::close_tip`].
@@ -603,6 +690,8 @@ impl Store {
             ("typing", "day, context"),
             ("typo_pairs", "day, pair"),
             ("tip_outcomes", "rule_id, context, stage, mode"),
+            ("commands_used", "day, item_id"),
+            ("learn_items", "item_id"),
         ] {
             let mut stmt = self.conn.prepare(&format!("SELECT {cols} FROM {table}"))?;
             let n = stmt.column_count();
@@ -891,5 +980,25 @@ mod tests {
         assert_eq!(rows[1].outcome, None);
         assert_eq!(s.prune_tips(150).unwrap(), 1);
         assert_eq!(s.tips(0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn command_uses_and_learning() {
+        let s = Store::open_in_memory().unwrap();
+        s.add_command_use("2026-10-24", "ciw", 2).unwrap();
+        s.add_command_use("2026-10-25", "ciw", 1).unwrap();
+        s.add_command_use("2026-10-25", "star", 4).unwrap();
+        let uses = s.command_uses("2026-10-25").unwrap();
+        assert_eq!((uses["ciw"], uses["star"]), (1, 4));
+        s.learn_shown("ciw", 100).unwrap();
+        s.learn_shown("ciw", 200).unwrap();
+        s.learn_learned("ciw", 300).unwrap();
+        s.learn_learned("ciw", 400).unwrap();
+        let rows = s.learn_items().unwrap();
+        assert_eq!(
+            (rows[0].times_shown, rows[0].first_shown, rows[0].last_shown),
+            (2, 100, 200)
+        );
+        assert_eq!(rows[0].learned_at, Some(300));
     }
 }

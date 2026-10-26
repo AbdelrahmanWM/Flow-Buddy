@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use flowbuddy_core::config::Config;
 use flowbuddy_core::context::ContextKind;
+use flowbuddy_core::curriculum;
 use flowbuddy_core::ipc::NudgeAction;
 use flowbuddy_core::learning::{self, LearningConfig, Stage};
 use flowbuddy_core::rule::Finding;
@@ -333,6 +334,63 @@ impl Memory {
             NudgeAction::Seen | NudgeAction::MuteRule => return,
         };
         self.record(ctx, rule_id, event, now_ms);
+    }
+
+    /// Write curriculum uses, and mark shown items you've started using as
+    /// learned.
+    pub fn command_uses(&self, usage: HashMap<&'static str, u64>, now_ms: u64) {
+        let Some(store) = &self.store else { return };
+        if usage.is_empty() {
+            return;
+        }
+        let today = day(now_ms);
+        for (id, n) in &usage {
+            let _ = store.add_command_use(&today, id, *n);
+        }
+        for row in store.learn_items().unwrap_or_default() {
+            if row.learned_at.is_some() || !usage.contains_key(row.item_id.as_str()) {
+                continue;
+            }
+            let since = day(row.first_shown * 1000);
+            let uses = store
+                .command_uses(&since)
+                .ok()
+                .and_then(|u| u.get(&row.item_id).copied())
+                .unwrap_or(0);
+            if uses >= curriculum::KNOWN_USES {
+                let _ = store.learn_learned(&row.item_id, now_ms / 1000);
+            }
+        }
+    }
+
+    /// The day's "something new", if anything's left to learn.
+    pub fn pick_something_new(&self, now_ms: u64) -> Option<&'static curriculum::Item> {
+        let store = self.store.as_ref()?;
+        let uses = store.command_uses("0000-00-00").ok()?;
+        let items: HashMap<String, flowbuddy_store::LearnRow> = store
+            .learn_items()
+            .ok()?
+            .into_iter()
+            .map(|r| (r.item_id.clone(), r))
+            .collect();
+        curriculum::pick(
+            &|id| {
+                let row = items.get(id);
+                curriculum::Progress {
+                    uses: uses.get(id).copied().unwrap_or(0),
+                    times_shown: row.map_or(0, |r| r.times_shown),
+                    last_shown: row.map(|r| r.last_shown),
+                    learned: row.is_some_and(|r| r.learned_at.is_some()),
+                }
+            },
+            now_ms / 1000,
+        )
+    }
+
+    pub fn learn_shown(&self, item_id: &str, now_ms: u64) {
+        if let Some(store) = &self.store {
+            let _ = store.learn_shown(item_id, now_ms / 1000);
+        }
     }
 
     /// Write typing accuracy counts (opt-in).

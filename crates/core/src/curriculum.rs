@@ -517,6 +517,42 @@ pub fn find(id: &str) -> Option<&'static Item> {
     CURRICULUM.iter().find(|i| i.id == id)
 }
 
+/// Used this many times, an item counts as known.
+pub const KNOWN_USES: u64 = 3;
+/// An item is shown at most this many times.
+pub const MAX_SHOWINGS: u32 = 3;
+/// And not again within this many days.
+pub const AGAIN_AFTER_DAYS: u64 = 7;
+
+/// What's known about one item.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Progress {
+    /// Times used, ever.
+    pub uses: u64,
+    pub times_shown: u32,
+    /// Unix seconds.
+    pub last_shown: Option<u64>,
+    pub learned: bool,
+}
+
+/// The day's "something new": the first item you don't use yet, haven't
+/// learned, and weren't shown lately.
+pub fn pick(progress: &dyn Fn(&str) -> Progress, now_s: u64) -> Option<&'static Item> {
+    CURRICULUM.iter().find(|item| {
+        let p = progress(item.id);
+        p.uses < KNOWN_USES
+            && !p.learned
+            && p.times_shown < MAX_SHOWINGS
+            && p.last_shown
+                .is_none_or(|t| now_s.saturating_sub(t) >= AGAIN_AFTER_DAYS * 86_400)
+    })
+}
+
+/// The tip text for an item, with its commands marked.
+pub fn tip_text(item: &Item) -> String {
+    format!("{}: {}. {}", item.keys, item.what, item.example)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -584,6 +620,48 @@ mod tests {
         }
         // An argument isn't a motion: `fw` is find, not word.
         assert!(!used("fw").contains(&"word"));
+    }
+
+    #[test]
+    fn picks_the_first_thing_you_dont_use() {
+        use std::collections::HashMap;
+        let mut known: HashMap<&str, Progress> = HashMap::new();
+        let first = |known: &HashMap<&str, Progress>, now| {
+            pick(&|id| known.get(id).copied().unwrap_or_default(), now).map(|i| i.id)
+        };
+        assert_eq!(first(&known, 0), Some("word"));
+        known.insert(
+            "word",
+            Progress {
+                uses: 50,
+                ..Default::default()
+            },
+        );
+        assert_eq!(first(&known, 0), Some("word-end"));
+        // Shown yesterday: not again for a week.
+        known.insert(
+            "word-end",
+            Progress {
+                times_shown: 1,
+                last_shown: Some(0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(first(&known, 86_400), Some("line-ends"));
+        assert_eq!(first(&known, 8 * 86_400), Some("word-end"));
+        // Learned, or shown three times: done with it.
+        known.insert(
+            "word-end",
+            Progress {
+                learned: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(first(&known, 8 * 86_400), Some("line-ends"));
+        assert_eq!(
+            tip_text(find("ci-quote").unwrap()),
+            "`ci\"`: change everything inside the quotes, from anywhere in them. Replace a string's text in one go."
+        );
     }
 
     #[test]

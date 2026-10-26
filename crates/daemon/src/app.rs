@@ -68,6 +68,10 @@ pub struct App {
     /// shortcut (Ctrl-P, Ctrl-`) as its letter and time.
     last_click_ms: Option<u64>,
     last_shortcut: Option<(char, u64)>,
+    /// When the last tip was shown.
+    last_nudge_ms: Option<u64>,
+    /// Curriculum items used since the last write, by id.
+    usage: HashMap<&'static str, u64>,
     /// Opt-in typing accuracy, written once a minute.
     typing: crate::typing::Typing,
     typing_flushed_ms: u64,
@@ -104,6 +108,9 @@ const MAX_RAISE: u32 = 3;
 const UI_SHORTCUT_MS: u64 = 15_000;
 /// A click this recent did.
 const UI_CLICK_MS: u64 = 1500;
+
+/// The daily "something new" waits this long after any other tip.
+const LEARN_GAP_MS: u64 = 5 * 60_000;
 
 /// How often to look at Claude Code's settings for its Vim mode.
 const CLAUDE_CHECK_MS: u64 = 5000;
@@ -195,6 +202,8 @@ impl App {
             claude_probe: crate::claude::vim_mode_on,
             last_click_ms: None,
             last_shortcut: None,
+            last_nudge_ms: None,
+            usage: HashMap::new(),
             typing: crate::typing::Typing::default(),
             typing_flushed_ms: 0,
             layout: None,
@@ -324,18 +333,32 @@ impl App {
         {
             return;
         }
+        self.show(
+            f.rule_id,
+            f.title,
+            &f.text,
+            f.mode == VimMode::Insert,
+            now_ms,
+        );
+        self.memory.nudged(f.rule_id, now_ms);
+        self.memory
+            .tip_shown(f.rule_id, self.mode.as_str(), hour, now_ms);
+    }
+
+    /// Put a tip on screen: through the extension, or as a notification.
+    fn show(&mut self, rule_id: &'static str, title: &str, text: &str, insert: bool, now_ms: u64) {
         self.nudge_seq += 1;
         let nudge = Nudge {
             nudge_id: format!("n-{now_ms}-{}", self.nudge_seq),
-            rule_id: f.rule_id.into(),
-            title: f.title.into(),
-            text: f.text.clone(),
+            rule_id: rule_id.into(),
+            title: title.into(),
+            text: text.into(),
             ttl_ms: u64::from(self.config.coaching.nudge_seconds) * 1000,
             style: self.config.coaching.nudge_style.unwrap_or(match self.mode {
                 CoachingMode::Active => NudgeStyle::Card,
                 _ => NudgeStyle::Bar,
             }),
-            explain: glossary::explain(&f.text, f.mode == VimMode::Insert),
+            explain: glossary::explain(text, insert),
         };
         if self.extension_connected() {
             self.broadcast(ServerMsg::Nudge(nudge.clone()));
@@ -352,17 +375,47 @@ impl App {
         if self.nudges.len() == NUDGE_HISTORY {
             self.nudges.pop_front();
         }
-        self.nudges.push_back((nudge.nudge_id, f.rule_id));
-        self.memory.nudged(f.rule_id, now_ms);
-        let hour = {
-            use chrono::{TimeZone, Timelike};
-            chrono::Local
-                .timestamp_millis_opt(now_ms as i64)
-                .single()
-                .map_or(12, |t| t.hour())
+        self.nudges.push_back((nudge.nudge_id, rule_id));
+        self.last_nudge_ms = Some(now_ms);
+    }
+
+    /// Once a day, in every mode but off: one thing from the curriculum you
+    /// don't use yet, while you're in Vim and nothing else was just shown.
+    fn something_new(&mut self, now_ms: u64) {
+        const RULE: &str = "learn.daily";
+        let today = memory::day(now_ms);
+        let quiet = self
+            .config
+            .coaching
+            .quiet_hours
+            .as_deref()
+            .and_then(config::parse_range)
+            .is_some_and(|q| q.contains(self.gate(now_ms).local_minute));
+        let editing = matches!(
+            self.resolved.kind,
+            ContextKind::VsCodeVim | ContextKind::TerminalVim
+        );
+        if !self.config.learn.daily
+            || self.mode == CoachingMode::Off
+            || !self.capturing(now_ms)
+            || quiet
+            || !editing
+            || self.state.last_learn_day.as_deref() == Some(today.as_str())
+            || self.state.muted().contains(RULE)
+            || self
+                .last_nudge_ms
+                .is_some_and(|t| now_ms.saturating_sub(t) < LEARN_GAP_MS)
+        {
+            return;
+        }
+        let Some(item) = self.memory.pick_something_new(now_ms) else {
+            return;
         };
-        self.memory
-            .tip_shown(f.rule_id, self.mode.as_str(), hour, now_ms);
+        self.state.last_learn_day = Some(today);
+        self.save_state();
+        let text = flowbuddy_core::curriculum::tip_text(item);
+        self.show(RULE, "Something new", &text, false, now_ms);
+        self.memory.learn_shown(item.id, now_ms);
     }
 
     fn nudge_rule(&self, nudge_id: &str) -> Option<&'static str> {
@@ -599,6 +652,8 @@ impl App {
             self.typing_flushed_ms = now_ms;
             let counts = self.typing.take();
             self.memory.typing(counts, now_ms);
+            let usage = std::mem::take(&mut self.usage);
+            self.memory.command_uses(usage, now_ms);
         }
         // Switching tmux panes tells no one; look again.
         if self.resolver.via_tmux() {
@@ -609,6 +664,7 @@ impl App {
             self.mode_changed();
             self.save_state();
         }
+        self.something_new(now_ms);
         let events = self.engine.tick(self.resolved.kind, now_ms);
         self.on_rule_events(&events, now_ms);
         let gate = self.gate(now_ms);
@@ -643,6 +699,18 @@ impl App {
         }
         self.memory.active(kind, now_ms);
         let step = self.tracker.feed(stroke);
+        if step.confident
+            && matches!(
+                kind,
+                ContextKind::VsCodeVim | ContextKind::TerminalVim | ContextKind::ClaudeVim
+            )
+        {
+            for item in flowbuddy_core::curriculum::CURRICULUM {
+                if item.used_in(&step) {
+                    *self.usage.entry(item.id).or_default() += 1;
+                }
+            }
+        }
         if self.config.typing.accuracy {
             match (&step.event, stroke.key.sym) {
                 (Some(VimEvent::Insert(InsertKey::Text)), Sym::Char(c)) => {
@@ -1610,6 +1678,8 @@ pub(crate) mod tests {
         use chrono::TimeZone;
         let (mut app, recorder) = app_with_store(CoachingMode::Passive);
         app.config.coaching.summary_time = "18:00".into();
+        // Only the summary here; the daily tip has its own test.
+        app.config.learn.daily = false;
         let at = |h, m| {
             chrono::Local
                 .with_ymd_and_hms(2026, 10, 24, h, m, 0)
@@ -2237,5 +2307,47 @@ pub(crate) mod tests {
                 .unwrap()
                 .ends_with("1 skipped today")
         );
+    }
+
+    #[test]
+    fn something_new_once_a_day() {
+        use chrono::TimeZone;
+        let (mut app, _) = app_with_store(CoachingMode::Balanced);
+        let mut ext = ext_hello(&mut app, 1);
+        let at = |d, h| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 10, d, h, 0, 0)
+                .unwrap()
+                .timestamp_millis() as u64
+        };
+        // Not while you're elsewhere.
+        focus(&mut app, "firefox", 900);
+        app.tick(at(20, 10));
+        assert!(nudges(&mut ext).is_empty());
+        focus(&mut app, "code_code", 500);
+        // You already move by words: that's not new to you.
+        type_at(&mut app, "<Esc>wwwbbb", at(20, 10));
+        app.tick(at(20, 10) + 61_000);
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].rule_id, "learn.daily");
+        assert!(
+            n[0].text.starts_with("`e`: jump to the end of the word"),
+            "{}",
+            n[0].text
+        );
+        assert!(!n[0].explain.is_empty());
+        // Once a day.
+        app.tick(at(20, 15));
+        assert!(nudges(&mut ext).is_empty());
+        // You start using it: learned.
+        type_at(&mut app, "<Esc>eee", at(20, 16));
+        app.tick(at(20, 16) + 120_000);
+        let learned = app.memory.store().unwrap().learn_items().unwrap();
+        assert!(learned[0].learned_at.is_some(), "{learned:?}");
+        // The next day, the next thing.
+        app.tick(at(21, 10));
+        let n = nudges(&mut ext);
+        assert!(n[0].text.starts_with("`0`, `^` and `$`"), "{}", n[0].text);
     }
 }

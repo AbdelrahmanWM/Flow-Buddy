@@ -60,6 +60,9 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh
 `flowbuddy coach` asks an AI of your choice (your Claude subscription, an API key, or a local model) for advice based on the mistake memory. It's off until you set it up, and `--prompt` shows exactly what would be sent:
 
 ```toml
+[learn]
+daily = true                                  # one small Vim feature you don't use yet, once a day
+
 [typing]
 accuracy = false                              # true: count corrections (counts only) for `flowbuddy summary`
 
@@ -106,6 +109,7 @@ flowbuddy mode balanced           # off | passive | balanced | active
 flowbuddy pause 1h                # or 30m, until-tomorrow; `flowbuddy resume`
 flowbuddy summary [--week]        # how you're doing vs. before
 flowbuddy next                    # the one habit worth working on now
+flowbuddy learn                   # today's "something new" and your progress through Vim
 flowbuddy explain 'ci"'            # what keys do, piece by piece
 flowbuddy coach [question]        # advice from a local model ([ai] command; --prompt shows what it sees)
 flowbuddy rules                   # list; `rules mute|disable|enable|reset <id>`

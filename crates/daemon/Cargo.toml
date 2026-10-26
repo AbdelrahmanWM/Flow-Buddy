@@ -26,6 +26,7 @@ serde_json.workspace = true
 serde.workspace = true
 xkbcommon = { version = "0.9", default-features = false, optional = true }
 chrono = "0.4.45"
+x11rb = "0.13"
 
 [lints]
 workspace = true

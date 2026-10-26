@@ -909,6 +909,13 @@ impl App {
         self.tracker.invalidate();
     }
 
+    /// The focused window changed (from the GNOME extension, or X11).
+    pub fn set_focus(&mut self, app_id: Option<String>, pid: Option<u32>, now_ms: u64) {
+        self.resolver.set_focus(app_id, pid);
+        self.resolver.prune();
+        self.update_context(None, now_ms);
+    }
+
     pub fn set_keyboards(&mut self, n: usize) {
         self.keyboards = n;
     }
@@ -967,11 +974,7 @@ impl App {
                     self.update_context(None, now_ms);
                 }
             }
-            ClientMsg::Focus { app_id, pid, .. } => {
-                self.resolver.set_focus(app_id, pid);
-                self.resolver.prune();
-                self.update_context(None, now_ms);
-            }
+            ClientMsg::Focus { app_id, pid, .. } => self.set_focus(app_id, pid, now_ms),
             ClientMsg::Ctx {
                 event,
                 command,

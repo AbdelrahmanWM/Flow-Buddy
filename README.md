@@ -76,7 +76,7 @@ filter = true                # the learned tip filter (no LLM); skips tips you t
 
 ## Platform
 
-Linux, initially Ubuntu with GNOME on Wayland.
+Linux: GNOME on Wayland (with the top-bar indicator), or any X11 desktop such as KDE, Xfce or i3 (tips as notifications). KDE on Wayland is #123.
 
 ## Install
 

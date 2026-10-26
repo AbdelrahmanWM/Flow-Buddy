@@ -29,6 +29,9 @@ impl Default for AppIds {
                 "code-oss",
                 "codium",
                 "com.visualstudio.code",
+                // X11 window classes.
+                "Code",
+                "VSCodium",
             ]),
             terminals: s(&[
                 "org.gnome.Terminal",
@@ -42,6 +45,14 @@ impl Default for AppIds {
                 "terminator",
                 "com.gexperts.Tilix",
                 "xterm",
+                // KDE, and X11 window classes.
+                "org.kde.konsole",
+                "konsole",
+                "Gnome-terminal",
+                "XTerm",
+                "URxvt",
+                "st-256color",
+                "Xfce4-terminal",
             ]),
             vims: s(&["vim", "vi", "nvim", "view", "vimdiff", "nvimdiff"]),
             claudes: s(&["claude"]),

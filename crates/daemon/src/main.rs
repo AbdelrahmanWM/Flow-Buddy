@@ -3,6 +3,7 @@ mod buffer;
 mod capture;
 mod claude;
 mod config_watch;
+mod focus_x11;
 mod ipc_server;
 mod keymap;
 mod memory;
@@ -93,6 +94,13 @@ async fn main() -> anyhow::Result<()> {
     let (cfg_tx, mut cfg_rx) = mpsc::channel::<()>(4);
     let watcher = tokio::spawn(config_watch::run(config_path.clone(), cfg_tx));
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
+    // Outside GNOME there's no extension to say what has focus; on X11 the
+    // daemon can see it itself.
+    let (x11_tx, mut x11_rx) = mpsc::unbounded_channel::<focus_x11::Focus>();
+    if focus_x11::wanted() {
+        info!("watching the focused window on X11");
+        focus_x11::watch(x11_tx);
+    }
 
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
@@ -125,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             _ = ticker.tick() => app.tick(now_ms()),
+            Some(f) = x11_rx.recv() => app.set_focus(f.app_id, f.pid, now_ms()),
             Some(()) = cfg_rx.recv() => match Config::load(&config_path) {
                 Ok(config) => app.reload_config(config),
                 Err(e) => warn!(error = %e, "config not reloaded"),

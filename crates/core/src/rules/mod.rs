@@ -14,6 +14,7 @@ use crate::rule::Rule;
 /// not listed come after, in [`all`] order.
 pub const PRECEDENCE: &[&str] = &[
     "vim.macro",
+    "vim.change-matches",
     "vim.dot-repeat",
     "vim.delete-then-insert",
     "vim.visual-operator",
@@ -112,6 +113,11 @@ pub(crate) mod testing {
                 Flavor::Vim,
                 VimMode::Normal,
                 "0cwnew<Esc>j0cwnew<Esc>j0cwnew<Esc>j",
+            ),
+            (
+                Flavor::Vim,
+                VimMode::Normal,
+                "uuuuuuu<Esc><C-r><C-r><C-r><C-r><C-r><C-r><Esc>n.n.n.n.A<CR>x<Esc>0ihi<Esc>",
             ),
             (
                 Flavor::Readline,

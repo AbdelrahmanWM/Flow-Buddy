@@ -404,6 +404,22 @@ pub static CURRICULUM: &[Item] = &[
         |s| is(s, &["@@"])
     ),
     item!(
+        "cgn",
+        3,
+        "`cgn`",
+        "change the next search match; then `.` jumps to the next one and changes it",
+        "Rename a variable one use at a time, skipping some with `n`.",
+        |s| is(s, &["cgn", "dgn"])
+    ),
+    item!(
+        "undo-time",
+        3,
+        "`:earlier 1m` and `g-`",
+        "go back through undo history by time, or step by step across branches",
+        "Get back to how the file was before the last few minutes of edits.",
+        |s| is(s, &["g-", "g+"]) || cmdline(s, &["earlier", "later"])
+    ),
+    item!(
         "case",
         3,
         "`~` and `gU`",
@@ -547,6 +563,8 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("gi", &["append"]),
     ("macro", &["dot"]),
     ("replay-macro", &["macro"]),
+    ("cgn", &["dot", "star"]),
+    ("undo-time", &["undo-redo"]),
     ("increment", &["count"]),
     ("substitute-all", &["substitute-cmd"]),
     ("global", &["substitute-all"]),
@@ -584,6 +602,8 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("vim.repeat-indent", &["count", "indent-object"]),
     ("vim.repeat-join", &["count", "join"]),
     ("vim.repeat-paste", &["count"]),
+    ("vim.undo-run", &["count", "undo-time"]),
+    ("vim.change-matches", &["cgn", "substitute-all"]),
     ("vim.shorthand", &["append", "open-line", "d-to-end"]),
     ("vim.visual-operator", &["ciw", "visual-object"]),
     ("motion.count", &["count"]),
@@ -792,6 +812,8 @@ mod tests {
             ("`.", "last-change"),
             ("qqq", "macro"),
             ("@@", "replay-macro"),
+            ("cgnx<Esc>", "cgn"),
+            (":earlier 1m<CR>", "undo-time"),
             ("gUiw", "case"),
             (">ip", "indent-object"),
             ("dt,", "till"),

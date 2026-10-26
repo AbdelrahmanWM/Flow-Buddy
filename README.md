@@ -52,10 +52,12 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh
 | `viwd`, `Vjjd` | `diw`, `3dd` |
 | The same change again | `.` |
 | The same edit on every line | a macro: `qq…q`, `@q` |
+| `n.n.n.` through search matches | `cgn` then `...`, or `:%s` |
+| `uuuuuuu` | `7u`, `:earlier 1m` |
 | `:w` then `:q` | `:wq` or `ZZ` |
 | `↑↑↑↑` hunting shell history | `Ctrl-r` |
 
-`flowbuddy rules` lists all of them. Motion coaching (the first three rows) compares each movement with the cheapest motion that lands in the same place. It needs the editor plugins, which tell Flow Buddy where a movement ended without sending any text: [vim-plugin/](vim-plugin/README.md) and [vscode-extension/](vscode-extension/README.md). Without them, the simpler rules that count repeated keys take over.
+`flowbuddy rules` lists all of them. Tips move one step at a time: Flow Buddy notices which commands you already use, and won't suggest `ci(` before you use `ciw`, or `t` before `f` (`flowbuddy learn` shows where you are). Motion coaching (the first three rows) compares each movement with the cheapest motion that lands in the same place. It needs the editor plugins, which tell Flow Buddy where a movement ended without sending any text: [vim-plugin/](vim-plugin/README.md) and [vscode-extension/](vscode-extension/README.md). Without them, the simpler rules that count repeated keys take over.
 
 `flowbuddy coach` asks an AI of your choice (your Claude subscription, an API key, or a local model) for advice based on the mistake memory. It's off until you set it up, and `--prompt` shows exactly what would be sent:
 

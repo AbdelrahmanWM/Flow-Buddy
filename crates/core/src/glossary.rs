@@ -123,6 +123,18 @@ pub fn explain_keys(keys: &str, insert: bool) -> Vec<(String, &'static str)> {
             out.push((word.to_string(), m));
             continue;
         }
+        // A count before a chord: `6Ctrl-r`.
+        let digits = word.len() - word.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits > 0
+            && let Some(m) = whole(&word[digits..], insert)
+        {
+            out.push((
+                word[..digits].to_string(),
+                "a count: do the next command that many times",
+            ));
+            out.push((word[digits..].to_string(), m));
+            continue;
+        }
         parse(word, &mut out);
     }
     out
@@ -145,6 +157,8 @@ fn phrase(keys: &str) -> Option<&'static str> {
         ":norm" => "run Normal-mode keys on each selected line",
         ":.,+5d" => "delete this line and the five after it",
         ":sort" => "sort the selected lines",
+        ":earlier 1m" => "go back to how the file was a minute ago",
+        ":later 1m" => "forward again a minute's worth of changes",
         "Ctrl-`" => "jump to the terminal and back (VS Code)",
         _ => return None,
     })
@@ -171,7 +185,7 @@ fn whole(word: &str, insert: bool) -> Option<&'static str> {
         "Ctrl-y" => "scroll the view up a line; the cursor stays",
         "Ctrl-o" => "back to where you were before the last jump",
         "Ctrl-i" => "forward again after Ctrl-o",
-        "Ctrl-r" => "search back through history as you type (bash)",
+        "Ctrl-r" => "redo (in bash: search back through history as you type)",
         "Ctrl-w" => "delete the word before the cursor",
         "Ctrl-v" => "select a block (columns)",
         "Ctrl-a" => "add one to the number under the cursor",
@@ -281,6 +295,7 @@ fn single(c: char) -> Option<&'static str> {
         'P' => "paste before the cursor",
         'J' => "join the next line onto this one",
         'u' => "undo",
+        'U' => "undo every change on the last changed line",
         '.' => "repeat the last change",
         '~' => "switch the case of the character",
         'R' => "type over the existing text (Replace mode)",
@@ -336,6 +351,10 @@ fn parse(word: &str, out: &mut Vec<(String, &'static str)>) {
                 ('g', 'u') => Some("make lower case over a motion"),
                 ('g', 'v') => Some("select the last selection again"),
                 ('g', 'i') => Some("start typing where you last stopped typing"),
+                ('g', 'I') => Some("start typing at the very start of the line"),
+                ('g', 'n') => Some("the next search match (select it, or change it with cgn)"),
+                ('g', '-') => Some("back to the previous state in undo history"),
+                ('g', ';') => Some("back to where you last changed something (again for older)"),
                 ('`' | '\'', '.') => Some("jump to where you last changed something"),
                 ('z', 'b') => Some("scroll so this line is at the bottom"),
                 ('m', _) if n.is_ascii_lowercase() => Some("set mark here (any letter names it)"),

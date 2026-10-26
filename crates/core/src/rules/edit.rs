@@ -220,6 +220,8 @@ impl Rule for DeleteThenInsert {
 pub struct Shorthand {
     /// The previous single-key command, if it can start a pair.
     prev: Option<(char, u64)>,
+    /// `A` was just pressed: Enter right away is `o`.
+    appended: Option<u64>,
 }
 
 impl Shorthand {
@@ -247,6 +249,19 @@ impl Rule for Shorthand {
         if step.event.is_none() {
             return;
         }
+        if let Some(at) = self.appended.take()
+            && insert_key(step) == Some(InsertKey::Enter)
+            && step.at_ms.saturating_sub(at) <= GESTURE_MS
+        {
+            out.push(finding(
+                Self::ID,
+                "One key does it",
+                "`A` then Enter is `o`: open a line below.".into(),
+                Shape::fixed("A then Enter"),
+                step,
+            ));
+            return;
+        }
         let prev = self.prev.take();
         let Some(c) =
             command(step).filter(|_| matches!(step.before, VimMode::Normal | VimMode::OpPending))
@@ -268,8 +283,11 @@ impl Rule for Shorthand {
             ));
             return;
         }
-        if ["D", "C", "A", "I"].iter().any(|s| c.is(s)) {
+        if ["D", "C", "A", "I", "o", "O", "gI"].iter().any(|s| c.is(s)) {
             out.push(adoption(Self::ID, step));
+        }
+        if c.is("A") {
+            self.appended = Some(step.at_ms);
         }
         let this = c.single().and_then(|k| k.plain_char());
         let pair = prev
@@ -283,6 +301,10 @@ impl Rule for Shorthand {
                 ('^', 'i') => Some((
                     "^ then i",
                     "`^` then `i` is `I`: insert at the first non-blank.",
+                )),
+                ('0', 'i') => Some((
+                    "0 then i",
+                    "`0` then `i` is `gI`: insert at the very start of the line (`I` starts at the first non-blank).",
                 )),
                 ('k', 'o') => Some(("k then o", "`k` then `o` is `O`: open a line above.")),
                 ('j', 'O') => Some(("j then O", "`j` then `O` is `o`: open a line below.")),
@@ -298,13 +320,14 @@ impl Rule for Shorthand {
             ));
             return;
         }
-        if let Some(t) = this.filter(|t| matches!(t, '$' | '^' | 'k' | 'j')) {
+        if let Some(t) = this.filter(|t| matches!(t, '$' | '^' | '0' | 'k' | 'j')) {
             self.prev = Some((t, step.at_ms));
         }
     }
 
     fn reset(&mut self) {
         self.prev = None;
+        self.appended = None;
     }
 }
 
@@ -796,6 +819,147 @@ impl Rule for Macro {
     }
 }
 
+pub fn undo_run() -> RepeatRule {
+    RepeatRule::new(RepeatSpec {
+        id: "vim.undo-run",
+        description: "Pressing u (or Ctrl-r) many times to go back through changes",
+        title: "Undo further at once",
+        contexts: VIM,
+        threshold: 6,
+        unit: |s| {
+            let c = command(s).filter(|c| c.count.is_none() && !s.before.is_visual())?;
+            if c.is("u") {
+                Some("u")
+            } else if c.single().is_some_and(|k| k.is_ctrl('r')) {
+                Some("Ctrl-r")
+            } else {
+                None
+            }
+        },
+        adopted: |s| {
+            command(s).is_some_and(|c| {
+                (c.count.is_some() && (c.is("u") || c.single().is_some_and(|k| k.is_ctrl('r'))))
+                    || c.is("U")
+                    || c.is("g-")
+                    || c.is("g+")
+            }) || is_cmdline(s, &["earlier", "later", "undo"])
+        },
+        message: |unit, n| {
+            if unit == "u" {
+                format!(
+                    "`u` {n} times. `{n}u` undoes that many at once, and `:earlier 1m` goes back to how the file was a minute ago."
+                )
+            } else {
+                format!(
+                    "`Ctrl-r` {n} times. `{n}Ctrl-r` redoes that many, `:later 1m` a minute's worth."
+                )
+            }
+        },
+    })
+}
+
+/// A `:` command starting with one of `names`.
+fn is_cmdline(step: &Step, names: &[&str]) -> bool {
+    match &step.event {
+        Some(VimEvent::Cmdline {
+            kind: ':',
+            text: Some(t),
+        }) => {
+            let t = t.trim_start().trim_start_matches('%');
+            names.iter().any(|n| t.starts_with(n))
+        }
+        _ => false,
+    }
+}
+
+/// `n.n.n.` → `cgn` then `...`, or `:%s` for every match.
+#[derive(Default)]
+pub struct ChangeMatches {
+    /// Saw a search hop and waits for `.`.
+    hopped: bool,
+    /// (hop, `.`) pairs in a row, and when the last step was.
+    pairs: u32,
+    last_ms: u64,
+}
+
+impl ChangeMatches {
+    const ID: &'static str = "vim.change-matches";
+    const PAIRS: u32 = 3;
+    /// Longer than a gesture: you look at each match before changing it.
+    const GAP_MS: u64 = 8000;
+}
+
+impl Rule for ChangeMatches {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Jumping to each search match and repeating the change by hand (n then .)"
+    }
+
+    fn title(&self) -> &'static str {
+        "Change the next match"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn threshold(&self) -> Option<u32> {
+        Some(Self::PAIRS)
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if is_cmdline(step, &["s/", "s#", "substitute"]) {
+            out.push(adoption(Self::ID, step));
+        }
+        let Some(c) = command(step).filter(|_| !step.before.is_visual()) else {
+            if step.event.is_some() && !matches!(step.event, Some(VimEvent::Escape)) {
+                self.reset();
+            }
+            return;
+        };
+        if step.at_ms.saturating_sub(self.last_ms) > Self::GAP_MS {
+            self.reset();
+        }
+        self.last_ms = step.at_ms;
+        if c.is("cgn") || c.is("dgn") {
+            out.push(adoption(Self::ID, step));
+            self.reset();
+            return;
+        }
+        let hop = c.count.is_none() && ["n", "N", "*", "#"].iter().any(|h| c.is(h));
+        if hop {
+            self.hopped = true;
+            return;
+        }
+        if c.is(".") && self.hopped {
+            self.hopped = false;
+            self.pairs += 1;
+            if self.pairs == Self::PAIRS {
+                let n = self.pairs;
+                out.push(finding(
+                    Self::ID,
+                    "Change the next match",
+                    format!(
+                        "`n` then `.` {n} times. Make the change with `cgn` instead: then `.` alone jumps to the next match and changes it. For every match at once, `:%s/old/new/g`."
+                    ),
+                    Shape::repeat("n then .", n),
+                    step,
+                ));
+            }
+            return;
+        }
+        self.reset();
+    }
+
+    fn reset(&mut self) {
+        self.hopped = false;
+        self.pairs = 0;
+    }
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
     vec![
         Box::new(Macro::default()),
@@ -806,6 +970,8 @@ pub fn all() -> Vec<Box<dyn Rule>> {
         Box::new(repeat_indent()),
         Box::new(repeat_join()),
         Box::new(repeat_paste()),
+        Box::new(undo_run()),
+        Box::new(ChangeMatches::default()),
     ]
 }
 
@@ -974,5 +1140,53 @@ mod tests {
                 assert!(!f.text.contains('z') && !f.text.contains('q'), "{}", f.text);
             }
         }
+    }
+
+    #[test]
+    fn undo_runs() {
+        let ev = vim(undo_run(), "uuuuuuu<Esc>");
+        assert_eq!(
+            texts(&ev),
+            [
+                "u 7 times. 7u undoes that many at once, and :earlier 1m goes back to how the file was a minute ago."
+            ]
+        );
+        assert!(findings(&vim(undo_run(), "uuuu<Esc>")).is_empty());
+        assert_eq!(adoptions(&vim(undo_run(), "5u")), 1);
+        assert_eq!(adoptions(&vim(undo_run(), ":earlier 2m<CR>")), 1);
+    }
+
+    #[test]
+    fn changing_match_after_match() {
+        let ev = vim(ChangeMatches::default(), "/foo<CR>cwbar<Esc>n.n.n.n.");
+        assert_eq!(findings(&ev).len(), 1, "{ev:?}");
+        assert_eq!(findings(&ev)[0].rule_id, "vim.change-matches");
+        // Twice is fine; something else in between breaks the run.
+        assert!(findings(&vim(ChangeMatches::default(), "n.n.")).is_empty());
+        assert!(findings(&vim(ChangeMatches::default(), "n.n.x.n.")).is_empty());
+        assert_eq!(
+            adoptions(&vim(ChangeMatches::default(), "cgnbar<Esc>...")),
+            1
+        );
+        assert_eq!(
+            adoptions(&vim(ChangeMatches::default(), ":%s/a/b/g<CR>")),
+            1
+        );
+    }
+
+    #[test]
+    fn more_shorthands() {
+        assert_eq!(
+            texts(&vim(Shorthand::default(), "Ahi<Esc>A<CR>x<Esc>")),
+            ["A then Enter is o: open a line below."]
+        );
+        assert_eq!(
+            texts(&vim(Shorthand::default(), "0ihi<Esc>")),
+            [
+                "0 then i is gI: insert at the very start of the line (I starts at the first non-blank)."
+            ]
+        );
+        // Typing before Enter is a real append.
+        assert!(findings(&vim(Shorthand::default(), "Ahi<CR>")).is_empty());
     }
 }

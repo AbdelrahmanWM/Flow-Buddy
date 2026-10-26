@@ -106,6 +106,20 @@ pub enum Command {
         rule_id: String,
         threshold: Option<u32>,
     },
+    /// Start (`true`) or stop recording a session, or (`None`) just say
+    /// whether one is going. Answers with [`Recording`].
+    Record {
+        #[serde(default)]
+        on: Option<bool>,
+    },
+}
+
+/// Data returned by [`Command::Record`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Recording {
+    pub recording: bool,
+    /// The file being written, or the one just finished.
+    pub path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

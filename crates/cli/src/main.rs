@@ -66,6 +66,11 @@ enum Cmd {
         #[arg(long)]
         prompt: bool,
     },
+    /// Record a session to check rules against (nothing typed is kept).
+    Record {
+        #[command(subcommand)]
+        action: RecordCmd,
+    },
     /// Print the ssh config that lets Vim on a remote machine report here.
     SshConfig {
         /// The host, as you `ssh` to it.
@@ -134,6 +139,24 @@ enum MemoryCmd {
 }
 
 #[derive(Subcommand)]
+enum RecordCmd {
+    /// Start recording to ~/.local/state/flowbuddy/recordings/.
+    Start,
+    /// Stop and print where it was saved.
+    Stop,
+    /// Whether a recording is going.
+    Status,
+    /// Run a recording through the rules and count what they find. With
+    /// --expect, compare with the counts you checked by hand.
+    Check {
+        file: std::path::PathBuf,
+        /// A JSON object of rule id to how many findings are right.
+        #[arg(long)]
+        expect: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
 enum RulesCmd {
     /// List rules (the default).
     List,
@@ -183,6 +206,7 @@ fn main() {
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),
         Cmd::Learn => learn(),
+        Cmd::Record { action } => record(action),
         Cmd::SshConfig { host } => {
             print!("{}", ssh_config(&host, &flowbuddy_core::paths::socket()));
             Ok(())
@@ -224,6 +248,58 @@ fn main() {
         eprintln!("flowbuddy: {e:#}");
         std::process::exit(1);
     }
+}
+
+fn record(action: RecordCmd) -> anyhow::Result<()> {
+    use flowbuddy_core::ipc::Recording;
+    use flowbuddy_core::session;
+    let on = match action {
+        RecordCmd::Start => Some(true),
+        RecordCmd::Stop => Some(false),
+        RecordCmd::Status => None,
+        RecordCmd::Check { file, expect } => {
+            let text = std::fs::read_to_string(&file)?;
+            let entries = session::parse(&text).map_err(anyhow::Error::msg)?;
+            let found = session::counts(&session::replay(&entries));
+            let expected: std::collections::BTreeMap<String, u32> = match expect {
+                Some(path) => serde_json::from_str(&std::fs::read_to_string(path)?)?,
+                None => {
+                    // Counts only, ready to check and save as the expectation.
+                    println!("{}", serde_json::to_string_pretty(&found)?);
+                    return Ok(());
+                }
+            };
+            let mut wrong = 0;
+            for (rule, s) in session::score(&expected, &found) {
+                wrong += s.extra + s.missed;
+                println!(
+                    "{rule:<28} {} right, {} extra, {} missed",
+                    s.hits, s.extra, s.missed
+                );
+            }
+            if wrong > 0 {
+                anyhow::bail!("{wrong} findings differ from what was expected");
+            }
+            return Ok(());
+        }
+    };
+    let mut client = Client::connect(ClientKind::Cli)?;
+    let r: Recording = serde_json::from_value(client.query(Command::Record { on })?)?;
+    match (on, r.recording, r.path) {
+        (Some(true), _, Some(p)) => {
+            println!("recording to {p}");
+            println!(
+                "only what the rules see is kept: commands, Insert-mode key kinds, motion counts."
+            );
+            println!("stop with: flowbuddy record stop");
+        }
+        (Some(false), _, Some(p)) => {
+            println!("saved {p}\ncheck it with: flowbuddy record check {p}")
+        }
+        (_, true, Some(p)) => println!("recording to {p}"),
+        _ => println!("not recording"),
+    }
+    Ok(())
 }
 
 fn status(watch: bool) -> anyhow::Result<()> {

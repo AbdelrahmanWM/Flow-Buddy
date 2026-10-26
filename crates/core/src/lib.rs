@@ -14,6 +14,7 @@ pub mod paths;
 pub mod policy;
 pub mod rule;
 pub mod rules;
+pub mod session;
 pub mod tipfilter;
 pub mod vim;
 

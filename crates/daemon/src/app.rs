@@ -15,12 +15,13 @@ use flowbuddy_core::ipc::{
     ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, Nudge, NudgeAction, NudgeStyle,
     RuleAction, RuleInfo, ServerMsg, Status,
 };
-use flowbuddy_core::ipc::{Panel, UiEvent};
+use flowbuddy_core::ipc::{Panel, Recording, UiEvent};
 use flowbuddy_core::key::{Key, KeyStroke, Sym};
 use flowbuddy_core::motion::{self, MotionEvent, OperatorEvent};
 use flowbuddy_core::policy::{Coach, CoachingMode, Gate, PolicyConfig, RuleFacts};
 use flowbuddy_core::rule::{Finding, RuleEvent};
 use flowbuddy_core::rules::vscode::{How, UiAction, UiWhat};
+use flowbuddy_core::session::{self, Entry};
 use flowbuddy_core::vim::{Flavor, InsertKey, Mappings, Tracker, VimEvent};
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -68,6 +69,9 @@ pub struct App {
     /// shortcut (Ctrl-P, Ctrl-`) as its letter and time.
     last_click_ms: Option<u64>,
     last_shortcut: Option<(char, u64)>,
+    /// A session being recorded (`flowbuddy record`), and where to.
+    recorder: Option<crate::recorder::Recorder>,
+    recordings: PathBuf,
     /// When the last tip was shown.
     last_nudge_ms: Option<u64>,
     /// Each editor's key mappings, as it reported them.
@@ -212,6 +216,8 @@ impl App {
             claude_probe: crate::claude::vim_mode_on,
             last_click_ms: None,
             last_shortcut: None,
+            recorder: None,
+            recordings: flowbuddy_core::paths::recordings_dir(),
             last_nudge_ms: None,
             held_findings: Vec::new(),
             editor_mappings: HashMap::new(),
@@ -224,6 +230,52 @@ impl App {
             keymap_layout: ("us".into(), None),
         }
         .with_memory_config()
+    }
+
+    /// Add an entry to the recording, if one is going; `entry` gets the
+    /// time since it started.
+    fn record(&mut self, at_ms: u64, entry: impl FnOnce(u64) -> Option<Entry>) {
+        if let Some(r) = self.recorder.as_mut()
+            && let Some(e) = entry(r.t(at_ms))
+        {
+            r.write(&e);
+        }
+    }
+
+    /// Drop in-progress streaks, and note it in a recording.
+    fn reset_rules(&mut self, now_ms: u64) {
+        self.engine.reset();
+        self.record(now_ms, |t| Some(Entry::Reset { t }));
+    }
+
+    fn on_record(&mut self, on: Option<bool>, now_ms: u64) -> Result<Recording, String> {
+        match on {
+            Some(true) if self.recorder.is_none() => {
+                let r = crate::recorder::Recorder::start(&self.recordings, now_ms)
+                    .map_err(|e| format!("can't start recording: {e}"))?;
+                tracing::info!(path = %r.path().display(), "recording a session");
+                self.recorder = Some(r);
+                let (context, editor) = (self.resolved.kind, self.resolved.editor.is_some());
+                self.record(now_ms, |t| Some(Entry::Context { t, context, editor }));
+            }
+            Some(false) => {
+                if let Some(r) = self.recorder.take() {
+                    let path = r.stop();
+                    return Ok(Recording {
+                        recording: false,
+                        path: Some(path.display().to_string()),
+                    });
+                }
+            }
+            _ => {}
+        }
+        Ok(Recording {
+            recording: self.recorder.is_some(),
+            path: self
+                .recorder
+                .as_ref()
+                .map(|r| r.path().display().to_string()),
+        })
     }
 
     fn with_memory_config(mut self) -> Self {
@@ -747,6 +799,9 @@ impl App {
             let usage = std::mem::take(&mut self.usage);
             self.memory.command_uses(usage, now_ms);
             self.engine.set_known(self.memory.known());
+            if let Some(r) = self.recorder.as_mut() {
+                r.flush();
+            }
             self.load_personal_tips(now_ms);
         }
         // Switching tmux panes tells no one; look again.
@@ -788,7 +843,7 @@ impl App {
                 self.last_shortcut = Some((c.to_ascii_lowercase(), stroke.at_ms));
             }
             self.tracker.invalidate();
-            self.engine.reset();
+            self.reset_rules(now_ms);
             return Vec::new();
         }
         self.memory.active(kind, now_ms);
@@ -834,6 +889,7 @@ impl App {
                 kind,
             });
         }
+        self.record(stroke.at_ms, |t| session::step_entry(t, &step));
         let events = self.engine.on_step(kind, &step);
         self.on_rule_events(&events, now_ms);
         events
@@ -843,7 +899,7 @@ impl App {
     pub fn on_pointer_click(&mut self, now_ms: u64) {
         self.last_click_ms = Some(now_ms);
         self.tracker.invalidate();
-        self.engine.reset();
+        self.reset_rules(now_ms);
         // An editor that reports its mode still knows it.
         self.apply_editor_mode();
     }
@@ -877,6 +933,8 @@ impl App {
             self.commands.clear();
             self.typing.other();
             self.engine.set_editor_motions(new.editor.is_some());
+            let (context, editor) = (new.kind, new.editor.is_some());
+            self.record(now_ms, |t| Some(Entry::Context { t, context, editor }));
         }
         if let Some(mode) = known {
             self.tracker.reset_known(mode);
@@ -1069,6 +1127,13 @@ impl App {
                     keys_used: self.keys_for(&m),
                     motion: m,
                 };
+                self.record(now_ms, |t| {
+                    Some(Entry::Motion {
+                        t,
+                        motion: ev.motion.clone(),
+                        keys_used: ev.keys_used,
+                    })
+                });
                 let events = self.engine.on_motion(self.resolved.kind, &ev);
                 self.on_rule_events(&events, now_ms);
             }
@@ -1079,6 +1144,13 @@ impl App {
                     keys_used: self.keys_for_operator(report.at_ms),
                     report,
                 };
+                self.record(now_ms, |t| {
+                    Some(Entry::Operator {
+                        t,
+                        report: ev.report.clone(),
+                        keys_used: ev.keys_used,
+                    })
+                });
                 let events = self.engine.on_operator(self.resolved.kind, &ev);
                 self.on_rule_events(&events, now_ms);
             }
@@ -1143,6 +1215,17 @@ impl App {
                     }
                 }
             }
+            Command::Record { on } => match self.on_record(on, now_ms) {
+                Ok(r) => ServerMsg::Result {
+                    id,
+                    data: serde_json::to_value(r).unwrap_or_default(),
+                },
+                Err(message) => ServerMsg::Error {
+                    id,
+                    code: ErrorCode::BadRequest,
+                    message,
+                },
+            },
             Command::ReportFalsePositive => match self.nudges.back() {
                 Some((nudge_id, _)) => {
                     let nudge_id = nudge_id.clone();
@@ -2553,5 +2636,27 @@ pub(crate) mod tests {
         app.tick(now + 4 * 86_400_000);
         assert!(app.personal_tips.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn records_a_session_without_text() {
+        let dir = std::env::temp_dir().join(format!("flowbuddy-rec-{}", std::process::id()));
+        let mut app = test_app(CoachingMode::Active);
+        app.recordings = dir.clone();
+        focus(&mut app, "code_code", 500);
+        let started = app.on_record(Some(true), 1000).unwrap();
+        assert!(started.recording);
+        type_at(&mut app, "<Esc>jjjjjjjihello there<Esc>", 2000);
+        let done = app.on_record(Some(false), 9000).unwrap();
+        assert!(!done.recording);
+        let text = std::fs::read_to_string(done.path.unwrap()).unwrap();
+        assert!(!text.contains("hello") && !text.contains("there"), "{text}");
+        let found = session::replay(&session::parse(&text).unwrap());
+        assert!(
+            found.iter().any(|f| f.rule_id == "vim.repeat-jk"),
+            "{found:?}"
+        );
+        assert!(!app.on_record(None, 9000).unwrap().recording);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

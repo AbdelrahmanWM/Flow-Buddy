@@ -1,0 +1,9 @@
+{
+  "vim.registers": 1,
+  "vim.repeat-jk": 1,
+  "vim.repeat-x": 1,
+  "vim.undo-run": 1,
+  "vim.visual-block": 1,
+  "vim.w-then-q": 1,
+  "vim.windows": 1
+}

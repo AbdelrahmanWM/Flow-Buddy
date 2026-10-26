@@ -122,6 +122,7 @@ flowbuddy review [--apply 1 2]    # your AI proposes tuning the tips; apply what
 flowbuddy rules                   # list; `rules mute|disable|enable|reset <id>`
 flowbuddy memory show             # the mistake memory; `memory export`, `memory forget`, `memory fix-adoptions`
 flowbuddy report-fp               # the last nudge was wrong
+flowbuddy record start|stop       # record what the rules see (nothing typed) to check them; `record check FILE`
 ```
 
 Settings live in `~/.config/flowbuddy/config.toml` and are reloaded automatically:

@@ -27,6 +27,7 @@ Flow Buddy reads your keyboard. That is a lot of trust to ask for, so this docum
 | That a click happened (no position, no target) | GNOME Shell extension | Not kept: it only marks the Vim mode as unknown | Immediately |
 | Whether a VS Code editor has focus, vscodevim's mode, and cursor movements as deltas, counts and flags (never text, characters, file names or positions) | VS Code companion (`vscode-extension/`) | Memory only | Replaced on every report |
 | Which text objects (`iw`, `i(`, `ap`…) a delete, change or yank covered, by name only | Vim plugin, VS Code companion | Memory only | Used for one nudge, then dropped |
+| **Only while you record** (`flowbuddy record start`): what the rules see, step by step. That means Normal-mode commands (`5j`, `ciw`, with `x` for the character after `f`, `t` or `r`), Insert-mode keys as their kind only (`text`, `backspace`), searches without their pattern, `:` commands with every letter and digit after the name replaced (`:%s/x/x/x`), and the editors' motion and text-object reports | Daemon | A file in `~/.local/state/flowbuddy/recordings/` | Until you delete it; never sent anywhere |
 
 The key buffer is only filled while a supported context is focused (VS Code with Vim, Vim in a terminal, bash vi-mode). In any other app, keys are dropped as soon as they are read.
 

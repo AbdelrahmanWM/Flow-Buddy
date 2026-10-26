@@ -8,6 +8,7 @@ mod ipc_server;
 mod keymap;
 mod memory;
 mod notify;
+mod recorder;
 mod resolver;
 mod typing;
 

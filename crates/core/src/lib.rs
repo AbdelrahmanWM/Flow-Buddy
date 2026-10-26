@@ -13,6 +13,7 @@ pub mod paths;
 pub mod policy;
 pub mod rule;
 pub mod rules;
+pub mod tipfilter;
 pub mod vim;
 
 /// Crate version, shared by the daemon and CLI.

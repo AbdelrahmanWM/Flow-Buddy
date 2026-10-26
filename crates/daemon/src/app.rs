@@ -131,6 +131,14 @@ pub fn app_ids(config: &Config) -> AppIds {
     }
 }
 
+fn local_hour(now_ms: u64) -> u32 {
+    use chrono::{TimeZone, Timelike};
+    chrono::Local
+        .timestamp_millis_opt(now_ms as i64)
+        .single()
+        .map_or(12, |t| t.hour())
+}
+
 fn flavor(kind: ContextKind) -> Flavor {
     match kind {
         // Like readline vi-mode: Insert to start with, a small Normal mode.
@@ -306,6 +314,14 @@ impl App {
     /// Show a nudge: in the top bar if the extension is there, otherwise
     /// as a desktop notification.
     fn deliver(&mut self, f: &Finding, now_ms: u64) {
+        let hour = local_hour(now_ms);
+        if self.config.ai.filter
+            && !self
+                .memory
+                .filter_allows(f.rule_id, self.mode.as_str(), hour, now_ms)
+        {
+            return;
+        }
         self.nudge_seq += 1;
         let nudge = Nudge {
             nudge_id: format!("n-{now_ms}-{}", self.nudge_seq),
@@ -1007,6 +1023,11 @@ impl App {
             app: self.resolver.focused_app().map(Into::into),
             layout: Some(self.keymap_layout.0.clone()),
             layout_note: self.keymap_layout.1.clone(),
+            tip_filter: Some(if self.config.ai.filter {
+                self.memory.filter_status(now_s * 1000)
+            } else {
+                "off".into()
+            }),
             mode_from_editor: self
                 .resolved
                 .editor
@@ -2166,5 +2187,53 @@ pub(crate) mod tests {
         );
         assert_eq!(rows[1].prior_today, 1);
         assert_eq!(rows[0].mode, "active");
+    }
+
+    #[test]
+    fn the_learned_filter_skips_tips_you_dismiss() {
+        use flowbuddy_store::{Outcome, TipShown};
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let now = 1_800_000_000_000u64;
+        {
+            let store = app.memory.store().unwrap();
+            for i in 0..40 {
+                for (rule, outcome) in [
+                    ("vim.repeat-x", Outcome::Dismissed),
+                    ("vim.repeat-jk", Outcome::Adopted),
+                ] {
+                    let id = store
+                        .tip_shown(&TipShown {
+                            shown_at: now / 1000 - 86_400 + i * 60,
+                            rule_id: rule,
+                            context: "vscode-vim",
+                            stage: "nudged",
+                            hour: 14,
+                            mode: "active",
+                            prior_today: (i % 3) as u32,
+                        })
+                        .unwrap();
+                    store.close_tip(id, outcome).unwrap();
+                }
+            }
+        }
+        app.memory.maintain(now);
+        assert!(
+            app.status(now / 1000)
+                .tip_filter
+                .unwrap()
+                .starts_with("on, learned from 80 tips")
+        );
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>xxxxxw", now);
+        type_at(&mut app, "jjjjjjjw", now + 20 * 60_000);
+        let shown: Vec<_> = nudges(&mut ext).into_iter().map(|n| n.rule_id).collect();
+        assert_eq!(shown, ["vim.repeat-jk"]);
+        assert!(
+            app.status(now / 1000)
+                .tip_filter
+                .unwrap()
+                .ends_with("1 skipped today")
+        );
     }
 }

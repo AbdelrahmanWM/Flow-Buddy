@@ -215,6 +215,9 @@ fn print_status(s: &Status) {
     println!("  focused:   {}", s.app.as_deref().unwrap_or("nothing"));
     println!("  context:   {}", context_line(s));
     println!("  keyboards: {}", s.keyboards);
+    if let Some(filter) = &s.tip_filter {
+        println!("  filter:    {filter}");
+    }
     if let Some(layout) = &s.layout {
         match &s.layout_note {
             Some(note) => println!("  layout:    {layout} ({note})"),
@@ -628,6 +631,7 @@ mod status_tests {
             mode_from_editor: false,
             layout: None,
             layout_note: None,
+            tip_filter: None,
             keyboards: 1,
             clients: vec![],
         }

@@ -281,6 +281,9 @@ pub struct Status {
     pub layout: Option<String>,
     #[serde(default)]
     pub layout_note: Option<String>,
+    /// What the learned tip filter is doing.
+    #[serde(default)]
+    pub tip_filter: Option<String>,
     pub keyboards: usize,
     pub clients: Vec<ClientKind>,
 }

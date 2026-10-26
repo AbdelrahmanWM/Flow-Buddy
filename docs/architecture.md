@@ -121,6 +121,8 @@ The app ids are defaults and can be overridden in the config. The values seen on
 | `balanced` (default) | Yes | Batched: up to 1–2 tips every N minutes (default 30) | On demand |
 | `active` | Yes | Real time, with a cooldown per rule and a cap per hour | On demand |
 
+**The learned tip filter** (`[ai] filter`, on by default) is a small logistic regression trained hourly on what happened after your tips: adopted, dismissed, not helpful, or ignored. It uses the rule, context, learning stage, time of day, mode, and how many tips came before that day. Before a tip is shown, it predicts the chance you'll act on it, and skips it below 12%. It does nothing until it has 30 outcomes, never hides a rule's first three tips, and lets every fifth skipped tip through so it keeps learning. `flowbuddy status` shows what it's doing. No LLM is involved, and nothing leaves the machine.
+
 Rules learn from "not helpful" reports: every two in two weeks raise that rule's threshold by one, at most three above its default. A threshold set in `config.toml` is never changed, and `flowbuddy rules reset <id>` undoes the raises.
 
 Once a week, in every mode but `off`, one notification sums up progress: how often you used the better way, habits that showed up less than the week before, habits mastered, and what to work on next. It is sent at `summary_time`, outside quiet hours and pauses.

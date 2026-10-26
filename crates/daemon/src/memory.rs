@@ -8,6 +8,7 @@ use flowbuddy_core::context::ContextKind;
 use flowbuddy_core::ipc::NudgeAction;
 use flowbuddy_core::learning::{self, LearningConfig, Stage};
 use flowbuddy_core::rule::Finding;
+use flowbuddy_core::tipfilter::{self, Label, Model, TipFeatures};
 use flowbuddy_store::{Event, Store, days};
 
 const HOUR_MS: u64 = 3_600_000;
@@ -34,6 +35,14 @@ pub struct Memory {
     open_tips: HashMap<&'static str, (i64, u64)>,
     /// Tips shown today, for the filter's features: (day, count).
     tips_today: (String, u32),
+    /// The learned tip filter, retrained hourly; `None` until it has
+    /// enough outcomes.
+    filter: Option<Model>,
+    /// Per rule: tips shown so far, and skipped since the last one shown.
+    shown: HashMap<String, u32>,
+    skipped: HashMap<&'static str, u32>,
+    /// Tips the filter skipped today: (day, count).
+    skipped_today: (String, u32),
 }
 
 /// A tip is adopted if the better way comes within this long.
@@ -59,6 +68,10 @@ impl Memory {
             check_ins: HashSet::new(),
             open_tips: HashMap::new(),
             tips_today: (String::new(), 0),
+            filter: None,
+            shown: HashMap::new(),
+            skipped: HashMap::new(),
+            skipped_today: (String::new(), 0),
         }
     }
 
@@ -133,6 +146,8 @@ impl Memory {
         if self.tips_today.0 != today {
             self.tips_today = (today, 0);
         }
+        *self.shown.entry(rule_id.to_string()).or_default() += 1;
+        self.skipped.remove(rule_id);
         let stage = self.stage(rule_id, ctx);
         let tip = flowbuddy_store::TipShown {
             shown_at: now_ms / 1000,
@@ -153,6 +168,112 @@ impl Memory {
             }
             Err(e) => tracing::warn!(error = %e, "could not record a tip"),
         }
+    }
+
+    /// Whether the learned filter lets this tip through.
+    pub fn filter_allows(
+        &mut self,
+        rule_id: &'static str,
+        mode: &str,
+        local_hour: u32,
+        now_ms: u64,
+    ) -> bool {
+        let Some(ctx) = self.finding_context(rule_id) else {
+            return true;
+        };
+        let today = day(now_ms);
+        let prior_today = if self.tips_today.0 == today {
+            self.tips_today.1
+        } else {
+            0
+        };
+        let stage = self.stage(rule_id, ctx);
+        let f = TipFeatures {
+            rule_id,
+            context: ctx.as_str(),
+            stage: stage.as_str(),
+            hour: local_hour,
+            mode,
+            prior_today,
+        };
+        let shown = self.shown.get(rule_id).copied().unwrap_or(0);
+        let skipped = self.skipped.get(rule_id).copied().unwrap_or(0);
+        if tipfilter::should_show(self.filter.as_ref(), &f, shown, skipped) {
+            return true;
+        }
+        *self.skipped.entry(rule_id).or_default() += 1;
+        if self.skipped_today.0 != today {
+            self.skipped_today = (today, 0);
+        }
+        self.skipped_today.1 += 1;
+        tracing::debug!(rule = rule_id, "tip skipped by the learned filter");
+        false
+    }
+
+    /// What the filter is doing, for `flowbuddy status`.
+    pub fn filter_status(&self, now_ms: u64) -> String {
+        match &self.filter {
+            None => format!(
+                "learning ({} tips so far)",
+                self.shown.values().sum::<u32>()
+            ),
+            Some(m) => {
+                let skipped = if self.skipped_today.0 == day(now_ms) {
+                    self.skipped_today.1
+                } else {
+                    0
+                };
+                format!(
+                    "on, learned from {} tips; {skipped} skipped today",
+                    m.trained_on
+                )
+            }
+        }
+    }
+
+    /// Retrain the filter from the outcomes kept.
+    fn retrain(&mut self, now_ms: u64) {
+        let Some(store) = &self.store else { return };
+        let Ok(rows) = store.tips((now_ms / 1000).saturating_sub(TIP_RETENTION_S)) else {
+            return;
+        };
+        use flowbuddy_store::Outcome;
+        self.shown.clear();
+        for r in &rows {
+            *self.shown.entry(r.rule_id.clone()).or_default() += 1;
+        }
+        let labelled: Vec<(TipFeatures<'_>, Label)> = rows
+            .iter()
+            .filter_map(|r| {
+                let label = match r.outcome? {
+                    Outcome::Adopted => Label {
+                        useful: true,
+                        weight: 1.0,
+                    },
+                    Outcome::Dismissed | Outcome::NotHelpful => Label {
+                        useful: false,
+                        weight: 1.0,
+                    },
+                    // Not looking isn't the same as not liking it.
+                    Outcome::Ignored => Label {
+                        useful: false,
+                        weight: 0.3,
+                    },
+                };
+                Some((
+                    TipFeatures {
+                        rule_id: &r.rule_id,
+                        context: &r.context,
+                        stage: &r.stage,
+                        hour: r.hour,
+                        mode: &r.mode,
+                        prior_today: r.prior_today,
+                    },
+                    label,
+                ))
+            })
+            .collect();
+        self.filter = Model::train(&labelled);
     }
 
     fn close_tip(&mut self, rule_id: &str, outcome: flowbuddy_store::Outcome) {
@@ -265,6 +386,7 @@ impl Memory {
             }
         }
         self.refresh_stages();
+        self.retrain(now_ms);
     }
 
     /// Returns the habit to focus on, scored with the new stages, and the

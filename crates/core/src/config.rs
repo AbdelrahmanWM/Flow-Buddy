@@ -50,6 +50,9 @@ pub struct AiConfig {
     /// Let the model write the weekly progress note. Off by default: the
     /// model then runs once a week without being asked.
     pub weekly: bool,
+    /// The learned tip filter (no LLM involved): skip tips your history says
+    /// you'd dismiss. On by default; it does nothing until it has learned.
+    pub filter: bool,
 }
 
 impl Default for AiConfig {
@@ -58,6 +61,7 @@ impl Default for AiConfig {
             command: None,
             timeout_seconds: 120,
             weekly: false,
+            filter: true,
         }
     }
 }

@@ -29,6 +29,10 @@ function! s:socket_path() abort
   if !empty($FLOWBUDDY_SOCKET)
     return $FLOWBUDDY_SOCKET
   endif
+  " Over ssh: the daemon's socket, forwarded (see `flowbuddy ssh-config`).
+  if !empty($SSH_CONNECTION)
+    return '/tmp/flowbuddy-' . $USER . '.sock'
+  endif
   let dir = $XDG_RUNTIME_DIR
   if empty(dir)
     let dir = '/run/user/' . trim(system('id -u'))
@@ -61,8 +65,10 @@ function! s:open() abort
     let s:ch = v:null
     return 0
   endif
+  " Over ssh this pid is on another machine: it would only confuse.
   call s:send({'type': 'hello', 'client': 'editor', 'client_version': s:VERSION,
-        \ 'editor': has('nvim') ? 'nvim' : 'vim', 'pid': getpid()})
+        \ 'editor': has('nvim') ? 'nvim' : 'vim',
+        \ 'pid': empty($SSH_CONNECTION) ? getpid() : v:null})
   call s:send({'type': 'editor_mode', 'mode': s:mode_name(mode(1))})
   call s:send(extend({'type': 'editor_mappings'}, flowbuddy#mappings(execute('imap'), execute('nmap'))))
   return 1

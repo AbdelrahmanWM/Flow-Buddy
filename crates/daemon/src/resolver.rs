@@ -737,4 +737,24 @@ pub(crate) mod tests {
         assert_eq!(parse_clients(out, "/dev/pts/9"), None);
         assert_eq!(parse_clients("garbage", "/dev/pts/4"), None);
     }
+
+    #[test]
+    fn vim_over_ssh_counts_when_it_has_focus() {
+        let mut r = resolver();
+        r.set_focus(Some("org.gnome.Ptyxis".into()), Some(100));
+        r.shell_report_t(200, ShellState::Fg("ssh".into()), 1);
+        // The remote plugin sends no pid.
+        r.editor_hello(11, EditorKind::Vim, None, 2);
+        assert_eq!(
+            kind(&r),
+            ContextKind::Unsupported,
+            "until it says it has focus"
+        );
+        r.editor_focus(11, true, None, 3);
+        assert_eq!(kind(&r), ContextKind::TerminalVim);
+        // A remote pid-less Vim never claims a terminal by pid.
+        r.shell_report_t(200, ShellState::Prompt { vi: true }, 4);
+        r.editor_focus(11, false, None, 5);
+        assert_eq!(kind(&r), ContextKind::BashVi);
+    }
 }

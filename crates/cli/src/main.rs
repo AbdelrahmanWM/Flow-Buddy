@@ -66,6 +66,11 @@ enum Cmd {
         #[arg(long)]
         prompt: bool,
     },
+    /// Print the ssh config that lets Vim on a remote machine report here.
+    SshConfig {
+        /// The host, as you `ssh` to it.
+        host: String,
+    },
     /// What Vim keys do, piece by piece: `flowbuddy explain 'ci"'`.
     Explain {
         keys: String,
@@ -178,6 +183,10 @@ fn main() {
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),
         Cmd::Learn => learn(),
+        Cmd::SshConfig { host } => {
+            print!("{}", ssh_config(&host, &flowbuddy_core::paths::socket()));
+            Ok(())
+        }
         Cmd::Review { apply, prompt } => {
             if apply.is_empty() {
                 review(prompt)
@@ -605,6 +614,19 @@ fn review_apply(numbers: &[usize]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// An ssh config block forwarding the daemon's socket to `host`, where
+/// the Vim plugin looks for it (`/tmp/flowbuddy-$USER.sock`). sshd creates
+/// the remote socket readable only by you (its StreamLocalBindMask 0177).
+fn ssh_config(host: &str, socket: &std::path::Path) -> String {
+    format!(
+        "# Add to ~/.ssh/config, and install the Vim plugin on {host}:\n\
+         Host {host}\n    \
+         RemoteForward /tmp/flowbuddy-%r.sock {}\n    \
+         StreamLocalBindUnlink yes\n",
+        socket.display()
+    )
+}
+
 fn learn() -> anyhow::Result<()> {
     match open_db()? {
         Some(store) => print!("{}", report::learn(&store, now_ms())?),
@@ -913,5 +935,19 @@ mod status_tests {
             "context":"unsupported","confident":false,"keyboards":0,"clients":[]}"#;
         let s: Status = serde_json::from_str(json).unwrap();
         assert_eq!(s.app, None);
+    }
+
+    #[test]
+    fn ssh_config_forwards_the_socket() {
+        let out = super::ssh_config(
+            "devbox",
+            std::path::Path::new("/run/user/1000/flowbuddy.sock"),
+        );
+        assert!(out.contains("Host devbox\n"), "{out}");
+        assert!(
+            out.contains("RemoteForward /tmp/flowbuddy-%r.sock /run/user/1000/flowbuddy.sock"),
+            "{out}"
+        );
+        assert!(out.contains("StreamLocalBindUnlink yes"), "{out}");
     }
 }

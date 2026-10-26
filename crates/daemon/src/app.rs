@@ -62,6 +62,12 @@ pub struct App {
     claude_checked_ms: Option<u64>,
     /// Reads Claude Code's settings; replaced in tests.
     claude_probe: fn() -> bool,
+    /// The layout the extension reports, and whether the keymap should
+    /// follow it (main rebuilds it).
+    layout: Option<(String, String)>,
+    layout_changed: bool,
+    /// What main settled on: the layout used, and a note if it differs.
+    keymap_layout: (String, Option<String>),
 }
 
 const NUDGE_HISTORY: usize = 20;
@@ -165,6 +171,9 @@ impl App {
             claude_vim: false,
             claude_checked_ms: None,
             claude_probe: crate::claude::vim_mode_on,
+            layout: None,
+            layout_changed: false,
+            keymap_layout: ("us".into(), None),
         }
         .with_memory_config()
     }
@@ -621,6 +630,20 @@ impl App {
         }
     }
 
+    /// The layout to build the keymap for, once each time it changes.
+    pub fn take_layout(&mut self) -> Option<(String, String)> {
+        std::mem::take(&mut self.layout_changed)
+            .then(|| self.layout.clone())
+            .flatten()
+    }
+
+    /// The layout main built the keymap for, and a note if it isn't the one
+    /// in use.
+    pub fn set_keymap_layout(&mut self, layout: String, note: Option<String>) {
+        self.keymap_layout = (layout, note);
+        self.tracker.invalidate();
+    }
+
     pub fn set_keyboards(&mut self, n: usize) {
         self.keyboards = n;
     }
@@ -725,6 +748,21 @@ impl App {
                 self.on_nudge_response(&nudge_id, action, now_ms);
             }
             ClientMsg::PointerClick => self.on_pointer_click(),
+            ClientMsg::InputSource { layout, variant } => {
+                // xkb names only: anything else is ignored.
+                let name = |s: Option<String>| {
+                    s.filter(|s| {
+                        s.len() <= 32
+                            && s.chars()
+                                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                    })
+                };
+                let new = name(layout).map(|l| (l, name(variant).unwrap_or_default()));
+                if new.is_some() && new != self.layout {
+                    self.layout = new;
+                    self.layout_changed = true;
+                }
+            }
             ClientMsg::EditorFocus { focused, panel } => {
                 self.resolver.editor_focus(conn, focused, panel, now_ms);
                 self.update_context(None, now_ms);
@@ -874,6 +912,8 @@ impl App {
             paused_until: self.paused_until.filter(|&t| t > now_s),
             context: self.resolved.kind.as_str().into(),
             app: self.resolver.focused_app().map(Into::into),
+            layout: Some(self.keymap_layout.0.clone()),
+            layout_note: self.keymap_layout.1.clone(),
             mode_from_editor: self
                 .resolved
                 .editor
@@ -1893,5 +1933,36 @@ pub(crate) mod tests {
         );
         let n = nudges(&mut ext);
         assert!(n.iter().any(|n| n.rule_id == "vim.backspace-streak" || n.rule_id == "bash.backspace-clear"), "{n:?}");
+    }
+
+    #[test]
+    fn input_sources_are_followed_once_per_change() {
+        let mut app = test_app(CoachingMode::Active);
+        let _ext = ext_hello(&mut app, 1);
+        let source = |app: &mut App, layout: &str, variant: &str| {
+            send(
+                app,
+                1,
+                ClientMsg::InputSource {
+                    layout: Some(layout.into()),
+                    variant: Some(variant.into()),
+                },
+                0,
+            )
+        };
+        source(&mut app, "de", "nodeadkeys");
+        assert_eq!(app.take_layout(), Some(("de".into(), "nodeadkeys".into())));
+        assert_eq!(app.take_layout(), None, "once per change");
+        source(&mut app, "de", "nodeadkeys");
+        assert_eq!(app.take_layout(), None, "same layout again");
+        // Only xkb-style names.
+        source(&mut app, "de; rm -rf /", "");
+        assert_eq!(app.take_layout(), None);
+        app.set_keymap_layout("us".into(), Some("a note".into()));
+        let st = app.status(0);
+        assert_eq!(
+            (st.layout.as_deref(), st.layout_note.as_deref()),
+            (Some("us"), Some("a note"))
+        );
     }
 }

@@ -215,6 +215,12 @@ fn print_status(s: &Status) {
     println!("  focused:   {}", s.app.as_deref().unwrap_or("nothing"));
     println!("  context:   {}", context_line(s));
     println!("  keyboards: {}", s.keyboards);
+    if let Some(layout) = &s.layout {
+        match &s.layout_note {
+            Some(note) => println!("  layout:    {layout} ({note})"),
+            None => println!("  layout:    {layout}"),
+        }
+    }
     if s.keyboards == 0 {
         println!("             no readable keyboard: run scripts/install.sh --with-udev,");
         println!("             or see docs/privacy.md#keyboard-access");
@@ -620,6 +626,8 @@ mod status_tests {
             app: Some("code_code".into()),
             confident,
             mode_from_editor: false,
+            layout: None,
+            layout_note: None,
             keyboards: 1,
             clients: vec![],
         }

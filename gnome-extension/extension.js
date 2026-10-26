@@ -6,6 +6,7 @@
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {getInputSourceManager} from 'resource:///org/gnome/shell/ui/status/keyboard.js';
 
 import {DaemonLink} from './daemon.js';
 import {FocusReporter} from './focus.js';
@@ -21,6 +22,7 @@ export default class FlowBuddyExtension extends Extension {
                 this._indicator.setConnected(true);
                 // Resend the current focus whenever the daemon (re)connects.
                 this._focus.report();
+                this._reportSource();
             },
             onDisconnected: () => this._indicator.setConnected(false),
         });
@@ -29,10 +31,27 @@ export default class FlowBuddyExtension extends Extension {
         this._card = new Card();
         this._focus = new FocusReporter(this._link);
         this._focus.enable();
+        // Follow keyboard layout switches, so keys are read right.
+        this._sources = getInputSourceManager();
+        this._sourceId = this._sources.connect('current-source-changed', () => this._reportSource());
         this._link.start();
     }
 
+    // xkb sources have ids like "de+nodeadkeys"; input methods (IBus) have
+    // no layout of their own.
+    _reportSource() {
+        const source = this._sources?.currentSource;
+        if (!source)
+            return;
+        const [layout, variant] = source.type === 'xkb' ? source.id.split('+') : [null, null];
+        this._link.send({type: 'input_source', layout, variant: variant ?? null});
+    }
+
     disable() {
+        if (this._sourceId)
+            this._sources.disconnect(this._sourceId);
+        this._sources = null;
+        this._sourceId = 0;
         this._focus?.disable();
         this._link?.stop();
         this._indicator?.destroy();

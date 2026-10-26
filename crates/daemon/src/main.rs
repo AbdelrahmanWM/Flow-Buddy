@@ -75,11 +75,13 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(keymap::gnome_xkb_options);
     let options = KeymapOptions::from_xkb(xkb_options.iter().map(String::as_str));
-    let mut keymap = make_keymap(&config, &xkb_options, options);
+    let (mut keymap, layout, note) = make_keymap(&config, &xkb_options, options, None);
     let resolver =
         Resolver::new(app::app_ids(&config), Box::new(Procfs)).with_tmux(Box::new(TmuxCli));
+    let keymap_config = config.clone();
     let mut app =
         App::new(config, state, resolver, Box::new(notify::NotifySend)).with_state_path(state_path);
+    app.set_keymap_layout(layout, note);
     let db = paths::database();
     match flowbuddy_store::Store::open(&db) {
         Ok(store) => app = app.with_store(store),
@@ -110,7 +112,17 @@ async fn main() -> anyhow::Result<()> {
                 Some(CaptureEvent::Keyboards(n)) => app.set_keyboards(n),
                 None => break,
             },
-            Some(ev) = conn_rx.recv() => app.on_conn(ev, now_ms()),
+            Some(ev) = conn_rx.recv() => {
+                app.on_conn(ev, now_ms());
+                // GNOME switched layouts: follow it.
+                if let Some((l, v)) = app.take_layout() {
+                    let (k, layout, note) =
+                        make_keymap(&keymap_config, &xkb_options, options, Some((&l, &v)));
+                    info!(layout = %layout, "keyboard layout");
+                    keymap = k;
+                    app.set_keymap_layout(layout, note);
+                }
+            }
             _ = ticker.tick() => app.tick(now_ms()),
             Some(()) = cfg_rx.recv() => match Config::load(&config_path) {
                 Ok(config) => app.reload_config(config),
@@ -129,21 +141,58 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A keymap for `layout` (from the config, else the one GNOME reports,
+/// else US), the layout it really uses, and a note when that differs.
 #[cfg(feature = "xkb")]
-fn make_keymap(config: &Config, xkb_options: &[String], options: KeymapOptions) -> Box<dyn Keymap> {
-    let layout = config.keyboard.xkb_layout.as_deref().unwrap_or("us");
-    match keymap::xkb::XkbKeymap::new(layout, "", xkb_options) {
-        Ok(k) => Box::new(k),
+fn make_keymap(
+    config: &Config,
+    xkb_options: &[String],
+    options: KeymapOptions,
+    reported: Option<(&str, &str)>,
+) -> (Box<dyn Keymap>, String, Option<String>) {
+    let (layout, variant) = match (&config.keyboard.xkb_layout, reported) {
+        (Some(l), _) => (l.as_str(), ""),
+        (None, Some((l, v))) => (l, v),
+        (None, None) => ("us", ""),
+    };
+    match keymap::xkb::XkbKeymap::new(layout, variant, xkb_options) {
+        // Vim commands are typed on a Latin layout: for Cyrillic, Greek,
+        // Arabic and the like, read keys as US.
+        Ok(mut k) if keymap::is_latin(&mut k) => (Box::new(k), layout.to_string(), None),
+        Ok(_) => {
+            let note = format!("{layout} isn't a Latin layout; reading Vim commands as US");
+            match keymap::xkb::XkbKeymap::new("us", "", xkb_options) {
+                Ok(k) => (Box::new(k), "us".into(), Some(note)),
+                Err(_) => (Box::new(UsKeymap::new(options)), "us".into(), Some(note)),
+            }
+        }
         Err(e) => {
             warn!(error = %e, "xkb keymap failed, using the built-in US keymap");
-            Box::new(UsKeymap::new(options))
+            let note = format!("could not load the {layout} layout; reading keys as US");
+            (Box::new(UsKeymap::new(options)), "us".into(), Some(note))
         }
     }
 }
 
 #[cfg(not(feature = "xkb"))]
-fn make_keymap(_: &Config, _: &[String], options: KeymapOptions) -> Box<dyn Keymap> {
-    Box::new(UsKeymap::new(options))
+fn make_keymap(
+    config: &Config,
+    _: &[String],
+    options: KeymapOptions,
+    reported: Option<(&str, &str)>,
+) -> (Box<dyn Keymap>, String, Option<String>) {
+    let layout = config
+        .keyboard
+        .xkb_layout
+        .as_deref()
+        .or(reported.map(|(l, _)| l))
+        .unwrap_or("us");
+    let note = (layout != "us").then(|| {
+        format!(
+            "your layout is {layout}, but this build reads keys as US; install libxkbcommon-dev and run scripts/install.sh again"
+        )
+    });
+    (Box::new(UsKeymap::new(options)), "us".into(), note)
 }
 
 async fn shutdown_signal() {

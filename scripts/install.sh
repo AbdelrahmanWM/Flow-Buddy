@@ -64,7 +64,16 @@ ask() {
 command -v cargo >/dev/null || { echo "cargo not found: install Rust from https://rustup.rs" >&2; exit 1; }
 
 say "Building release binaries"
-run cargo build --release --manifest-path "$repo/Cargo.toml" -p flowbuddy-daemon -p flowbuddy-cli
+# libxkbcommon reads keys in your layout (German, French, ...); without it,
+# keys are read as US.
+features=()
+if pkg-config --exists xkbcommon 2>/dev/null; then
+    features=(--features flowbuddy-daemon/xkb)
+else
+    echo "    note: libxkbcommon-dev isn't installed, so keys are read as US."
+    echo "    For other layouts: sudo apt install libxkbcommon-dev, then run this again."
+fi
+run cargo build --release --manifest-path "$repo/Cargo.toml" -p flowbuddy-daemon -p flowbuddy-cli "${features[@]}"
 
 say "Installing binaries to $bin_dir"
 run install -Dm755 "$repo/target/release/flowbuddyd" "$bin_dir/flowbuddyd"

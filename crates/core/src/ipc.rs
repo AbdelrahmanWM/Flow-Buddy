@@ -136,6 +136,14 @@ pub enum ClientMsg {
     },
     /// A mouse button was pressed or the touchpad tapped. No position, no target.
     PointerClick,
+    /// The extension: the keyboard layout now in use, as xkb names (`de`,
+    /// `nodeadkeys`); no layout for input methods such as IBus.
+    InputSource {
+        #[serde(default)]
+        layout: Option<String>,
+        #[serde(default)]
+        variant: Option<String>,
+    },
     /// Editor clients: whether a text editor has keyboard focus (as opposed
     /// to a terminal, chat or other panel inside the same window).
     EditorFocus {
@@ -159,12 +167,13 @@ pub enum ClientMsg {
 }
 
 impl ClientMsg {
-    pub const TYPES: [&'static str; 10] = [
+    pub const TYPES: [&'static str; 11] = [
         "hello",
         "focus",
         "ctx",
         "nudge_response",
         "pointer_click",
+        "input_source",
         "editor_focus",
         "editor_mode",
         "motion",
@@ -255,6 +264,12 @@ pub struct Status {
     /// Whether the mode comes from an editor plugin rather than a guess.
     #[serde(default)]
     pub mode_from_editor: bool,
+    /// The keyboard layout keys are read with, and why, if it isn't the one
+    /// in use.
+    #[serde(default)]
+    pub layout: Option<String>,
+    #[serde(default)]
+    pub layout_note: Option<String>,
     pub keyboards: usize,
     pub clients: Vec<ClientKind>,
 }
@@ -375,6 +390,7 @@ mod tests {
             r#"{"v":0,"type":"ctx","event":"prompt","vi_mode":true,"shell_pid":51002,"tty":"/dev/pts/3"}"#,
             r#"{"v":0,"type":"nudge_response","nudge_id":"n-1729740000-3","action":"dismiss"}"#,
             r#"{"v":0,"type":"pointer_click"}"#,
+            r#"{"v":0,"type":"input_source","layout":"de","variant":"nodeadkeys"}"#,
             r#"{"v":0,"type":"hello","client":"editor","client_version":"0.1.0","editor":"vim","pid":61234}"#,
             r#"{"v":0,"type":"editor_focus","focused":false}"#,
             r#"{"v":0,"type":"editor_focus","focused":false,"panel":"terminal"}"#,

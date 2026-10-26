@@ -25,6 +25,7 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -yq libxkbcommon-dev
           cargo clippy -p flowbuddy-daemon --features xkb --all-targets
+          cargo test -p flowbuddy-daemon --features xkb
       - name: Test the VS Code companion's motion facts
         run: |
           sudo apt-get install -yq gjs

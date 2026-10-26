@@ -98,6 +98,8 @@ The app ids are defaults and can be overridden in the config. The values seen on
 - A Vim plugin that isn't a child of the terminal (inside tmux) counts when it has said it has focus.
 - An editor's reported mode replaces the guess, and stays known after clicks.
 
+**Keyboard layout.** The extension reports the current input source (`input_source`, xkb names such as `de` and `nodeadkeys`) and every switch. Built with libxkbcommon (`scripts/install.sh` does when `libxkbcommon-dev` is installed), the daemon rebuilds its keymap for it. For non-Latin layouts it uses US, since that's where Vim commands are typed. `[keyboard] xkb_layout` in the config overrides it. Without libxkbcommon, keys are read as US and `flowbuddy status` says so.
+
 **tmux.** Inside tmux, the terminal's shell reports `tmux` as its foreground command, and the panes' shells aren't its children. The daemon then asks tmux which pane the client on that terminal's tty shows, and what runs in it (`tmux list-clients -F '#{client_tty} #{pane_pid} #{pane_current_command}'`): Vim there is `TerminalVim`, a pane shell whose hook reported a vi-mode prompt is `BashVi`. Switching panes sends no event, so this is checked again every second while tmux is involved. tmux is reached over its Unix socket, which the daemon's sandbox allows.
 
 **One server for many windows.** GNOME Terminal and Ptyxis run one server process for all their windows, so several shells can match the same window. The daemon uses the shell that reported most recently; editor plugins that report focus settle it for Vim.

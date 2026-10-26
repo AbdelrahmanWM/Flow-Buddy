@@ -77,6 +77,15 @@ function! Test_file_and_jump() abort
   call assert_false(flowbuddy#facts([5, 1], [3, 1], [2, 1]).jump_back)
 endfunction
 
+function! Test_last_change() abort
+  call s:buf(map(range(1, 10), 'string(v:val)'))
+  call cursor(3, 1)
+  normal! x
+  call assert_true(s:facts([9, 1], [3, 1]).last_change)
+  call assert_false(s:facts([9, 1], [4, 1]).last_change)
+  call assert_false(s:facts([3, 1], [3, 1]).last_change)
+endfunction
+
 function! Test_search_hops() abort
   call s:buf(['TODO one', 'x', 'TODO two', 'y', 'TODO three'])
   let @/ = 'TODO'

@@ -23,7 +23,8 @@ const FIELDS = [
     'paragraph_hops', 'screen', 'window_lines', 'file_start', 'file_end',
     'word_hops', 'word_end_hops', 'bigword_hops', 'find_hops', 'till_hops',
     'line_start', 'first_nonblank', 'line_end', 'bracket_match', 'star_hops',
-    'jump_back', 'search_hops', 'relative_numbers', 'view_scrolled', 'revisits',
+    'jump_back', 'last_change', 'search_hops', 'relative_numbers', 'view_scrolled',
+    'revisits',
 ];
 
 let failed = 0;

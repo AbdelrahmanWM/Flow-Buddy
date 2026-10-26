@@ -126,6 +126,9 @@ pub struct MotionFacts {
     pub star_hops: Option<u32>,
     /// The end is where the cursor was before the last jump (`''`, `Ctrl-o`).
     pub jump_back: bool,
+    /// The end is on the line of the last change, away from the start
+    /// line (`g;`).
+    pub last_change: bool,
     /// `n` or `N` presses: the end is that many matches of the last search
     /// away, in the movement's direction. The pattern is never sent.
     pub search_hops: Option<u32>,

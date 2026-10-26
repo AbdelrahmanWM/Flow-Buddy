@@ -558,6 +558,10 @@ function! s:facts(start, end, jump) abort
     endfor
   endif
   let f.jump_back = a:jump == a:end && a:jump != [0, 0] ? v:true : v:false
+  " g;: the line of the last change, which '. marks.
+  let changed = line("'.")
+  let f.last_change = changed > 0 && changed == a:end[0] && a:start[0] != a:end[0]
+        \ ? v:true : v:false
   let f.relative_numbers = &relativenumber ? v:true : v:false
   return f
 endfunction

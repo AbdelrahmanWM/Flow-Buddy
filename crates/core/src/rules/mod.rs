@@ -13,6 +13,7 @@ use crate::rule::Rule;
 /// wins: the more of the gesture its advice covers, the earlier. Rules
 /// not listed come after, in [`all`] order.
 pub const PRECEDENCE: &[&str] = &[
+    "vim.visual-block",
     "vim.macro",
     "vim.change-matches",
     "vim.dot-repeat",
@@ -118,6 +119,16 @@ pub(crate) mod testing {
                 Flavor::Vim,
                 VimMode::Normal,
                 "uuuuuuu<Esc><C-r><C-r><C-r><C-r><C-r><C-r><Esc>n.n.n.n.A<CR>x<Esc>0ihi<Esc>",
+            ),
+            (
+                Flavor::Vim,
+                VimMode::Normal,
+                "Ihi<Esc>jIhi<Esc>jIhi<Esc>jyiwwdiwpu~~~~~r1r2r3xix<Esc>",
+            ),
+            (
+                Flavor::Vim,
+                VimMode::Normal,
+                "ihi<Esc>pahi<Esc>pahi<Esc>pa<Esc><C-w>w<C-w>w<C-w>w:bn<CR>:bn<CR>:bn<CR>:e #<CR>",
             ),
             (
                 Flavor::Readline,

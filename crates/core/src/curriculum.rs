@@ -412,6 +412,46 @@ pub static CURRICULUM: &[Item] = &[
         |s| is(s, &["cgn", "dgn"])
     ),
     item!(
+        "registers",
+        3,
+        "`\"0p`",
+        "paste the last yank, even after deleting something since",
+        "Yank a word, delete the old one, and still paste the yanked word.",
+        |s| cmd(s).is_some_and(|c| c.register.is_some())
+    ),
+    item!(
+        "windows",
+        3,
+        "`Ctrl-w h` and `Ctrl-^`",
+        "go straight to the window on the left (or j, k, l), and switch back to the last file",
+        "Hop between a split's two halves, or between two files, in two keys.",
+        |s| cmd(s).is_some_and(|c| {
+            (c.keys.len() == 2
+                && c.keys[0].is_ctrl('w')
+                && c.keys[1].plain_char().is_some_and(|k| "hjkl".contains(k)))
+                || c.single().is_some_and(|k| k.is_ctrl('^') || k.is_ctrl('6'))
+        })
+    ),
+    item!(
+        "insert-keys",
+        3,
+        "`Ctrl-r\"`",
+        "paste while typing, without leaving Insert mode (and Ctrl-o runs one Normal-mode command)",
+        "Paste a yanked name into the middle of a sentence you're typing.",
+        |s| matches!(
+            crate::rules::vim::insert_key(s),
+            Some(crate::vim::InsertKey::CtrlO | crate::vim::InsertKey::CtrlR)
+        )
+    ),
+    item!(
+        "change-list",
+        3,
+        "`g;`",
+        "jump back to where you last changed something, then older changes",
+        "Return to the function you were editing after reading elsewhere.",
+        |s| is(s, &["g;", "g,"])
+    ),
+    item!(
         "undo-time",
         3,
         "`:earlier 1m` and `g-`",
@@ -603,6 +643,12 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("vim.repeat-join", &["count", "join"]),
     ("vim.repeat-paste", &["count"]),
     ("vim.undo-run", &["count", "undo-time"]),
+    ("vim.visual-block", &["visual-block"]),
+    ("vim.registers", &["registers"]),
+    ("vim.case-run", &["case"]),
+    ("vim.increment", &["increment"]),
+    ("vim.insert-keys", &["insert-keys"]),
+    ("vim.windows", &["windows"]),
     ("vim.change-matches", &["cgn", "substitute-all"]),
     ("vim.shorthand", &["append", "open-line", "d-to-end"]),
     ("vim.visual-operator", &["ciw", "visual-object"]),
@@ -618,6 +664,7 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("motion.jump-back", &["jump-back"]),
     ("motion.page", &["half-page"]),
     ("motion.search", &["search-next"]),
+    ("motion.last-change", &["change-list"]),
     ("motion.scroll", &["center"]),
     ("motion.mark", &["marks"]),
     ("motion.text-object", &["ciw"]),
@@ -813,6 +860,10 @@ mod tests {
             ("qqq", "macro"),
             ("@@", "replay-macro"),
             ("cgnx<Esc>", "cgn"),
+            ("\"0p", "registers"),
+            ("<C-w>l", "windows"),
+            ("ia<C-r>", "insert-keys"),
+            ("g;", "change-list"),
             (":earlier 1m<CR>", "undo-time"),
             ("gUiw", "case"),
             (">ip", "indent-object"),

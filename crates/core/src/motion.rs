@@ -42,10 +42,11 @@ pub enum Category {
     JumpBack,
     Page,
     Search,
+    LastChange,
 }
 
 impl Category {
-    pub const ALL: [Category; 12] = [
+    pub const ALL: [Category; 13] = [
         Category::Count,
         Category::Paragraph,
         Category::Screen,
@@ -58,6 +59,7 @@ impl Category {
         Category::JumpBack,
         Category::Page,
         Category::Search,
+        Category::LastChange,
     ];
 
     pub fn id(self) -> &'static str {
@@ -74,6 +76,7 @@ impl Category {
             Category::JumpBack => "motion.jump-back",
             Category::Page => "motion.page",
             Category::Search => "motion.search",
+            Category::LastChange => "motion.last-change",
         }
     }
 
@@ -91,6 +94,7 @@ impl Category {
             Category::JumpBack => "Jump back",
             Category::Page => "Move by half a page",
             Category::Search => "Repeat the search",
+            Category::LastChange => "Jump to the last change",
         }
     }
 
@@ -113,6 +117,7 @@ impl Category {
             Category::JumpBack => "jump-back",
             Category::Page => "half-page",
             Category::Search => "search-next",
+            Category::LastChange => "change-list",
         }
     }
 
@@ -134,6 +139,7 @@ impl Category {
             Category::JumpBack => "Walking back to where you were without Ctrl-o",
             Category::Page => "Moving many lines where Ctrl-d or Ctrl-u land",
             Category::Search => "Moving to the next search match without n or N",
+            Category::LastChange => "Moving back to where you last changed something without g;",
         }
     }
 
@@ -152,6 +158,7 @@ impl Category {
             Category::JumpBack => "keys for Ctrl-o",
             Category::Page => "keys for Ctrl-d/u",
             Category::Search => "keys for n/N",
+            Category::LastChange => "keys for g;",
         }
     }
 }
@@ -420,6 +427,13 @@ pub fn plans_for(m: &Motion, known: &Known) -> Vec<Plan> {
             category: Category::JumpBack,
             keys: "Ctrl-o".into(),
             cost: 1,
+        });
+    }
+    if f.last_change && m.lines != 0 {
+        plans.push(Plan {
+            category: Category::LastChange,
+            keys: "g;".into(),
+            cost: 2,
         });
     }
 
@@ -1310,5 +1324,19 @@ mod tests {
             kinds,
             [(true, 2), (false, 2), (true, 2), (true, 1), (true, 2)]
         );
+    }
+
+    #[test]
+    fn back_to_the_last_change() {
+        let f = MotionFacts {
+            last_change: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            plan(-40, 0, f.clone()),
+            (Category::LastChange, "g;".into(), 2)
+        );
+        // On the same line it's just a move along it.
+        assert_ne!(plan(0, 5, f).0, Category::LastChange);
     }
 }

@@ -54,6 +54,9 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh
 | The same edit on every line | a macro: `qq…q`, `@q` |
 | `n.n.n.` through search matches | `cgn` then `...`, or `:%s` |
 | `uuuuuuu` | `7u`, `:earlier 1m` |
+| `I// <Esc>j` on line after line | `Ctrl-v`, `j`…, `I`, type once |
+| Yank, delete, `p` pastes the wrong thing | `"0p` |
+| `Ctrl-w w` round the windows, `:bn :bn :bn` | `Ctrl-w h/j/k/l`, `:b name`, `Ctrl-^` |
 | `:w` then `:q` | `:wq` or `ZZ` |
 | `↑↑↑↑` hunting shell history | `Ctrl-r` |
 

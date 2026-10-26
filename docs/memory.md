@@ -102,7 +102,7 @@ The format is pinned by a golden-file test (`crates/store/tests/golden_export.js
 
 ## What will never be in the memory or the export
 
-- Typed text of any kind: Insert-mode text, shell commands, `:` commands, searches
+- Typed text of any kind: Insert-mode text, shell commands, `:` commands, searches. The one exception is opt-in: with typing accuracy on, pairs of two characters next to a correction are counted (see below). No longer stretch of text is ever kept.
 - Raw key sequences
 - File names, paths, window titles, command arguments
 - Anything from apps other than the supported contexts

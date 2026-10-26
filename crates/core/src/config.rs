@@ -37,10 +37,40 @@ pub struct TypingConfig {
     pub accuracy: bool,
 }
 
-/// `flowbuddy coach`: a local model, off until `command` is set.
+/// Where the LLM features get their model.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiProvider {
+    /// Off, unless `command` is set (then it means `command`).
+    #[default]
+    None,
+    /// `command`: any program that reads the prompt on stdin.
+    Command,
+    /// Claude Code's own CLI (`claude -p`): your Claude subscription, no key.
+    ClaudeCode,
+    /// The Anthropic API with your key.
+    Anthropic,
+    /// Any OpenAI-compatible chat API (OpenAI, or a local server) with
+    /// your key.
+    Openai,
+}
+
+/// `flowbuddy coach` and the other LLM features: your own AI, off until
+/// you choose one.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AiConfig {
+    pub provider: AiProvider,
+    /// For the API providers; a sensible default otherwise.
+    pub model: Option<String>,
+    /// For `openai`: the API's base URL (default OpenAI's).
+    pub base_url: Option<String>,
+    /// The environment variable holding the API key (default
+    /// `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`).
+    pub api_key_env: Option<String>,
+    /// Or a command that prints it, e.g. `["secret-tool", "lookup",
+    /// "service", "flowbuddy"]`. Keys never go in this file.
+    pub api_key_command: Option<Vec<String>>,
     /// A program that reads a prompt on stdin and writes an answer to
     /// stdout, e.g. `["ollama", "run", "llama3.2:3b"]`. Run directly, not
     /// through a shell.
@@ -58,6 +88,11 @@ pub struct AiConfig {
 impl Default for AiConfig {
     fn default() -> Self {
         AiConfig {
+            provider: AiProvider::None,
+            model: None,
+            base_url: None,
+            api_key_env: None,
+            api_key_command: None,
             command: None,
             timeout_seconds: 120,
             weekly: false,

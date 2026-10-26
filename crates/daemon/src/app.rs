@@ -295,7 +295,9 @@ impl App {
         // The model writes it, outside this sandbox; the fixed note if
         // that can't start.
         let ai = &self.config.ai;
-        if ai.weekly && ai.command.is_some() && self.notifier.start_weekly_note() {
+        let has_ai =
+            ai.command.is_some() || ai.provider != flowbuddy_core::config::AiProvider::None;
+        if ai.weekly && has_ai && self.notifier.start_weekly_note() {
             return;
         }
         let describe = |id: &str| self.describe(id).to_lowercase();

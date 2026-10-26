@@ -71,11 +71,18 @@ The comparison, and what was found on a real machine, is in [spikes/evdev.md](sp
 
 Details of the memory and its export format are in [memory.md](memory.md).
 
-## AI coaching (`flowbuddy coach`)
+## AI features (`flowbuddy coach`, the weekly note, the review)
 
-Off until you set `[ai] command` in `config.toml` to a program on this machine, such as `["ollama", "run", "llama3.2:3b"]`. Flow Buddy never talks to a network itself: it runs that program, writes the prompt to its stdin and shows what it writes back.
+Off until you choose an AI in `config.toml`. The daemon never talks to it: it has no network access at all. Only the `flowbuddy` command and its one-shot services do.
 
-- **What the model sees:** the mistake memory export only. That means habit descriptions, contexts, learning stages, counts, and abstract shapes such as `j×12`. It never sees keys, typed text, file names, window titles or positions.
-- **Check it first:** `flowbuddy coach --prompt` prints exactly what would be sent, without running anything.
-- **Only when you ask:** nothing runs unprompted, unless you also set `[ai] weekly = true`. Then, once a week, the daemon starts `flowbuddy-weekly.service`, which asks the model to write the weekly progress note from the same export. If the model fails, you get the usual note. The daemon itself still has no network access; that one-shot service has it so it can reach local model servers such as Ollama on localhost.
-- **Your choice of program:** the command is yours to pick. If you point it at a tool that sends data to a server, the prompt goes there, so pick one that runs locally.
+| `[ai] provider` | What it uses | Where the prompt goes |
+|---|---|---|
+| `command` (or just `command = [...]`) | Any program that reads a prompt on stdin, e.g. `ollama run llama3.2:3b` | Wherever that program sends it; a local model keeps it on this machine |
+| `claude-code` | Claude Code's CLI, `claude -p`: your Claude subscription, no key | Anthropic, under your Claude account |
+| `anthropic` | The Anthropic API with your key | Anthropic, under your API account |
+| `openai` | Any OpenAI-compatible API with your key (`base_url` for others) | That service |
+
+- **What's sent:** the prompt built from the mistake memory export: habit descriptions, contexts, learning stages, counts, abstract shapes such as `j×12`, and tip outcomes. Never keys, typed text, file names, window titles or positions.
+- **Check first:** `flowbuddy coach --prompt` prints exactly what would be sent, without sending anything.
+- **Keys:** read from an environment variable (`api_key_env`, default `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) or a command such as your keyring (`api_key_command`), never from `config.toml`, and never logged. The one-shot services don't see your shell's environment, so for them use `api_key_command`.
+- **When it runs:** only when you run `flowbuddy coach`, unless you also turn on `[ai] weekly`, in which case the weekly note is written by it too.

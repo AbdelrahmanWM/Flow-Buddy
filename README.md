@@ -57,15 +57,17 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh
 
 `flowbuddy rules` lists all of them. Motion coaching (the first three rows) compares each movement with the cheapest motion that lands in the same place. It needs the editor plugins, which tell Flow Buddy where a movement ended without sending any text: [vim-plugin/](vim-plugin/README.md) and [vscode-extension/](vscode-extension/README.md). Without them, the simpler rules that count repeated keys take over.
 
-`flowbuddy coach` asks a model running on your machine for advice based on the mistake memory. It's off until you set it up, and `--prompt` shows exactly what the model sees:
+`flowbuddy coach` asks an AI of your choice (your Claude subscription, an API key, or a local model) for advice based on the mistake memory. It's off until you set it up, and `--prompt` shows exactly what would be sent:
 
 ```toml
 [typing]
 accuracy = false                              # true: count corrections (counts only) for `flowbuddy summary`
 
 [ai]
-command = ["ollama", "run", "llama3.2:3b"]   # any local program: prompt on stdin, answer on stdout
-weekly = false                                # true: the model writes the weekly progress note
+provider = "claude-code"     # your Claude subscription via `claude -p`; or "anthropic" / "openai" with a key
+# command = ["ollama", "run", "llama3.2:3b"]  # or any local program: prompt on stdin, answer on stdout
+weekly = false               # true: the model writes the weekly progress note
+filter = true                # the learned tip filter (no LLM); skips tips you tend to dismiss
 ```
 
 ## Platform

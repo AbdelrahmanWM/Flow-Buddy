@@ -306,18 +306,13 @@ fn coach(question: &str, show_prompt: bool) -> anyhow::Result<()> {
     }
     let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
         .map_err(anyhow::Error::msg)?;
-    let Some(command) = config.ai.command.filter(|c| !c.is_empty()) else {
-        print!("{}", coach::SETUP);
-        return Ok(());
-    };
-    coach::run(
-        &command,
-        &prompt,
-        config.ai.timeout_seconds,
-        &mut std::io::stdout(),
-    )
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!();
+    match coach::ask(&config.ai, &prompt, &mut std::io::stdout()) {
+        None => print!("{}", coach::SETUP),
+        Some(result) => {
+            result.map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!();
+        }
+    }
     Ok(())
 }
 
@@ -340,25 +335,25 @@ fn weekly_note() -> anyhow::Result<()> {
         return Ok(());
     };
     let mut text = fixed.clone();
-    if let (true, Some(command)) = (config.ai.weekly, config.ai.command.as_ref()) {
+    if config.ai.weekly {
         let week = flowbuddy_store::days::range(now, 7, 0);
         let full = |id: &str| Some(report::describe(id));
         let export = flowbuddy_store::Export::build(&store, &full, (&week.0, &week.1), now / 1000)?;
         let mut answer = Vec::new();
-        match coach::run(
-            command,
+        match coach::ask(
+            &config.ai,
             &coach::weekly_prompt(&export, &fixed),
-            config.ai.timeout_seconds,
             &mut answer,
         ) {
-            Ok(()) => {
+            Some(Ok(())) => {
                 if let Some(t) = coach::notification_text(&String::from_utf8_lossy(&answer)) {
                     text = t;
                 }
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 eprintln!("flowbuddy: the model didn't write the note ({e}); sending the usual one")
             }
+            None => {}
         }
     }
     std::process::Command::new("notify-send")

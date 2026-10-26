@@ -11,6 +11,7 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use flowbuddy_core::config::{AiConfig, AiProvider};
 use flowbuddy_core::engine::Engine;
 use flowbuddy_store::Export;
 
@@ -220,10 +221,24 @@ pub fn run(
     timeout_s: u32,
     out: &mut dyn Write,
 ) -> Result<(), RunError> {
+    run_in(command, prompt, timeout_s, out, None)
+}
+
+fn run_in(
+    command: &[String],
+    prompt: &str,
+    timeout_s: u32,
+    out: &mut dyn Write,
+    dir: Option<&std::path::Path>,
+) -> Result<(), RunError> {
     let (program, args) = command
         .split_first()
         .ok_or_else(|| RunError::Failed("[ai] command is empty".into()))?;
-    let mut child = Command::new(program)
+    let mut cmd = Command::new(program);
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
+    }
+    let mut child = cmd
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -312,18 +327,189 @@ pub fn notification_text(answer: &str) -> Option<String> {
     })
 }
 
+/// Ask the AI you chose in `[ai]` and copy its answer to `out`. `None` if
+/// none is set up.
+pub fn ask(ai: &AiConfig, prompt: &str, out: &mut dyn Write) -> Option<Result<(), RunError>> {
+    let timeout = ai.timeout_seconds;
+    let provider = match ai.provider {
+        AiProvider::None if ai.command.is_some() => AiProvider::Command,
+        p => p,
+    };
+    Some(match provider {
+        AiProvider::None => return None,
+        AiProvider::Command => {
+            let command = ai.command.clone().unwrap_or_default();
+            run(&command, prompt, timeout, out)
+        }
+        AiProvider::ClaudeCode => {
+            // `claude -p` reads the prompt from stdin and answers with your
+            // Claude subscription. Run it in an empty directory so it has
+            // nothing to look at but the prompt.
+            let mut command = vec!["claude".to_string(), "-p".into()];
+            if let Some(model) = &ai.model {
+                command.extend(["--model".into(), model.clone()]);
+            }
+            let dir = std::env::temp_dir().join("flowbuddy-coach");
+            let _ = std::fs::create_dir_all(&dir);
+            run_in(&command, prompt, timeout, out, Some(&dir))
+        }
+        AiProvider::Anthropic => api_key(ai, "ANTHROPIC_API_KEY").and_then(|key| {
+            let url = ai
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.anthropic.com".into());
+            let model = ai.model.clone().unwrap_or_else(|| ANTHROPIC_MODEL.into());
+            anthropic(&url, &key, &model, prompt, timeout).map(|t| {
+                let _ = out.write_all(t.as_bytes());
+            })
+        }),
+        AiProvider::Openai => api_key(ai, "OPENAI_API_KEY").and_then(|key| {
+            let url = ai
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com/v1".into());
+            let Some(model) = ai.model.clone() else {
+                return Err(RunError::Failed(
+                    "set [ai] model for the openai provider".into(),
+                ));
+            };
+            openai(&url, &key, &model, prompt, timeout).map(|t| {
+                let _ = out.write_all(t.as_bytes());
+            })
+        }),
+    })
+}
+
+/// The Anthropic API's default model for Flow Buddy.
+const ANTHROPIC_MODEL: &str = "claude-opus-5-5";
+
+/// The API key: from `api_key_command` if set, else the environment.
+fn api_key(ai: &AiConfig, default_env: &str) -> Result<String, RunError> {
+    if let Some(cmd) = ai.api_key_command.as_ref().filter(|c| !c.is_empty()) {
+        let out = Command::new(&cmd[0])
+            .args(&cmd[1..])
+            .stderr(Stdio::inherit())
+            .output()
+            .map_err(|e| RunError::Failed(format!("api_key_command: {e}")))?;
+        let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !out.status.success() || key.is_empty() {
+            return Err(RunError::Failed("api_key_command printed no key".into()));
+        }
+        return Ok(key);
+    }
+    let var = ai.api_key_env.as_deref().unwrap_or(default_env);
+    std::env::var(var)
+        .ok()
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| RunError::Failed(format!("no API key: set {var}, or [ai] api_key_command")))
+}
+
+fn agent(timeout_s: u32) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(u64::from(timeout_s))))
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
+/// One Messages API call. Refusals and errors come back as errors; the key
+/// never appears in them.
+pub fn anthropic(
+    base_url: &str,
+    key: &str,
+    model: &str,
+    prompt: &str,
+    timeout_s: u32,
+) -> Result<String, RunError> {
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": 16000,
+        "output_config": {"effort": "medium"},
+        // If a safety classifier declines, let the API retry on a model
+        // that can answer, instead of failing.
+        "fallbacks": "default",
+        "messages": [{"role": "user", "content": prompt}],
+    });
+    let mut resp = agent(timeout_s)
+        .post(&format!("{}/v1/messages", base_url.trim_end_matches('/')))
+        .header("x-api-key", key)
+        .header("anthropic-version", "2026-10-21")
+        .header("anthropic-beta", "server-side-fallback-2026-07-01")
+        .header("content-type", "application/json")
+        .send_json(&body)
+        .map_err(|e| RunError::Failed(format!("Anthropic API: {e}")))?;
+    let status = resp.status().as_u16();
+    let v: serde_json::Value = resp
+        .body_mut()
+        .read_json()
+        .map_err(|e| RunError::Failed(format!("Anthropic API: unreadable answer ({e})")))?;
+    if status != 200 {
+        let msg = v["error"]["message"].as_str().unwrap_or("no details");
+        return Err(RunError::Failed(format!("Anthropic API {status}: {msg}")));
+    }
+    if v["stop_reason"] == "refusal" {
+        return Err(RunError::Failed("the model declined to answer".into()));
+    }
+    let text: String = v["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|b| b["type"] == "text")
+        .filter_map(|b| b["text"].as_str())
+        .collect();
+    Ok(text)
+}
+
+/// One OpenAI-compatible chat completion.
+pub fn openai(
+    base_url: &str,
+    key: &str,
+    model: &str,
+    prompt: &str,
+    timeout_s: u32,
+) -> Result<String, RunError> {
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+    });
+    let mut resp = agent(timeout_s)
+        .post(&format!(
+            "{}/chat/completions",
+            base_url.trim_end_matches('/')
+        ))
+        .header("authorization", &format!("Bearer {key}"))
+        .header("content-type", "application/json")
+        .send_json(&body)
+        .map_err(|e| RunError::Failed(format!("API: {e}")))?;
+    let status = resp.status().as_u16();
+    let v: serde_json::Value = resp
+        .body_mut()
+        .read_json()
+        .map_err(|e| RunError::Failed(format!("API: unreadable answer ({e})")))?;
+    if status != 200 {
+        let msg = v["error"]["message"].as_str().unwrap_or("no details");
+        return Err(RunError::Failed(format!("API {status}: {msg}")));
+    }
+    v["choices"][0]["message"]["content"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| RunError::Failed("API: no answer in the response".into()))
+}
+
 /// What to tell someone who hasn't set `[ai] command` yet.
 pub const SETUP: &str = "\
-flowbuddy coach asks a model running on this machine about your habits.
-It's off until you name one in ~/.config/flowbuddy/config.toml, for example:
+flowbuddy coach asks an AI of your choice about your habits. It's off until
+you pick one in ~/.config/flowbuddy/config.toml:
 
     [ai]
-    command = [\"ollama\", \"run\", \"llama3.2:3b\"]
+    provider = \"claude-code\"     # your Claude subscription, via `claude -p`
+    # provider = \"anthropic\"     # an API key in ANTHROPIC_API_KEY
+    # provider = \"openai\"        # OPENAI_API_KEY, model = \"...\", base_url for others
+    # command = [\"ollama\", \"run\", \"llama3.2:3b\"]   # a local model
 
-Any program that reads a prompt on stdin and answers on stdout works
-(llama.cpp's llama-cli, llamafile, ...). Pick one that runs locally: the
-prompt is your mistake memory (counts and habit shapes, never text).
-See it first with: flowbuddy coach --prompt
+The prompt is your mistake memory: counts and habit shapes, never keys or
+text. With a cloud provider it leaves this machine. See it first with:
+    flowbuddy coach --prompt
 ";
 
 #[cfg(test)]
@@ -441,5 +627,122 @@ mod tests {
         assert!(matches!(err, RunError::NotFound(_)), "{err}");
         let err = run(&["sleep".into(), "5".into()], "x", 1, &mut out).unwrap_err();
         assert!(matches!(err, RunError::TimedOut(1)), "{err}");
+    }
+
+    /// A one-shot HTTP server: answers one request with `status` and `body`,
+    /// and hands back what it was sent.
+    fn fake_server(status: u16, body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut head = String::new();
+            let mut len = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap();
+                }
+                head.push_str(&line);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let mut body_in = vec![0; len];
+            std::io::Read::read_exact(&mut reader, &mut body_in).unwrap();
+            let reply = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(reply.as_bytes()).unwrap();
+            head + &String::from_utf8_lossy(&body_in)
+        });
+        (url, handle)
+    }
+
+    #[test]
+    fn anthropic_messages_call() {
+        let (url, sent) = fake_server(
+            200,
+            r#"{"content":[{"type":"text","text":"Try }."}],"stop_reason":"end_turn"}"#,
+        );
+        let answer = anthropic(&url, "sk-test", "claude-opus-5-5", "hello", 5).unwrap();
+        assert_eq!(answer, "Try }.");
+        let sent = sent.join().unwrap();
+        assert!(sent.starts_with("POST /v1/messages "), "{sent}");
+        assert!(sent.contains("x-api-key: sk-test"), "{sent}");
+        assert!(sent.contains("anthropic-version: 2026-10-21"), "{sent}");
+        let body: serde_json::Value =
+            serde_json::from_str(&sent[sent.find('{').unwrap()..]).unwrap();
+        assert_eq!(body["model"], "claude-opus-5-5");
+        assert_eq!(body["fallbacks"], "default");
+        assert_eq!(body["messages"][0]["content"], "hello");
+    }
+
+    #[test]
+    fn anthropic_errors_and_refusals() {
+        let (url, _) = fake_server(
+            401,
+            r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#,
+        );
+        let err = anthropic(&url, "sk-secret", "m", "x", 5)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("401: invalid x-api-key"), "{err}");
+        assert!(!err.contains("sk-secret"), "the key never shows");
+        let (url, _) = fake_server(200, r#"{"content":[],"stop_reason":"refusal"}"#);
+        assert!(
+            anthropic(&url, "k", "m", "x", 5)
+                .unwrap_err()
+                .to_string()
+                .contains("declined")
+        );
+    }
+
+    #[test]
+    fn openai_compatible_call() {
+        let (url, sent) = fake_server(
+            200,
+            r#"{"choices":[{"message":{"role":"assistant","content":"Use ciw."}}]}"#,
+        );
+        assert_eq!(
+            openai(&url, "k", "some-model", "hi", 5).unwrap(),
+            "Use ciw."
+        );
+        let sent = sent.join().unwrap();
+        assert!(sent.starts_with("POST /chat/completions "), "{sent}");
+        assert!(sent.contains("authorization: Bearer k"), "{sent}");
+    }
+
+    #[test]
+    fn keys_from_a_command_or_the_environment() {
+        let mut ai = AiConfig {
+            api_key_command: Some(vec!["echo".into(), "from-keyring".into()]),
+            ..Default::default()
+        };
+        assert_eq!(api_key(&ai, "UNUSED").unwrap(), "from-keyring");
+        ai.api_key_command = None;
+        ai.api_key_env = Some("FLOWBUDDY_TEST_NO_SUCH_KEY".into());
+        assert!(
+            api_key(&ai, "X")
+                .unwrap_err()
+                .to_string()
+                .contains("FLOWBUDDY_TEST_NO_SUCH_KEY")
+        );
+    }
+
+    #[test]
+    fn nothing_without_a_provider() {
+        let mut out = Vec::new();
+        assert!(ask(&AiConfig::default(), "x", &mut out).is_none());
+        let ai = AiConfig {
+            command: Some(vec!["cat".into()]),
+            ..Default::default()
+        };
+        ask(&ai, "echo me", &mut out).unwrap().unwrap();
+        assert_eq!(out, b"echo me");
     }
 }

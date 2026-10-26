@@ -252,6 +252,8 @@ pub struct RuleState {
     /// How far Flow Buddy raised the threshold after "not helpful" reports
     /// (`flowbuddy rules reset` clears it). Ignored when the config sets one.
     pub raised: u32,
+    /// A threshold accepted from `flowbuddy review`. The config's wins.
+    pub threshold: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -312,7 +314,8 @@ pub fn rule_settings(config: &Config, state: &State) -> RuleSettings {
         if !enabled {
             settings.disabled.insert(id.clone());
         }
-        if let Some(n) = configured.and_then(|c| c.threshold) {
+        let reviewed = state.rules.get(id).and_then(|r| r.threshold);
+        if let Some(n) = configured.and_then(|c| c.threshold).or(reviewed) {
             settings.thresholds.insert(id.clone(), n);
         } else if let Some(r) = state.rules.get(id).map(|r| r.raised).filter(|r| *r > 0) {
             settings.raised.insert(id.clone(), r);
@@ -373,6 +376,7 @@ mod tests {
                 enabled: Some(true),
                 muted: false,
                 raised: 0,
+                threshold: None,
             },
         );
         assert!(rule_settings(&c, &st).disabled.is_empty());
@@ -422,6 +426,7 @@ mod tests {
                 enabled: None,
                 muted: true,
                 raised: 0,
+                threshold: None,
             },
         );
         st.save(&path).unwrap();

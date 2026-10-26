@@ -1017,6 +1017,23 @@ impl App {
                 data: json!(self.rule_infos()),
             },
             Command::Rule { rule_id, action } => self.rule_command(id, &rule_id, action),
+            Command::RuleThreshold { rule_id, threshold } => {
+                match self.engine.default_threshold(&rule_id) {
+                    None => ServerMsg::Error {
+                        id,
+                        code: ErrorCode::UnknownRule,
+                        message: format!("{rule_id} has no threshold"),
+                    },
+                    Some(_) => {
+                        self.state.rules.entry(rule_id).or_default().threshold =
+                            threshold.filter(|n| *n > 0);
+                        self.engine
+                            .apply(&config::rule_settings(&self.config, &self.state));
+                        self.save_state();
+                        ServerMsg::Ack { id }
+                    }
+                }
+            }
             Command::ReportFalsePositive => match self.nudges.back() {
                 Some((nudge_id, _)) => {
                     let nudge_id = nudge_id.clone();
@@ -2349,5 +2366,44 @@ pub(crate) mod tests {
         app.tick(at(21, 10));
         let n = nudges(&mut ext);
         assert!(n[0].text.starts_with("`0`, `^` and `$`"), "{}", n[0].text);
+    }
+
+    #[test]
+    fn reviewed_thresholds_apply_and_restore() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut rx = connect(&mut app, 1);
+        let set = |app: &mut App, threshold| {
+            send(
+                app,
+                1,
+                ClientMsg::Command {
+                    id: Some(1),
+                    command: Command::RuleThreshold {
+                        rule_id: "vim.repeat-x".into(),
+                        threshold,
+                    },
+                },
+                0,
+            )
+        };
+        set(&mut app, Some(7));
+        assert_eq!(rx.try_recv().unwrap(), ServerMsg::Ack { id: Some(1) });
+        assert_eq!(threshold(&app, "vim.repeat-x"), Some(7));
+        set(&mut app, None);
+        assert_eq!(threshold(&app, "vim.repeat-x"), Some(4));
+        send(
+            &mut app,
+            1,
+            ClientMsg::Command {
+                id: Some(2),
+                command: Command::RuleThreshold {
+                    rule_id: "vim.w-then-q".into(),
+                    threshold: Some(3),
+                },
+            },
+            0,
+        );
+        rx.try_recv().unwrap();
+        assert!(matches!(rx.try_recv().unwrap(), ServerMsg::Error { .. }));
     }
 }

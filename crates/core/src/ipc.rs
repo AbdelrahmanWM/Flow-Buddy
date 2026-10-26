@@ -101,6 +101,11 @@ pub enum Command {
     },
     /// Mark the most recent nudge as wrong.
     ReportFalsePositive,
+    /// Set a rule's threshold (from `flowbuddy review`); `None` restores it.
+    RuleThreshold {
+        rule_id: String,
+        threshold: Option<u32>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

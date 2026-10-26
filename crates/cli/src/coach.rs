@@ -119,23 +119,11 @@ pub fn insights(export: &Export) -> Vec<String> {
     out
 }
 
-/// The prompt for `export`, answering `question` if there is one.
-pub fn prompt(export: &Export, question: Option<&str>) -> String {
+/// What the data says about the habits, for any prompt: the overview,
+/// facts across habits, and each habit, most worth working on first.
+pub fn facts(export: &Export) -> String {
     let engine = Engine::standard();
     let mut out = String::new();
-    out.push_str(
-        "You are a friendly, practical Vim coach. Below is what Flow Buddy, a local tool, \
-         noticed about how this person uses Vim (in VS Code, the terminal and bash vi-mode). \
-         It only has counts and the shape of each habit, never their text.\n\n\
-         Rules:\n\
-         - Use only this data. Don't invent numbers or habits.\n\
-         - Be concise: at most 5 short bullet points.\n\
-         - Name exact commands in backticks, like `Ctrl-d` or `ci(`, and say in a few words what each does.\n\
-         - Prefer what's practical to type over what's shortest: nobody counts 40 lines for `40j`.\n\
-         - Praise real progress (improving or mastered habits) briefly.\n\n\
-         Examples are written as shapes: `j×12` is j pressed 12 times in a row; \
-         `keys for }×7` is 7 keys spent on a move that `}` makes in one.\n\n",
-    );
     let s = &export.summary;
     let _ = writeln!(
         out,
@@ -182,6 +170,26 @@ pub fn prompt(export: &Export, question: Option<&str>) -> String {
     if export.patterns.is_empty() {
         out.push_str("- Nothing recorded yet.\n");
     }
+    out
+}
+
+/// The prompt for `export`, answering `question` if there is one.
+pub fn prompt(export: &Export, question: Option<&str>) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "You are a friendly, practical Vim coach. Below is what Flow Buddy, a local tool, \
+         noticed about how this person uses Vim (in VS Code, the terminal and bash vi-mode). \
+         It only has counts and the shape of each habit, never their text.\n\n\
+         Rules:\n\
+         - Use only this data. Don't invent numbers or habits.\n\
+         - Be concise: at most 5 short bullet points.\n\
+         - Name exact commands in backticks, like `Ctrl-d` or `ci(`, and say in a few words what each does.\n\
+         - Prefer what's practical to type over what's shortest: nobody counts 40 lines for `40j`.\n\
+         - Praise real progress (improving or mastered habits) briefly.\n\n\
+         Examples are written as shapes: `j×12` is j pressed 12 times in a row; \
+         `keys for }×7` is 7 keys spent on a move that `}` makes in one.\n\n",
+    );
+    out.push_str(&facts(export));
     out.push('\n');
     match question {
         Some(q) => {

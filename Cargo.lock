@@ -345,6 +345,7 @@ dependencies = [
  "clap",
  "flowbuddy-core",
  "flowbuddy-store",
+ "serde",
  "serde_json",
  "ureq",
 ]

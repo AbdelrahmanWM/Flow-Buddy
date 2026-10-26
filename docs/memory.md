@@ -108,3 +108,14 @@ The format is pinned by a golden-file test (`crates/store/tests/golden_export.js
 - Anything from apps other than the supported contexts
 
 If a future feature sends the export off the machine (e.g. to an AI model), it will be opt-in and off by default, and it will be documented in [privacy.md](privacy.md) before it ships.
+
+## Typing accuracy (opt-in)
+
+With `[typing] accuracy = true`, two more tables hold counts per day:
+
+| Table | Columns |
+|---|---|
+| `typing` | day, context, characters typed, of them deleted again |
+| `typo_pairs` | day, a pair of characters (the one before, the one deleted), how often |
+
+They aren't part of the export. `flowbuddy memory forget --all` clears them.

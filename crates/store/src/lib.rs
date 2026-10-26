@@ -21,7 +21,8 @@ pub type Result<T> = rusqlite::Result<T>;
 
 /// Schema migrations, applied in order; `PRAGMA user_version` is the
 /// number applied so far.
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
     CREATE TABLE daily_stats (
         day             TEXT    NOT NULL,  -- local date, YYYY-MM-DD
         context         TEXT    NOT NULL,
@@ -62,7 +63,24 @@ const MIGRATIONS: &[&str] = &[r#"
         shape     TEXT    NOT NULL
     );
     CREATE INDEX episodes_ts ON episodes (ts_bucket);
-"#];
+"#,
+    r#"
+    -- Opt-in typing accuracy ([typing] accuracy): counts only.
+    CREATE TABLE typing (
+        day         TEXT    NOT NULL,
+        context     TEXT    NOT NULL,
+        typed       INTEGER NOT NULL DEFAULT 0,  -- characters typed
+        corrections INTEGER NOT NULL DEFAULT 0,  -- of them deleted again
+        PRIMARY KEY (day, context)
+    );
+    CREATE TABLE typo_pairs (
+        day   TEXT    NOT NULL,
+        pair  TEXT    NOT NULL,  -- two characters: the one before, the one deleted
+        count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day, pair)
+    );
+"#,
+];
 
 /// What happened, for [`Store::record`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -380,11 +398,58 @@ impl Store {
     pub fn forget_all(&self) -> Result<()> {
         self.conn.execute_batch(
             "DELETE FROM daily_stats; DELETE FROM activity; DELETE FROM patterns;
-             DELETE FROM episodes;",
+             DELETE FROM episodes; DELETE FROM typing; DELETE FROM typo_pairs;",
         )?;
         self.conn.execute_batch("VACUUM")?;
         let _ = self.conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
         Ok(())
+    }
+
+    /// Add typing counts for `day` in `context` (opt-in).
+    pub fn add_typing(&self, day: &str, context: &str, typed: u64, corrections: u64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO typing (day, context, typed, corrections) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (day, context) DO UPDATE SET
+                 typed = typed + excluded.typed, corrections = corrections + excluded.corrections",
+            params![day, context, typed, corrections],
+        )?;
+        Ok(())
+    }
+
+    pub fn add_typo_pair(&self, day: &str, pair: &str, count: u64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO typo_pairs (day, pair, count) VALUES (?1, ?2, ?3)
+             ON CONFLICT (day, pair) DO UPDATE SET count = count + excluded.count",
+            params![day, pair, count],
+        )?;
+        Ok(())
+    }
+
+    /// (typed, corrections) over a day range, all contexts.
+    pub fn typing(&self, from_day: &str, to_day: &str) -> Result<(u64, u64)> {
+        self.conn.query_row(
+            "SELECT COALESCE(SUM(typed), 0), COALESCE(SUM(corrections), 0) FROM typing
+             WHERE day >= ?1 AND day <= ?2",
+            params![from_day, to_day],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+    }
+
+    /// The most often corrected pairs over a day range, most first.
+    pub fn typo_pairs(
+        &self,
+        from_day: &str,
+        to_day: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT pair, SUM(count) AS n FROM typo_pairs WHERE day >= ?1 AND day <= ?2
+             GROUP BY pair ORDER BY n DESC, pair LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![from_day, to_day, limit], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+        rows.collect()
     }
 
     /// The first time anything was recorded, if ever.
@@ -403,6 +468,8 @@ impl Store {
             ("activity", "day, context"),
             ("patterns", "rule_id, context, stage"),
             ("episodes", "rule_id, context, mode, shape"),
+            ("typing", "day, context"),
+            ("typo_pairs", "day, pair"),
         ] {
             let mut stmt = self.conn.prepare(&format!("SELECT {cols} FROM {table}"))?;
             let n = stmt.column_count();
@@ -645,5 +712,23 @@ mod tests {
         s.forget_all().unwrap();
         assert!(s.patterns().unwrap().is_empty());
         assert!(s.all_text().unwrap().is_empty());
+    }
+
+    #[test]
+    fn typing_counts() {
+        let s = Store::open_in_memory().unwrap();
+        s.add_typing("2026-10-24", "vscode-vim", 100, 4).unwrap();
+        s.add_typing("2026-10-24", "vscode-vim", 50, 1).unwrap();
+        s.add_typing("2026-10-25", "bash-vi", 10, 0).unwrap();
+        assert_eq!(s.typing("2026-10-24", "2026-10-25").unwrap(), (160, 5));
+        s.add_typo_pair("2026-10-24", "er", 3).unwrap();
+        s.add_typo_pair("2026-10-25", "er", 1).unwrap();
+        s.add_typo_pair("2026-10-25", "th", 2).unwrap();
+        assert_eq!(
+            s.typo_pairs("2026-10-24", "2026-10-25", 5).unwrap(),
+            [("er".to_string(), 4), ("th".to_string(), 2)]
+        );
+        s.forget_all().unwrap();
+        assert_eq!(s.typing("2026-10-24", "2026-10-25").unwrap(), (0, 0));
     }
 }

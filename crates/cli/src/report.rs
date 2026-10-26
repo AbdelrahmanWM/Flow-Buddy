@@ -164,11 +164,43 @@ pub fn summary(store: &Store, now_ms: u64, period: Period) -> anyhow::Result<Str
             writeln!(out, "  {stage:<10} {}", rules.join(", "))?;
         }
     }
+    if let Some(line) = typing_line(store, &current, &previous, versus)? {
+        writeln!(out, "\n  {line}")?;
+    }
     writeln!(
         out,
         "\n  ↓ fewer per active hour is better. `flowbuddy memory show` for history."
     )?;
     Ok(out)
+}
+
+/// Opt-in typing accuracy for the summary, if there's any.
+fn typing_line(
+    store: &Store,
+    current: &(String, String),
+    previous: &(String, String),
+    versus: &str,
+) -> anyhow::Result<Option<String>> {
+    let (typed, corrections) = store.typing(&current.0, &current.1)?;
+    if typed == 0 {
+        return Ok(None);
+    }
+    let rate = |t: u64, c: u64| c as f64 * 100.0 / t.max(1) as f64;
+    let mut line = format!(
+        "Typing  {:.1}% of characters corrected ({corrections} of {typed})",
+        rate(typed, corrections)
+    );
+    let (before_t, before_c) = store.typing(&previous.0, &previous.1)?;
+    if before_t > 0 {
+        let _ = write!(line, ", {:.1}% {versus}", rate(before_t, before_c));
+    }
+    let pairs = store.typo_pairs(&current.0, &current.1, 3)?;
+    if !pairs.is_empty() {
+        let list: Vec<String> = pairs.iter().map(|(p, n)| format!("{p} {n}×")).collect();
+        let _ = write!(line, ". Most corrected after: {}", list.join(", "));
+    }
+    line.push('.');
+    Ok(Some(line))
 }
 
 fn date(unix_s: u64) -> String {
@@ -354,6 +386,21 @@ mod tests {
         assert!(text.contains("Pressing j or k"), "{text}");
         assert!(text.contains("↓ 67%"), "6/h → 2/h is 67% fewer:\n{text}");
         assert!(text.contains("4 (66%)"), "{text}");
+    }
+
+    #[test]
+    fn summary_with_typing_accuracy() {
+        let s = sample();
+        s.add_typing(&days::day(at(24, 12)), "vscode-vim", 400, 12)
+            .unwrap();
+        s.add_typing(&days::day(at(23, 12)), "vscode-vim", 200, 10)
+            .unwrap();
+        s.add_typo_pair(&days::day(at(24, 12)), "er", 4).unwrap();
+        let out = summary(&s, at(24, 18), Period::Today).unwrap();
+        assert!(
+            out.contains("Typing  3.0% of characters corrected (12 of 400), 5.0% yesterday. Most corrected after: er 4×."),
+            "{out}"
+        );
     }
 
     #[test]

@@ -21,7 +21,7 @@ use flowbuddy_core::motion::{self, MotionEvent, OperatorEvent};
 use flowbuddy_core::policy::{Coach, CoachingMode, Gate, PolicyConfig, RuleFacts};
 use flowbuddy_core::rule::{Finding, RuleEvent};
 use flowbuddy_core::rules::vscode::{How, UiAction, UiWhat};
-use flowbuddy_core::vim::{Flavor, Tracker, VimEvent};
+use flowbuddy_core::vim::{Flavor, InsertKey, Tracker, VimEvent};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -68,6 +68,9 @@ pub struct App {
     /// shortcut (Ctrl-P, Ctrl-`) as its letter and time.
     last_click_ms: Option<u64>,
     last_shortcut: Option<(char, u64)>,
+    /// Opt-in typing accuracy, written once a minute.
+    typing: crate::typing::Typing,
+    typing_flushed_ms: u64,
     /// The layout the extension reports, and whether the keymap should
     /// follow it (main rebuilds it).
     layout: Option<(String, String)>,
@@ -184,6 +187,8 @@ impl App {
             claude_probe: crate::claude::vim_mode_on,
             last_click_ms: None,
             last_shortcut: None,
+            typing: crate::typing::Typing::default(),
+            typing_flushed_ms: 0,
             layout: None,
             layout_changed: false,
             keymap_layout: ("us".into(), None),
@@ -562,6 +567,11 @@ impl App {
     /// another key.
     pub fn tick(&mut self, now_ms: u64) {
         self.check_claude(now_ms);
+        if now_ms.saturating_sub(self.typing_flushed_ms) >= 60_000 {
+            self.typing_flushed_ms = now_ms;
+            let counts = self.typing.take();
+            self.memory.typing(counts, now_ms);
+        }
         // Switching tmux panes tells no one; look again.
         if self.resolver.via_tmux() {
             self.update_context(None, now_ms);
@@ -605,6 +615,16 @@ impl App {
         }
         self.memory.active(kind, now_ms);
         let step = self.tracker.feed(stroke);
+        if self.config.typing.accuracy {
+            match (&step.event, stroke.key.sym) {
+                (Some(VimEvent::Insert(InsertKey::Text)), Sym::Char(c)) => {
+                    self.typing.typed(kind, c)
+                }
+                (Some(VimEvent::Insert(InsertKey::Backspace)), _) => self.typing.backspace(kind),
+                (None, _) => {}
+                _ => self.typing.other(),
+            }
+        }
         if step.confident
             && let Some(VimEvent::Command(c)) = &step.event
         {
@@ -664,6 +684,7 @@ impl App {
             self.resolved = new;
             self.tracker = Tracker::new(flavor(new.kind));
             self.commands.clear();
+            self.typing.other();
             self.engine.set_editor_motions(new.editor.is_some());
         }
         if let Some(mode) = known {
@@ -2063,5 +2084,37 @@ pub(crate) mod tests {
             opened(&mut app, at);
         }
         assert!(nudges(&mut ext).is_empty());
+    }
+
+    #[test]
+    fn typing_accuracy_is_opt_in_and_counts_only() {
+        for on in [false, true] {
+            let (mut app, _) = app_with_store(CoachingMode::Active);
+            app.config.typing.accuracy = on;
+            let _ext = ext_hello(&mut app, 1);
+            focus(&mut app, "code_code", 500);
+            type_at(
+                &mut app,
+                "<Esc>isecretpasswrod<BS><BS><BS>ord hunter2<Esc>",
+                1_000,
+            );
+            app.tick(120_000);
+            let store = app.memory.store().unwrap();
+            let (typed, corrections) = store.typing("1960-01-01", "2100-01-01").unwrap();
+            if !on {
+                assert_eq!((typed, corrections), (0, 0), "off by default");
+                continue;
+            }
+            assert_eq!((typed, corrections), (25, 3));
+            assert_eq!(
+                store.typo_pairs("1960-01-01", "2100-01-01", 5).unwrap(),
+                [("od".to_string(), 1)]
+            );
+            for t in store.all_text().unwrap() {
+                for secret in ["secret", "pass", "hunter"] {
+                    assert!(!t.contains(secret), "{t:?} leaks {secret:?}");
+                }
+            }
+        }
     }
 }

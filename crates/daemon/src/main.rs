@@ -8,6 +8,7 @@ mod keymap;
 mod memory;
 mod notify;
 mod resolver;
+mod typing;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

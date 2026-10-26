@@ -30,7 +30,16 @@ pub struct Memory {
     focus: Option<String>,
     /// Mastered patterns due a spaced check-in, updated hourly.
     check_ins: HashSet<PatternKey>,
+    /// Tips still waiting for an outcome: rule → (row, shown at).
+    open_tips: HashMap<&'static str, (i64, u64)>,
+    /// Tips shown today, for the filter's features: (day, count).
+    tips_today: (String, u32),
 }
+
+/// A tip is adopted if the better way comes within this long.
+const TIP_WINDOW_MS: u64 = 30 * 60_000;
+/// Tip outcomes older than this are deleted.
+const TIP_RETENTION_S: u64 = 90 * 86_400;
 
 impl Memory {
     pub fn new(store: Option<Store>, config: &Config) -> Self {
@@ -48,6 +57,8 @@ impl Memory {
             retention_days: config.memory.episode_retention_days,
             focus: None,
             check_ins: HashSet::new(),
+            open_tips: HashMap::new(),
+            tips_today: (String::new(), 0),
         }
     }
 
@@ -109,6 +120,58 @@ impl Memory {
 
     pub fn adoption(&mut self, rule_id: &'static str, ctx: ContextKind, now_ms: u64) {
         self.record(ctx, rule_id, Event::Adoption, now_ms);
+        self.close_tip(rule_id, flowbuddy_store::Outcome::Adopted);
+    }
+
+    /// A tip was shown: open a row for what comes of it.
+    pub fn tip_shown(&mut self, rule_id: &'static str, mode: &str, local_hour: u32, now_ms: u64) {
+        let Some(store) = &self.store else { return };
+        let Some(ctx) = self.finding_context(rule_id) else {
+            return;
+        };
+        let today = day(now_ms);
+        if self.tips_today.0 != today {
+            self.tips_today = (today, 0);
+        }
+        let stage = self.stage(rule_id, ctx);
+        let tip = flowbuddy_store::TipShown {
+            shown_at: now_ms / 1000,
+            rule_id,
+            context: ctx.as_str(),
+            stage: stage.as_str(),
+            hour: local_hour,
+            mode,
+            prior_today: self.tips_today.1,
+        };
+        self.tips_today.1 += 1;
+        match store.tip_shown(&tip) {
+            Ok(id) => {
+                // A newer tip for the same rule replaces the open one.
+                if let Some((old, _)) = self.open_tips.insert(rule_id, (id, now_ms)) {
+                    let _ = store.close_tip(old, flowbuddy_store::Outcome::Ignored);
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "could not record a tip"),
+        }
+    }
+
+    fn close_tip(&mut self, rule_id: &str, outcome: flowbuddy_store::Outcome) {
+        if let (Some((id, _)), Some(store)) = (self.open_tips.remove(rule_id), &self.store) {
+            let _ = store.close_tip(id, outcome);
+        }
+    }
+
+    /// Tips with nothing after them for a while were ignored.
+    pub fn expire_tips(&mut self, now_ms: u64) {
+        let stale: Vec<&'static str> = self
+            .open_tips
+            .iter()
+            .filter(|(_, (_, at))| now_ms.saturating_sub(*at) > TIP_WINDOW_MS)
+            .map(|(rule, _)| *rule)
+            .collect();
+        for rule in stale {
+            self.close_tip(rule, flowbuddy_store::Outcome::Ignored);
+        }
     }
 
     pub fn finding_context(&self, rule_id: &str) -> Option<ContextKind> {
@@ -135,6 +198,14 @@ impl Memory {
         let Some(ctx) = self.finding_context(rule_id) else {
             return;
         };
+        use flowbuddy_store::Outcome;
+        match action {
+            NudgeAction::Dismiss => self.close_tip(rule_id, Outcome::Dismissed),
+            NudgeAction::FalsePositive | NudgeAction::MuteRule => {
+                self.close_tip(rule_id, Outcome::NotHelpful)
+            }
+            NudgeAction::Seen => {}
+        }
         let event = match action {
             NudgeAction::Dismiss => Event::Dismissed,
             NudgeAction::FalsePositive => Event::FalsePositive,
@@ -185,6 +256,7 @@ impl Memory {
                 }
                 Err(e) => tracing::warn!(error = %e, "could not update learning stages"),
             }
+            let _ = store.prune_tips((now_ms / 1000).saturating_sub(TIP_RETENTION_S));
             let cutoff = (now_ms / 1000).saturating_sub(u64::from(self.retention_days) * 86_400);
             match store.prune_episodes(cutoff) {
                 Ok(0) => {}

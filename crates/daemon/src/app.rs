@@ -336,6 +336,15 @@ impl App {
         }
         self.nudges.push_back((nudge.nudge_id, f.rule_id));
         self.memory.nudged(f.rule_id, now_ms);
+        let hour = {
+            use chrono::{TimeZone, Timelike};
+            chrono::Local
+                .timestamp_millis_opt(now_ms as i64)
+                .single()
+                .map_or(12, |t| t.hour())
+        };
+        self.memory
+            .tip_shown(f.rule_id, self.mode.as_str(), hour, now_ms);
     }
 
     fn nudge_rule(&self, nudge_id: &str) -> Option<&'static str> {
@@ -567,6 +576,7 @@ impl App {
     /// another key.
     pub fn tick(&mut self, now_ms: u64) {
         self.check_claude(now_ms);
+        self.memory.expire_tips(now_ms);
         if now_ms.saturating_sub(self.typing_flushed_ms) >= 60_000 {
             self.typing_flushed_ms = now_ms;
             let counts = self.typing.take();
@@ -2116,5 +2126,45 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tip_outcomes_are_recorded() {
+        use flowbuddy_store::Outcome;
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let _ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        // A tip, then the better way: adopted.
+        type_at(&mut app, "<Esc>xxxxxw", 1_000);
+        type_at(&mut app, "dw", 60_000);
+        // Another rule's tip, marked not helpful.
+        type_at(&mut app, "jjjjjjjw", 120_000);
+        send(
+            &mut app,
+            1,
+            ClientMsg::Command {
+                id: None,
+                command: Command::ReportFalsePositive,
+            },
+            125_000,
+        );
+        // A third, left alone for over half an hour: ignored.
+        type_at(&mut app, "<Down><Down><Down><Esc>", 200_000);
+        app.tick(200_000 + 31 * 60_000);
+        let rows = app.memory.store().unwrap().tips(0).unwrap();
+        let got: Vec<_> = rows
+            .iter()
+            .map(|r| (r.rule_id.as_str(), r.outcome))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("vim.repeat-x", Some(Outcome::Adopted)),
+                ("vim.repeat-jk", Some(Outcome::NotHelpful)),
+                ("vim.arrows-normal", Some(Outcome::Ignored)),
+            ]
+        );
+        assert_eq!(rows[1].prior_today, 1);
+        assert_eq!(rows[0].mode, "active");
     }
 }

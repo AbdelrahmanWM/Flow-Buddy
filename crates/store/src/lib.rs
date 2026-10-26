@@ -80,7 +80,79 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (day, pair)
     );
 "#,
+    r#"
+    -- What happened after each tip, for the learned tip filter.
+    CREATE TABLE tip_outcomes (
+        id          INTEGER PRIMARY KEY,
+        shown_at    INTEGER NOT NULL,  -- unix seconds
+        rule_id     TEXT    NOT NULL,
+        context     TEXT    NOT NULL,
+        stage       TEXT    NOT NULL,
+        hour        INTEGER NOT NULL,  -- local hour of day
+        mode        TEXT    NOT NULL,  -- coaching mode
+        prior_today INTEGER NOT NULL,  -- tips shown earlier that day
+        outcome     TEXT               -- adopted, dismissed, not_helpful, ignored; NULL while open
+    );
+    CREATE INDEX tip_outcomes_shown ON tip_outcomes (shown_at);
+"#,
 ];
+
+/// A tip as shown, for the learned filter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TipShown<'a> {
+    pub shown_at: u64,
+    pub rule_id: &'a str,
+    pub context: &'a str,
+    pub stage: &'a str,
+    pub hour: u32,
+    pub mode: &'a str,
+    pub prior_today: u32,
+}
+
+/// What happened after a tip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Adopted,
+    Dismissed,
+    NotHelpful,
+    Ignored,
+}
+
+impl Outcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Outcome::Adopted => "adopted",
+            Outcome::Dismissed => "dismissed",
+            Outcome::NotHelpful => "not_helpful",
+            Outcome::Ignored => "ignored",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Outcome> {
+        [
+            Outcome::Adopted,
+            Outcome::Dismissed,
+            Outcome::NotHelpful,
+            Outcome::Ignored,
+        ]
+        .into_iter()
+        .find(|o| o.as_str() == s)
+    }
+}
+
+/// A tip and what came of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TipRow {
+    pub shown_at: u64,
+    pub rule_id: String,
+    pub context: String,
+    pub stage: String,
+    pub hour: u32,
+    pub mode: String,
+    pub prior_today: u32,
+    /// `None` while still open, or if the daemon stopped before it closed.
+    pub outcome: Option<Outcome>,
+}
 
 /// What happened, for [`Store::record`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -398,11 +470,71 @@ impl Store {
     pub fn forget_all(&self) -> Result<()> {
         self.conn.execute_batch(
             "DELETE FROM daily_stats; DELETE FROM activity; DELETE FROM patterns;
-             DELETE FROM episodes; DELETE FROM typing; DELETE FROM typo_pairs;",
+             DELETE FROM episodes; DELETE FROM typing; DELETE FROM typo_pairs;
+             DELETE FROM tip_outcomes;",
         )?;
         self.conn.execute_batch("VACUUM")?;
         let _ = self.conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
         Ok(())
+    }
+
+    /// A tip was shown; returns its row, for [`Store::close_tip`].
+    pub fn tip_shown(&self, tip: &TipShown<'_>) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO tip_outcomes (shown_at, rule_id, context, stage, hour, mode, prior_today)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                tip.shown_at,
+                tip.rule_id,
+                tip.context,
+                tip.stage,
+                tip.hour,
+                tip.mode,
+                tip.prior_today
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// What came of a tip; only the first outcome counts.
+    pub fn close_tip(&self, id: i64, outcome: Outcome) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tip_outcomes SET outcome = ?2 WHERE id = ?1 AND outcome IS NULL",
+            params![id, outcome.as_str()],
+        )?;
+        Ok(())
+    }
+
+    /// Tips shown since `since_s`, oldest first.
+    pub fn tips(&self, since_s: u64) -> Result<Vec<TipRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT shown_at, rule_id, context, stage, hour, mode, prior_today, outcome
+             FROM tip_outcomes WHERE shown_at >= ?1 ORDER BY shown_at, id",
+        )?;
+        let rows = stmt.query_map(params![since_s], |r| {
+            Ok(TipRow {
+                shown_at: r.get(0)?,
+                rule_id: r.get(1)?,
+                context: r.get(2)?,
+                stage: r.get(3)?,
+                hour: r.get(4)?,
+                mode: r.get(5)?,
+                prior_today: r.get(6)?,
+                outcome: r
+                    .get::<_, Option<String>>(7)?
+                    .as_deref()
+                    .and_then(Outcome::parse),
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Drop tip rows older than `before_s`.
+    pub fn prune_tips(&self, before_s: u64) -> Result<usize> {
+        self.conn.execute(
+            "DELETE FROM tip_outcomes WHERE shown_at < ?1",
+            params![before_s],
+        )
     }
 
     /// Add typing counts for `day` in `context` (opt-in).
@@ -470,6 +602,7 @@ impl Store {
             ("episodes", "rule_id, context, mode, shape"),
             ("typing", "day, context"),
             ("typo_pairs", "day, pair"),
+            ("tip_outcomes", "rule_id, context, stage, mode"),
         ] {
             let mut stmt = self.conn.prepare(&format!("SELECT {cols} FROM {table}"))?;
             let n = stmt.column_count();
@@ -730,5 +863,33 @@ mod tests {
         );
         s.forget_all().unwrap();
         assert_eq!(s.typing("2026-10-24", "2026-10-25").unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn tip_outcomes() {
+        let s = Store::open_in_memory().unwrap();
+        let tip = |at| TipShown {
+            shown_at: at,
+            rule_id: "vim.repeat-jk",
+            context: "vscode-vim",
+            stage: "nudged",
+            hour: 14,
+            mode: "active",
+            prior_today: 2,
+        };
+        let a = s.tip_shown(&tip(100)).unwrap();
+        s.tip_shown(&tip(200)).unwrap();
+        s.close_tip(a, Outcome::Adopted).unwrap();
+        s.close_tip(a, Outcome::Dismissed).unwrap();
+        let rows = s.tips(0).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].outcome,
+            Some(Outcome::Adopted),
+            "the first outcome sticks"
+        );
+        assert_eq!(rows[1].outcome, None);
+        assert_eq!(s.prune_tips(150).unwrap(), 1);
+        assert_eq!(s.tips(0).unwrap().len(), 1);
     }
 }

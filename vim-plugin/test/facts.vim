@@ -138,6 +138,14 @@ function! Test_operator_reports_from_vim() abort
   call assert_equal(['i('], flowbuddy#char_objects('foo, bar', before, after))
 endfunction
 
+function! Test_mappings() abort
+  let imap = "i  jk          * <Esc>\ni  jj            <Esc>\ni  <C-s>         * <Esc>:w<CR>\ni  ab            hello"
+  let nmap = "n  H           * ^\nn  <Space>f    * :Files<CR>\nn  s             <Plug>(easymotion)"
+  let m = flowbuddy#mappings(imap, nmap)
+  call assert_equal(['jk', 'jj'], m.insert_escapes)
+  call assert_equal(['H', 's'], m.normal)
+endfunction
+
 function! Test_facts_leave_no_trace() abort
   call s:buf(['a', '', 'b', '', 'c'])
   call cursor(1, 1)

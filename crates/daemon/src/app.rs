@@ -21,7 +21,7 @@ use flowbuddy_core::motion::{self, MotionEvent, OperatorEvent};
 use flowbuddy_core::policy::{Coach, CoachingMode, Gate, PolicyConfig, RuleFacts};
 use flowbuddy_core::rule::{Finding, RuleEvent};
 use flowbuddy_core::rules::vscode::{How, UiAction, UiWhat};
-use flowbuddy_core::vim::{Flavor, InsertKey, Tracker, VimEvent};
+use flowbuddy_core::vim::{Flavor, InsertKey, Mappings, Tracker, VimEvent};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -70,6 +70,8 @@ pub struct App {
     last_shortcut: Option<(char, u64)>,
     /// When the last tip was shown.
     last_nudge_ms: Option<u64>,
+    /// Each editor's key mappings, as it reported them.
+    editor_mappings: HashMap<ConnId, Mappings>,
     /// VS Code findings waiting for editor activity after their keys.
     held_findings: Vec<(Finding, ContextKind)>,
     /// Personal sentences your AI wrote for each rule (`[ai] tips`).
@@ -212,6 +214,7 @@ impl App {
             last_shortcut: None,
             last_nudge_ms: None,
             held_findings: Vec::new(),
+            editor_mappings: HashMap::new(),
             personal_tips: HashMap::new(),
             usage: HashMap::new(),
             typing: crate::typing::Typing::default(),
@@ -656,6 +659,14 @@ impl App {
         keys
     }
 
+    /// The mappings for the current context: its editor's, else the config's.
+    fn mappings_now(&self) -> Mappings {
+        self.resolved
+            .editor
+            .and_then(|id| self.editor_mappings.get(&id).cloned())
+            .unwrap_or_else(|| Mappings::from_names(&self.config.keyboard.insert_escapes, &[]))
+    }
+
     /// The context's VS Code companion, if that's where the keys go.
     fn vscode_editor(&self) -> Option<&crate::resolver::Editor> {
         self.resolved
@@ -860,6 +871,7 @@ impl App {
             self.on_rule_events(&events, now_ms);
             self.resolved = new;
             self.tracker = Tracker::new(flavor(new.kind));
+            self.tracker.set_mappings(self.mappings_now());
             self.commands.clear();
             self.typing.other();
             self.engine.set_editor_motions(new.editor.is_some());
@@ -1005,6 +1017,16 @@ impl App {
                 event: UiEvent::FileOpened,
             } if self.is_vscode(conn) => self.on_ui(UiWhat::FileOpened, 'p', now_ms),
             ClientMsg::EditorEvent { .. } => {}
+            ClientMsg::EditorMappings {
+                insert_escapes,
+                normal,
+            } => {
+                self.editor_mappings
+                    .insert(conn, Mappings::from_names(&insert_escapes, &normal));
+                if self.resolved.editor == Some(conn) {
+                    self.tracker.set_mappings(self.mappings_now());
+                }
+            }
             ClientMsg::InputSource { layout, variant } => {
                 // xkb names only: anything else is ignored.
                 let name = |s: Option<String>| {

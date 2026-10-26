@@ -167,6 +167,9 @@ pub struct KeyboardConfig {
     /// xkb layout used with the `xkb` feature (default "us"). Vim
     /// commands are typed on a Latin layout even if you also use others.
     pub xkb_layout: Option<String>,
+    /// Two-key Insert-mode mappings to Esc, e.g. `["jk"]`, for setups
+    /// without an editor plugin to report them.
+    pub insert_escapes: Vec<String>,
 }
 
 /// Replace the built-in app id / command lists.

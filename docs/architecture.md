@@ -107,7 +107,7 @@ The app ids are defaults and can be overridden in the config. The values seen on
 ### Mode inference and confidence
 
 - With an editor plugin connected, the editor's own mode is used. Otherwise:
-- Mode is inferred from keys by a state machine for each context (#14, #15).
+- Mode is inferred from keys by a state machine for each context (#14, #15). It knows vim-surround (`ys`, `cs`, `ds`) and commentary (`gc`) so they don't throw it off; none of those is a built-in sequence.
 - **Esc** (or `Ctrl-[`) always resyncs to Normal and sets `confident = true`.
 - Anything the daemon can't see sets `confident = false` until the next Esc. Examples: a mouse click, opening the VS Code command palette, a focus change, or an unrecognized key sequence (#16).
 - Rules never fire while `confident` is false. This avoids false nudges, at the cost of missing some real ones.
@@ -247,6 +247,11 @@ Keystrokes alone can't show which pane of an editor has focus, what mode it's re
 {"v":0,"type":"editor_focus","focused":false,"panel":"terminal"}
 ```
 `panel` (optional, when not focused) is `terminal` or `other`. With Claude Code running in VS Code's terminal and its Vim mode on, the terminal panel is coached as `claude-vim`.
+
+**`editor_mappings`**: your key mappings that matter for following the mode: two-key Insert-mode mappings to Esc (`jk`), and Normal-mode keys mapped to something else (their keys only, no right-hand sides). The tracker reads `jk` as Esc and treats a remapped key as unknown instead of as the built-in command. Without a plugin, `[keyboard] insert_escapes = ["jk"]` does the same.
+```json
+{"v":0,"type":"editor_mappings","insert_escapes":["jk"],"normal":["H"]}
+```
 
 **`editor_mode`**: the editor's real mode, one of `normal`, `insert`, `replace`, `visual`, `visual_line`, `visual_block`, `cmdline`, `op_pending`, `other`. It replaces the daemon's guess.
 ```json

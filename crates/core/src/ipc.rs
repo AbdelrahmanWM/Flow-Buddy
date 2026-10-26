@@ -173,6 +173,15 @@ pub enum ClientMsg {
     Operator(OperatorReport),
     /// Editor clients: something happened in the editor's UI, by name.
     EditorEvent { event: UiEvent },
+    /// Editor clients: your key mappings that matter for following the
+    /// mode: two-key Insert-mode mappings to Esc (`"jk"`) and Normal-mode
+    /// keys mapped to something else (`"H"`). Keys only.
+    EditorMappings {
+        #[serde(default)]
+        insert_escapes: Vec<String>,
+        #[serde(default)]
+        normal: Vec<String>,
+    },
     Command {
         #[serde(default)]
         id: Option<u64>,
@@ -182,7 +191,7 @@ pub enum ClientMsg {
 }
 
 impl ClientMsg {
-    pub const TYPES: [&'static str; 12] = [
+    pub const TYPES: [&'static str; 13] = [
         "hello",
         "focus",
         "ctx",
@@ -194,6 +203,7 @@ impl ClientMsg {
         "motion",
         "operator",
         "editor_event",
+        "editor_mappings",
         "command",
     ];
 }
@@ -414,6 +424,7 @@ mod tests {
             r#"{"v":0,"type":"editor_focus","focused":false}"#,
             r#"{"v":0,"type":"editor_focus","focused":false,"panel":"terminal"}"#,
             r#"{"v":0,"type":"editor_event","event":"file_opened"}"#,
+            r#"{"v":0,"type":"editor_mappings","insert_escapes":["jk"],"normal":["H"]}"#,
             r#"{"v":0,"type":"operator","op":"delete","at_ms":1729740000500,"objects":["i(","a("]}"#,
             r#"{"v":0,"type":"editor_mode","mode":"visual_line"}"#,
             r#"{"v":0,"type":"motion","start_ms":1729740000000,"end_ms":1729740000900,"moves":12,"mode":"normal","lines":12,"cols":0,"facts":{"paragraph_hops":2,"window_lines":40}}"#,

@@ -64,7 +64,29 @@ function! s:open() abort
   call s:send({'type': 'hello', 'client': 'editor', 'client_version': s:VERSION,
         \ 'editor': has('nvim') ? 'nvim' : 'vim', 'pid': getpid()})
   call s:send({'type': 'editor_mode', 'mode': s:mode_name(mode(1))})
+  call s:send(extend({'type': 'editor_mappings'}, flowbuddy#mappings(execute('imap'), execute('nmap'))))
   return 1
+endfunction
+
+" Your mappings that matter for following the mode, from :imap and :nmap
+" output: two-key Insert mappings to Esc (`jk`), and single Normal keys
+" mapped to something else. Only the keys are sent.
+function! flowbuddy#mappings(imap, nmap) abort
+  let escapes = []
+  for line in split(a:imap, "\n")
+    let m = matchlist(line, '^\S*\s\+\(\S\+\)\s\+[*&@ ]*\(.*\)$')
+    if !empty(m) && m[1] =~# '^[^<]\{2}$' && m[2] =~? '<Esc>\|<C-\[>'
+      call add(escapes, m[1])
+    endif
+  endfor
+  let normal = []
+  for line in split(a:nmap, "\n")
+    let m = matchlist(line, '^\S*\s\+\(\S\+\)\s')
+    if !empty(m) && m[1] =~# '^[^<]$'
+      call add(normal, m[1])
+    endif
+  endfor
+  return {'insert_escapes': escapes[:15], 'normal': uniq(sort(normal))[:63]}
 endfunction
 
 function! s:connected() abort

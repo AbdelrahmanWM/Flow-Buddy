@@ -58,6 +58,10 @@ pub struct App {
     /// Recent commands, just enough to count the keys behind a movement or
     /// an operator an editor reports. No keys are kept.
     commands: VecDeque<Cmd>,
+    claude_vim: bool,
+    claude_checked_ms: Option<u64>,
+    /// Reads Claude Code's settings; replaced in tests.
+    claude_probe: fn() -> bool,
 }
 
 const NUDGE_HISTORY: usize = 20;
@@ -81,6 +85,9 @@ enum CmdKind {
 /// The most a threshold is raised after "not helpful" reports.
 const MAX_RAISE: u32 = 3;
 
+/// How often to look at Claude Code's settings for its Vim mode.
+const CLAUDE_CHECK_MS: u64 = 5000;
+
 /// Commands remembered for counting the keys behind a movement.
 const COMMAND_HISTORY: usize = 256;
 
@@ -100,6 +107,7 @@ pub fn app_ids(config: &Config) -> AppIds {
         vscode: config.apps.vscode.clone().unwrap_or(d.vscode),
         terminals: config.apps.terminals.clone().unwrap_or(d.terminals),
         vims: config.apps.vims.clone().unwrap_or(d.vims),
+        claudes: config.apps.claudes.clone().unwrap_or(d.claudes),
     }
 }
 
@@ -154,6 +162,9 @@ impl App {
             nudge_seq: 0,
             memory: Memory::new(None, &Config::default()),
             commands: VecDeque::new(),
+            claude_vim: false,
+            claude_checked_ms: None,
+            claude_probe: crate::claude::vim_mode_on,
         }
         .with_memory_config()
     }
@@ -466,9 +477,31 @@ impl App {
         }
     }
 
+    fn ids_claude(&self, command: &str) -> bool {
+        app_ids(&self.config).claudes.iter().any(|c| c == command)
+    }
+
+    /// Claude Code's settings can change at any time; look every few seconds.
+    fn check_claude(&mut self, now_ms: u64) {
+        if self
+            .claude_checked_ms
+            .is_some_and(|t| now_ms.saturating_sub(t) < CLAUDE_CHECK_MS)
+        {
+            return;
+        }
+        self.claude_checked_ms = Some(now_ms);
+        let on = (self.claude_probe)();
+        if on != self.claude_vim {
+            self.claude_vim = on;
+            self.resolver.set_claude_vim(on);
+            self.update_context(None, now_ms);
+        }
+    }
+
     /// Called about once a second: ends streaks that stopped without
     /// another key.
     pub fn tick(&mut self, now_ms: u64) {
+        self.check_claude(now_ms);
         if self.paused_until.is_some_and(|t| t * 1000 <= now_ms) {
             self.paused_until = None;
             self.mode_changed();
@@ -664,7 +697,16 @@ impl App {
                     self.on_rule_events_in(ContextKind::Shell, &events, now_ms);
                 }
                 let (state, known) = match event {
-                    CtxEvent::Fg => (ShellState::Fg(command.unwrap_or_default()), VimMode::Normal),
+                    // Vim starts in Normal mode; Claude Code's prompt in Insert.
+                    CtxEvent::Fg => {
+                        let command = command.unwrap_or_default();
+                        let known = if self.ids_claude(&command) {
+                            VimMode::Insert
+                        } else {
+                            VimMode::Normal
+                        };
+                        (ShellState::Fg(command), known)
+                    }
                     CtxEvent::Prompt => (
                         ShellState::Prompt {
                             vi: vi_mode.unwrap_or(false),
@@ -679,8 +721,8 @@ impl App {
                 self.on_nudge_response(&nudge_id, action, now_ms);
             }
             ClientMsg::PointerClick => self.on_pointer_click(),
-            ClientMsg::EditorFocus { focused } => {
-                self.resolver.editor_focus(conn, focused, now_ms);
+            ClientMsg::EditorFocus { focused, panel } => {
+                self.resolver.editor_focus(conn, focused, panel, now_ms);
                 self.update_context(None, now_ms);
             }
             ClientMsg::EditorMode { mode } => {
@@ -854,12 +896,14 @@ pub(crate) mod tests {
             mode: Some(mode),
             ..Default::default()
         };
-        App::new(
+        let mut app = App::new(
             Config::default(),
             state,
             test_resolver(),
             Box::new(crate::notify::fake::Recorder::default()),
-        )
+        );
+        app.claude_probe = || false;
+        app
     }
 
     pub(crate) fn test_resolver() -> Resolver {
@@ -1193,6 +1237,7 @@ pub(crate) mod tests {
             test_resolver(),
             Box::new(recorder.clone()),
         );
+        app.claude_probe = || false;
         let _cli = connect(&mut app, 1);
         focus(&mut app, "code_code", 500);
         keys(&mut app, "<Esc>xxxxxw");
@@ -1257,13 +1302,14 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let store = flowbuddy_store::Store::open_in_memory().unwrap();
-        let app = App::new(
+        let mut app = App::new(
             Config::default(),
             state,
             test_resolver(),
             Box::new(recorder.clone()),
         )
         .with_store(store);
+        app.claude_probe = || false;
         (app, recorder)
     }
 
@@ -1634,7 +1680,15 @@ pub(crate) mod tests {
         keys(&mut app, "<Esc>xxxxx<Esc>");
         assert!(nudges(&mut ext).is_empty());
         // Back in the editor.
-        send(&mut app, 2, ClientMsg::EditorFocus { focused: true }, 0);
+        send(
+            &mut app,
+            2,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            0,
+        );
         keys(&mut app, "<Esc>xxxxx<Esc>");
         assert_eq!(nudges(&mut ext).len(), 1);
     }
@@ -1645,7 +1699,15 @@ pub(crate) mod tests {
         let _rx = connect(&mut app, 1);
         let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
         focus(&mut app, "code_code", 500);
-        send(&mut app, 2, ClientMsg::EditorFocus { focused: false }, 0);
+        send(
+            &mut app,
+            2,
+            ClientMsg::EditorFocus {
+                focused: false,
+                panel: None,
+            },
+            0,
+        );
         assert_eq!(app.context().kind, ContextKind::Unsupported);
         assert!(keys(&mut app, "jjjjjjj").is_empty());
     }
@@ -1656,7 +1718,15 @@ pub(crate) mod tests {
         let _rx = connect(&mut app, 1);
         let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
         focus(&mut app, "code_code", 500);
-        send(&mut app, 2, ClientMsg::EditorFocus { focused: true }, 0);
+        send(
+            &mut app,
+            2,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            0,
+        );
         assert!(!app.mode_known().1);
         send(
             &mut app,
@@ -1789,5 +1859,35 @@ pub(crate) mod tests {
                 .iter()
                 .all(|n| !n.rule_id.starts_with("motion."))
         );
+    }
+
+    #[test]
+    fn claude_code_prompt_is_coached_with_vim_mode_on() {
+        let mut app = test_app(CoachingMode::Active);
+        app.claude_probe = || true;
+        let mut ext = ext_hello(&mut app, 1);
+        app.tick(0);
+        focus(&mut app, "org.gnome.Ptyxis", 100);
+        send(
+            &mut app,
+            1,
+            ClientMsg::Ctx {
+                event: CtxEvent::Fg,
+                command: Some("claude".into()),
+                vi_mode: None,
+                shell_pid: 200,
+                tty: None,
+                shape: None,
+            },
+            0,
+        );
+        assert_eq!(app.context().kind, ContextKind::ClaudeVim);
+        // The prompt starts in Insert mode: a run of Backspaces.
+        keys(
+            &mut app,
+            "hello<BS><BS><BS><BS><BS><BS><BS><BS><BS><BS><BS><Esc>",
+        );
+        let n = nudges(&mut ext);
+        assert!(n.iter().any(|n| n.rule_id == "vim.backspace-streak" || n.rule_id == "bash.backspace-clear"), "{n:?}");
     }
 }

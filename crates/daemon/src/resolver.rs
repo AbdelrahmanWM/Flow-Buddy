@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use flowbuddy_core::context::{ContextKind, VimMode};
 use flowbuddy_core::editor::EditorKind;
+use flowbuddy_core::ipc::Panel;
 
 /// App ids and command names that select each context.
 #[derive(Clone, Debug)]
@@ -13,6 +14,8 @@ pub struct AppIds {
     pub vscode: Vec<String>,
     pub terminals: Vec<String>,
     pub vims: Vec<String>,
+    /// Command names of Claude Code.
+    pub claudes: Vec<String>,
 }
 
 impl Default for AppIds {
@@ -41,6 +44,7 @@ impl Default for AppIds {
                 "xterm",
             ]),
             vims: s(&["vim", "vi", "nvim", "view", "vimdiff", "nvimdiff"]),
+            claudes: s(&["claude"]),
         }
     }
 }
@@ -110,6 +114,8 @@ pub struct Editor {
     pub active_ms: u64,
     /// The mode it last reported.
     pub mode: Option<VimMode>,
+    /// What has focus instead of the text editor, if it said.
+    pub panel: Option<Panel>,
 }
 
 /// Connection id of an editor client.
@@ -139,6 +145,8 @@ pub struct Resolver {
     focus: Focus,
     shells: HashMap<u32, Shell>,
     editors: HashMap<EditorId, Editor>,
+    /// Claude Code's Vim mode is on (its settings say so).
+    claude_vim: bool,
 }
 
 const VIMS: [EditorKind; 2] = [EditorKind::Vim, EditorKind::Nvim];
@@ -154,6 +162,7 @@ impl Resolver {
             focus: Focus::default(),
             shells: HashMap::new(),
             editors: HashMap::new(),
+            claude_vim: false,
         }
     }
 
@@ -163,6 +172,30 @@ impl Resolver {
 
     pub fn set_focus(&mut self, app_id: Option<String>, pid: Option<u32>) {
         self.focus = Focus { app_id, pid };
+    }
+
+    pub fn set_claude_vim(&mut self, on: bool) {
+        self.claude_vim = on;
+    }
+
+    /// The most recent shell under `window_pid` running Claude Code with
+    /// its Vim mode on.
+    fn claude_in(&self, window_pid: Option<u32>) -> Option<Resolved> {
+        if !self.claude_vim {
+            return None;
+        }
+        let (&pid, shell) = self
+            .shells
+            .iter()
+            .filter(|(pid, _)| window_pid.is_none_or(|w| self.descends_from(**pid, w)))
+            .max_by_key(|(_, s)| s.updated_ms)?;
+        matches!(&shell.state, ShellState::Fg(cmd) if self.ids.claudes.contains(cmd)).then_some(
+            Resolved {
+                kind: ContextKind::ClaudeVim,
+                shell_pid: Some(pid),
+                editor: None,
+            },
+        )
     }
 
     pub fn focused_app(&self) -> Option<&str> {
@@ -189,13 +222,15 @@ impl Resolver {
                 focused_ms: 0,
                 active_ms: now_ms,
                 mode: None,
+                panel: None,
             },
         );
     }
 
-    pub fn editor_focus(&mut self, id: EditorId, focused: bool, now_ms: u64) {
+    pub fn editor_focus(&mut self, id: EditorId, focused: bool, panel: Option<Panel>, now_ms: u64) {
         if let Some(e) = self.editors.get_mut(&id) {
             e.focused = Some(focused);
+            e.panel = if focused { None } else { panel };
             e.active_ms = now_ms;
             if focused {
                 e.focused_ms = now_ms;
@@ -262,6 +297,11 @@ impl Resolver {
         if contains(&self.ids.vscode, app_id) {
             // The companion knows whether the editor or a panel has focus.
             return match self.editor_in(self.focus.pid, &[EditorKind::Vscode]) {
+                // The integrated terminal: maybe Claude Code's prompt.
+                Some((_, e)) if e.focused == Some(false) && e.panel == Some(Panel::Terminal) => {
+                    self.claude_in(self.focus.pid)
+                        .unwrap_or(Resolved::UNSUPPORTED)
+                }
                 Some((_, e)) if e.focused == Some(false) => Resolved::UNSUPPORTED,
                 editor => Resolved {
                     kind: ContextKind::VsCodeVim,
@@ -317,6 +357,9 @@ impl Resolver {
                 ContextKind::TerminalVim
             }
             ShellState::Prompt { vi: true } => ContextKind::BashVi,
+            ShellState::Fg(cmd) if self.claude_vim && self.ids.claudes.contains(cmd) => {
+                ContextKind::ClaudeVim
+            }
             ShellState::Fg(_) => return focused_vim().unwrap_or(Resolved::UNSUPPORTED),
             _ => ContextKind::Unsupported,
         };
@@ -448,9 +491,9 @@ pub(crate) mod tests {
         r.set_focus(Some("code_code".into()), Some(500));
         r.editor_hello(7, EditorKind::Vscode, Some(510), 1);
         assert_eq!(r.resolve().editor, Some(7));
-        r.editor_focus(7, false, 2);
+        r.editor_focus(7, false, None, 2);
         assert_eq!(kind(&r), ContextKind::Unsupported);
-        r.editor_focus(7, true, 3);
+        r.editor_focus(7, true, None, 3);
         assert_eq!(kind(&r), ContextKind::VsCodeVim);
         r.editor_gone(7);
         assert_eq!(r.resolve().editor, None);
@@ -471,9 +514,9 @@ pub(crate) mod tests {
         r.shell_report(300, ShellState::Prompt { vi: true }, 3);
         assert_eq!(kind(&r), ContextKind::BashVi);
         // Focus events settle it.
-        r.editor_focus(8, true, 4);
+        r.editor_focus(8, true, None, 4);
         assert_eq!(kind(&r), ContextKind::TerminalVim);
-        r.editor_focus(8, false, 5);
+        r.editor_focus(8, false, None, 5);
         assert_eq!(kind(&r), ContextKind::BashVi);
     }
 
@@ -484,10 +527,40 @@ pub(crate) mod tests {
         r.shell_report(200, ShellState::Fg("tmux".into()), 1);
         r.editor_hello(9, EditorKind::Nvim, Some(950), 2);
         assert_eq!(kind(&r), ContextKind::Unsupported);
-        r.editor_focus(9, true, 3);
+        r.editor_focus(9, true, None, 3);
         assert_eq!(kind(&r), ContextKind::TerminalVim);
         // Not while the terminal isn't focused.
         r.set_focus(Some("firefox".into()), Some(900));
         assert_eq!(kind(&r), ContextKind::Unsupported);
+    }
+
+    #[test]
+    fn claude_code_in_a_terminal() {
+        let mut r = resolver();
+        r.set_focus(Some("org.gnome.Ptyxis".into()), Some(100));
+        r.shell_report(200, ShellState::Fg("claude".into()), 1);
+        assert_eq!(kind(&r), ContextKind::Unsupported, "Vim mode off");
+        r.set_claude_vim(true);
+        assert_eq!(kind(&r), ContextKind::ClaudeVim);
+    }
+
+    #[test]
+    fn claude_code_in_the_vscode_terminal() {
+        let mut r = resolver();
+        r.set_claude_vim(true);
+        r.set_focus(Some("code_code".into()), Some(500));
+        r.editor_hello(7, EditorKind::Vscode, Some(510), 1);
+        // A shell in VS Code's terminal (under the window's process).
+        r.shell_report(510, ShellState::Fg("claude".into()), 2);
+        r.editor_focus(7, false, Some(Panel::Other), 3);
+        assert_eq!(
+            kind(&r),
+            ContextKind::Unsupported,
+            "a chat panel isn't the terminal"
+        );
+        r.editor_focus(7, false, Some(Panel::Terminal), 4);
+        assert_eq!(kind(&r), ContextKind::ClaudeVim);
+        r.shell_report(510, ShellState::Prompt { vi: false }, 5);
+        assert_eq!(kind(&r), ContextKind::Unsupported, "claude exited");
     }
 }

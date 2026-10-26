@@ -16,6 +16,7 @@ Flow Buddy reads your keyboard. That is a lot of trust to ask for, so this docum
 | Key events | Linux evdev (`/dev/input`) | In-memory ring buffer (last ~64 keys) | Until the context changes, you pause, or the daemon stops |
 | Focused app id and window PID (titles are not sent) | GNOME Shell extension | Memory only | Replaced on every focus change |
 | Terminal foreground command **name** (e.g. `vim`, never its arguments) | Shell hooks (bash, zsh, fish) | Memory only | Replaced on every command |
+| Whether Claude Code's Vim mode is on: only `editorMode` is read from `~/.claude/settings.json` | Daemon | Memory only | Checked every few seconds |
 | The command's **shape** from a fixed list: exactly `cd ..`, `cd ../..`, the previous command's long last argument again, the previous command with one word changed. The hook compares the lines inside the shell; neither line is sent | Shell hooks | Counts in the stats, like any habit | Like any habit |
 | That a click happened (no position, no target) | GNOME Shell extension | Not kept: it only marks the Vim mode as unknown | Immediately |
 | Whether a VS Code editor has focus, vscodevim's mode, and cursor movements as deltas, counts and flags (never text, characters, file names or positions) | VS Code companion (`vscode-extension/`) | Memory only | Replaced on every report |

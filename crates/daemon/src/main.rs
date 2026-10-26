@@ -1,6 +1,7 @@
 mod app;
 mod buffer;
 mod capture;
+mod claude;
 mod config_watch;
 mod ipc_server;
 mod keymap;

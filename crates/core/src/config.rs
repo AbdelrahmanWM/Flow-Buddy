@@ -108,6 +108,8 @@ pub struct AppsConfig {
     pub vscode: Option<Vec<String>>,
     pub terminals: Option<Vec<String>>,
     pub vims: Option<Vec<String>>,
+    /// Command names of Claude Code.
+    pub claudes: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]

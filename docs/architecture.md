@@ -236,8 +236,9 @@ Keystrokes alone can't show which pane of an editor has focus, what mode it's re
 
 **`editor_focus`**: whether a text editor has keyboard focus. In VS Code, `false` means the terminal, a chat or another panel; in a terminal Vim, it follows the terminal's focus events.
 ```json
-{"v":0,"type":"editor_focus","focused":false}
+{"v":0,"type":"editor_focus","focused":false,"panel":"terminal"}
 ```
+`panel` (optional, when not focused) is `terminal` or `other`. With Claude Code running in VS Code's terminal and its Vim mode on, the terminal panel is coached as `claude-vim`.
 
 **`editor_mode`**: the editor's real mode, one of `normal`, `insert`, `replace`, `visual`, `visual_line`, `visual_block`, `cmdline`, `op_pending`, `other`. It replaces the daemon's guess.
 ```json

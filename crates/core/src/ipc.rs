@@ -30,6 +30,16 @@ pub enum CtxEvent {
     Prompt,
 }
 
+/// What has focus inside an editor window when the text editor doesn't.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Panel {
+    /// The integrated terminal.
+    Terminal,
+    /// Anything else: a chat, the sidebar, a webview.
+    Other,
+}
+
 /// The shape of a command line, from the shell hook.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -128,7 +138,12 @@ pub enum ClientMsg {
     PointerClick,
     /// Editor clients: whether a text editor has keyboard focus (as opposed
     /// to a terminal, chat or other panel inside the same window).
-    EditorFocus { focused: bool },
+    EditorFocus {
+        focused: bool,
+        /// When not focused: what has focus instead, if known.
+        #[serde(default)]
+        panel: Option<Panel>,
+    },
     /// Editor clients: the editor's real mode.
     EditorMode { mode: EditorMode },
     /// Editor clients: a finished movement and facts about where it ended.
@@ -362,6 +377,7 @@ mod tests {
             r#"{"v":0,"type":"pointer_click"}"#,
             r#"{"v":0,"type":"hello","client":"editor","client_version":"0.1.0","editor":"vim","pid":61234}"#,
             r#"{"v":0,"type":"editor_focus","focused":false}"#,
+            r#"{"v":0,"type":"editor_focus","focused":false,"panel":"terminal"}"#,
             r#"{"v":0,"type":"operator","op":"delete","at_ms":1729740000500,"objects":["i(","a("]}"#,
             r#"{"v":0,"type":"editor_mode","mode":"visual_line"}"#,
             r#"{"v":0,"type":"motion","start_ms":1729740000000,"end_ms":1729740000900,"moves":12,"mode":"normal","lines":12,"cols":0,"facts":{"paragraph_hops":2,"window_lines":40}}"#,

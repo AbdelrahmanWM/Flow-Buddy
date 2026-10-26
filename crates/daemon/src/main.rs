@@ -158,8 +158,10 @@ fn make_keymap(
     match keymap::xkb::XkbKeymap::new(layout, variant, xkb_options) {
         // Vim commands are typed on a Latin layout: for Cyrillic, Greek,
         // Arabic and the like, read keys as US.
-        Ok(mut k) if keymap::is_latin(&mut k) => (Box::new(k), layout.to_string(), None),
-        Ok(_) => {
+        Ok(mut k) => {
+            if keymap::is_latin(&mut k) {
+                return (Box::new(k), layout.to_string(), None);
+            }
             let note = format!("{layout} isn't a Latin layout; reading Vim commands as US");
             match keymap::xkb::XkbKeymap::new("us", "", xkb_options) {
                 Ok(k) => (Box::new(k), "us".into(), Some(note)),

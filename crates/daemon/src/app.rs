@@ -70,6 +70,8 @@ pub struct App {
     last_shortcut: Option<(char, u64)>,
     /// When the last tip was shown.
     last_nudge_ms: Option<u64>,
+    /// VS Code findings waiting for editor activity after their keys.
+    held_findings: Vec<(Finding, ContextKind)>,
     /// Personal sentences your AI wrote for each rule (`[ai] tips`).
     personal_tips: HashMap<String, String>,
     /// Curriculum items used since the last write, by id.
@@ -110,6 +112,10 @@ const MAX_RAISE: u32 = 3;
 const UI_SHORTCUT_MS: u64 = 15_000;
 /// A click this recent did.
 const UI_CLICK_MS: u64 = 1500;
+
+/// A VS Code finding waits this long for editor activity after its keys;
+/// in the editor a heartbeat follows within about half a second.
+const HELD_MS: u64 = 1000;
 
 /// The daily "something new" waits this long after any other tip.
 const LEARN_GAP_MS: u64 = 5 * 60_000;
@@ -205,6 +211,7 @@ impl App {
             last_click_ms: None,
             last_shortcut: None,
             last_nudge_ms: None,
+            held_findings: Vec::new(),
             personal_tips: HashMap::new(),
             usage: HashMap::new(),
             typing: crate::typing::Typing::default(),
@@ -540,6 +547,17 @@ impl App {
         let muted = self.state.muted();
         for ev in events {
             match ev {
+                // VS Code: wait for editor activity after the keys (#110).
+                RuleEvent::Finding(f) if keyed && self.vscode_editor().is_some() => {
+                    let seen_after = self
+                        .vscode_editor()
+                        .is_some_and(|e| e.focused == Some(true) && e.focused_ms + 50 >= f.at_ms);
+                    if seen_after {
+                        self.on_rule_events_in(ctx, std::slice::from_ref(ev), now_ms, false);
+                    } else {
+                        self.held_findings.push((f.clone(), ctx));
+                    }
+                }
                 RuleEvent::Finding(f) if keyed && !self.editor_saw(f.at_ms) => {
                     tracing::debug!(
                         rule = f.rule_id,
@@ -638,6 +656,39 @@ impl App {
         keys
     }
 
+    /// The context's VS Code companion, if that's where the keys go.
+    fn vscode_editor(&self) -> Option<&crate::resolver::Editor> {
+        self.resolved
+            .editor
+            .and_then(|id| self.resolver.editor(id))
+            .filter(|e| e.kind == EditorKind::Vscode)
+    }
+
+    /// Editor activity came in: show the held findings whose keys it
+    /// followed; drop the ones that waited too long.
+    fn release_held(&mut self, now_ms: u64) {
+        if self.held_findings.is_empty() {
+            return;
+        }
+        let beat = self
+            .vscode_editor()
+            .filter(|e| e.focused == Some(true))
+            .map(|e| e.focused_ms);
+        let held = std::mem::take(&mut self.held_findings);
+        for (f, ctx) in held {
+            if beat.is_some_and(|b| b + 50 >= f.at_ms && b <= f.at_ms + HELD_MS) {
+                self.on_rule_events_in(ctx, &[RuleEvent::Finding(f)], now_ms, false);
+            } else if now_ms.saturating_sub(f.at_ms) > HELD_MS {
+                tracing::debug!(
+                    rule = f.rule_id,
+                    "finding dropped: no editor activity after its keys"
+                );
+            } else {
+                self.held_findings.push((f, ctx));
+            }
+        }
+    }
+
     /// Whether keys up to `at_ms` plausibly went to the editor. The VS Code
     /// companion reports editor activity as a heartbeat; keys typed into the
     /// terminal or a chat panel come with none.
@@ -675,6 +726,7 @@ impl App {
     /// another key.
     pub fn tick(&mut self, now_ms: u64) {
         self.check_claude(now_ms);
+        self.release_held(now_ms);
         self.memory.expire_tips(now_ms);
         if now_ms.saturating_sub(self.typing_flushed_ms) >= 60_000 {
             self.typing_flushed_ms = now_ms;
@@ -974,6 +1026,7 @@ impl App {
                 }
                 self.resolver.editor_focus(conn, focused, panel, now_ms);
                 self.update_context(None, now_ms);
+                self.release_held(now_ms);
             }
             ClientMsg::EditorMode { mode } => {
                 self.resolver.editor_mode(conn, mode.vim_mode(), now_ms);
@@ -1952,20 +2005,27 @@ pub(crate) mod tests {
         let mut ext = ext_hello(&mut app, 1);
         let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
         focus(&mut app, "code_code", 500);
-        // Typing in the terminal panel or a chat: no editor heartbeat.
-        keys(&mut app, "<Esc>xxxxx<Esc>");
+        let beat = |app: &mut App, at| {
+            send(
+                app,
+                2,
+                ClientMsg::EditorFocus {
+                    focused: true,
+                    panel: None,
+                },
+                at,
+            )
+        };
+        // Editing, then typing in a chat panel: nothing follows the keys.
+        beat(&mut app, 900);
+        type_at(&mut app, "<Esc>xxxxx<Esc>", 1_000);
+        app.tick(3_000);
+        // A beat long after (back in the editor) doesn't vouch for them.
+        beat(&mut app, 3_500);
         assert!(nudges(&mut ext).is_empty());
-        // Back in the editor.
-        send(
-            &mut app,
-            2,
-            ClientMsg::EditorFocus {
-                focused: true,
-                panel: None,
-            },
-            0,
-        );
-        keys(&mut app, "<Esc>xxxxx<Esc>");
+        // In the editor: a heartbeat follows the keys.
+        type_at(&mut app, "<Esc>xxxxx<Esc>", 10_000);
+        beat(&mut app, 10_700);
         assert_eq!(nudges(&mut ext).len(), 1);
     }
 

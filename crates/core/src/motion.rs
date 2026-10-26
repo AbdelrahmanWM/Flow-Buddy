@@ -7,6 +7,7 @@
 //! and the motion rules nudge when it would have saved enough keys.
 
 use crate::context::{ContextKind, VimMode};
+use crate::curriculum::Known;
 use crate::editor::{Motion, MotionFacts, OperatorReport, ScreenPos};
 use crate::key::Sym;
 use crate::rule::{Finding, Rule, RuleEvent, Shape};
@@ -93,6 +94,28 @@ impl Category {
         }
     }
 
+    /// The skill-tree item a plan of this kind exercises; `keys` tells
+    /// `w` from `e` from `W`, and `f` from `t`.
+    fn skill(self, keys: &str) -> &'static str {
+        match self {
+            Category::Count => "count",
+            Category::Paragraph => "paragraph",
+            Category::Screen => "screen",
+            Category::File => "file-ends",
+            Category::Word if keys.contains(['W', 'B']) => "bigword",
+            Category::Word if keys.contains('e') => "word-end",
+            Category::Word => "word",
+            Category::Find if keys.contains(['t', 'T']) => "till",
+            Category::Find => "find",
+            Category::LineEnds => "line-ends",
+            Category::Bracket => "percent",
+            Category::Star => "star",
+            Category::JumpBack => "jump-back",
+            Category::Page => "half-page",
+            Category::Search => "search-next",
+        }
+    }
+
     fn description(self) -> &'static str {
         match self {
             Category::Count => {
@@ -140,6 +163,12 @@ pub struct Plan {
     /// What to type, e.g. `}}w` or `3f<char>`. Static pieces and numbers.
     pub keys: String,
     pub cost: u32,
+}
+
+impl Plan {
+    pub fn skill(&self) -> &'static str {
+        self.category.skill(&self.keys)
+    }
 }
 
 struct Part {
@@ -345,6 +374,13 @@ pub fn cheapest(m: &Motion) -> Option<Plan> {
 
 /// Every practical exact plan for `m`, best first.
 pub fn plans(m: &Motion) -> Vec<Plan> {
+    plans_for(m, &Known::everything())
+}
+
+/// Every practical exact plan for `m` made only of what `known` is ready
+/// for, best first.
+pub fn plans_for(m: &Motion, known: &Known) -> Vec<Plan> {
+    let ready = |p: &Part| known.ready(p.category.skill(&p.keys));
     let f = &m.facts;
     let mut plans = Vec::new();
 
@@ -394,14 +430,21 @@ pub fn plans(m: &Motion) -> Vec<Plan> {
         cost: 0,
     };
     let verticals = if m.lines != 0 {
-        vertical(m.lines, f)
+        let mut v = vertical(m.lines, f);
+        v.retain(ready);
+        v
     } else {
         vec![none()]
     };
     // Vertical motions keep the column, so no horizontal part is needed
     // when it didn't change.
     let h = if m.cols != 0 {
-        cheapest_part(horizontal(m.lines, m.cols, f))
+        cheapest_part(
+            horizontal(m.lines, m.cols, f)
+                .into_iter()
+                .filter(ready)
+                .collect(),
+        )
     } else {
         Some(none())
     };
@@ -425,7 +468,7 @@ pub fn plans(m: &Motion) -> Vec<Plan> {
             });
         }
     }
-    plans.retain(|p| p.cost > 0);
+    plans.retain(|p| p.cost > 0 && known.ready(p.skill()));
     plans.sort_by(|a, b| {
         if better(a.cost, a.category, b.cost, b.category) {
             std::cmp::Ordering::Greater
@@ -489,6 +532,7 @@ fn marked(keys: &str) -> String {
 pub struct MotionRule {
     category: Category,
     min_saving: u32,
+    known: Known,
 }
 
 impl MotionRule {
@@ -496,6 +540,7 @@ impl MotionRule {
         MotionRule {
             category,
             min_saving: 3,
+            known: Known::everything(),
         }
     }
 }
@@ -535,7 +580,9 @@ impl Rule for MotionRule {
         if ev.keys_used == 0 {
             return;
         }
-        let all = plans(&ev.motion);
+        // Only what you're ready for: a plan a step too far gives way to
+        // the next best.
+        let all = plans_for(&ev.motion, &self.known);
         let Some(plan) = all.first() else {
             return;
         };
@@ -577,6 +624,10 @@ impl Rule for MotionRule {
                 at_ms,
             });
         }
+    }
+
+    fn set_known(&mut self, known: &Known) {
+        self.known = known.clone();
     }
 
     fn reset(&mut self) {}
@@ -739,7 +790,9 @@ fn ordinal(n: u32) -> String {
 
 /// Positioning and then operating where a text object does both.
 #[derive(Default)]
-pub struct TextObjectRule;
+pub struct TextObjectRule {
+    known: Known,
+}
 
 impl TextObjectRule {
     const ID: &'static str = "motion.text-object";
@@ -782,7 +835,12 @@ impl Rule for TextObjectRule {
     }
 
     fn on_operator(&mut self, ev: &OperatorEvent, out: &mut Vec<RuleEvent>) {
-        let Some(object) = ev.report.objects.first() else {
+        let Some(object) = ev
+            .report
+            .objects
+            .iter()
+            .find(|o| self.known.ready(crate::curriculum::object_skill(o.keys())))
+        else {
             return;
         };
         let cost = 1 + object.keys().len() as u32;
@@ -803,6 +861,10 @@ impl Rule for TextObjectRule {
         }));
     }
 
+    fn set_known(&mut self, known: &Known) {
+        self.known = known.clone();
+    }
+
     fn reset(&mut self) {}
 }
 
@@ -813,7 +875,7 @@ pub fn all() -> Vec<Box<dyn Rule>> {
         .collect();
     rules.push(Box::new(ScrollRule::default()));
     rules.push(Box::new(MarkRule));
-    rules.push(Box::new(TextObjectRule));
+    rules.push(Box::new(TextObjectRule::default()));
     rules
 }
 
@@ -1109,7 +1171,7 @@ mod tests {
             keys_used,
         };
         let mut out = Vec::new();
-        TextObjectRule.on_operator(
+        TextObjectRule::default().on_operator(
             &ev(6, vec![TextObject::InnerParen, TextObject::AParen]),
             &mut out,
         );
@@ -1122,9 +1184,58 @@ mod tests {
         );
         // Already short, or no text object matched.
         let mut out = Vec::new();
-        TextObjectRule.on_operator(&ev(3, vec![TextObject::InnerParen]), &mut out);
-        TextObjectRule.on_operator(&ev(9, vec![]), &mut out);
+        TextObjectRule::default().on_operator(&ev(3, vec![TextObject::InnerParen]), &mut out);
+        TextObjectRule::default().on_operator(&ev(9, vec![]), &mut out);
         assert!(out.is_empty());
+
+        // Not `di(` to someone who doesn't use `ciw` yet; `diw` is fine
+        // once `cw` is known.
+        let mut r = TextObjectRule::default();
+        r.set_known(&Known::of(["change-word"]));
+        let mut out = Vec::new();
+        r.on_operator(&ev(6, vec![TextObject::InnerParen]), &mut out);
+        assert!(out.is_empty());
+        r.on_operator(
+            &ev(6, vec![TextObject::InnerParen, TextObject::InnerWord]),
+            &mut out,
+        );
+        let RuleEvent::Finding(f) = &out[0] else {
+            panic!("{out:?}")
+        };
+        assert!(f.text.contains("`diw`"), "{}", f.text);
+    }
+
+    #[test]
+    fn plans_wait_for_what_they_build_on() {
+        // `t` is one step past `f`: with `f` unknown, `t` gives way.
+        let facts = MotionFacts {
+            till_hops: Some(1),
+            word_hops: Some(12),
+            ..Default::default()
+        };
+        let ev = MotionEvent {
+            motion: motion(0, 20, facts),
+            keys_used: 20,
+        };
+        let fire = |known: Known| {
+            let mut out = Vec::new();
+            for mut r in all() {
+                r.set_known(&known);
+                r.on_motion(&ev, &mut out);
+            }
+            crate::rules::testing::findings(&out)
+                .iter()
+                .map(|f| (f.rule_id, f.text.clone()))
+                .collect::<Vec<_>>()
+        };
+        let f = fire(Known::everything());
+        assert_eq!(f.len(), 1);
+        assert!(f[0].1.contains("`t<char>`"), "{f:?}");
+        let f = fire(Known::of([]));
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].0, "motion.word");
+        assert!(!f[0].1.contains("`t"), "{f:?}");
+        assert!(fire(Known::of(["find"]))[0].1.contains("`t<char>`"));
     }
 
     #[test]

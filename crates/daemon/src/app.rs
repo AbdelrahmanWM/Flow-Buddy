@@ -234,6 +234,7 @@ impl App {
     /// Record stats and the mistake memory in `store`.
     pub fn with_store(mut self, store: flowbuddy_store::Store) -> Self {
         self.memory = Memory::new(Some(store), &self.config);
+        self.engine.set_known(self.memory.known());
         self
     }
 
@@ -745,6 +746,7 @@ impl App {
             self.memory.typing(counts, now_ms);
             let usage = std::mem::take(&mut self.usage);
             self.memory.command_uses(usage, now_ms);
+            self.engine.set_known(self.memory.known());
             self.load_personal_tips(now_ms);
         }
         // Switching tmux panes tells no one; look again.

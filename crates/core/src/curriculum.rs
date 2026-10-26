@@ -1,6 +1,12 @@
 //! A curriculum of Vim features, ordered from basic to advanced, for the
 //! daily "something new" tip. Each item knows how to recognise itself in
 //! the key tracker's steps, so Flow Buddy can tell what you already use.
+//!
+//! The items are also the skill tree: each can require others first
+//! ([`requires`]), every rule teaches some of them ([`rule_skills`]), and
+//! tips only suggest what you're [`Known::ready`] for.
+
+use std::collections::HashSet;
 
 use crate::context::VimMode;
 use crate::key::Sym;
@@ -517,6 +523,184 @@ pub fn find(id: &str) -> Option<&'static Item> {
     CURRICULUM.iter().find(|i| i.id == id)
 }
 
+/// What to know before an item: the next step up from it, never a
+/// sideways one. Items not listed need nothing.
+static REQUIRES: &[(&str, &[&str])] = &[
+    ("word-end", &["word"]),
+    ("bigword", &["word"]),
+    ("till", &["find"]),
+    ("screen", &["half-page"]),
+    ("center", &["half-page"]),
+    ("ciw", &["change-word"]),
+    ("ci-quote", &["ciw"]),
+    ("ci-paren", &["ciw"]),
+    ("tag-object", &["ci-paren"]),
+    ("dap", &["dd"]),
+    ("indent-object", &["dap"]),
+    ("d-to-end", &["dd"]),
+    ("substitute", &["change-word"]),
+    ("gv", &["visual-line"]),
+    ("visual-block", &["visual-line"]),
+    ("visual-object", &["visual-line", "ciw"]),
+    ("visual-indent", &["visual-line"]),
+    ("last-change", &["marks"]),
+    ("gi", &["append"]),
+    ("macro", &["dot"]),
+    ("replay-macro", &["macro"]),
+    ("increment", &["count"]),
+    ("substitute-all", &["substitute-cmd"]),
+    ("global", &["substitute-all"]),
+    ("normal-cmd", &["dot", "range"]),
+    ("range", &["substitute-cmd"]),
+    ("sort", &["range"]),
+];
+
+/// The items `id` builds on.
+pub fn requires(id: &str) -> &'static [&'static str] {
+    REQUIRES
+        .iter()
+        .find(|(i, _)| *i == id)
+        .map_or(&[], |(_, r)| r)
+}
+
+/// The skills each rule's advice teaches, the main one first. Rules for
+/// the shell and VS Code, and Vim basics everyone starts with (hjkl over
+/// the arrows), teach nothing in the tree.
+static RULE_SKILLS: &[(&str, &[&str])] = &[
+    ("vim.repeat-jk", &["count", "paragraph", "half-page"]),
+    ("vim.repeat-hl", &["word", "find"]),
+    ("vim.repeat-x", &["word", "d-to-end"]),
+    ("vim.arrows-normal", &[]),
+    ("vim.arrows-insert", &[]),
+    ("vim.backspace-streak", &[]),
+    ("vim.repeat-dd", &["count", "dap"]),
+    ("vim.w-then-q", &["write-quit"]),
+    (
+        "vim.delete-then-insert",
+        &["change-word", "substitute", "d-to-end"],
+    ),
+    ("vim.dot-repeat", &["dot"]),
+    ("vim.macro", &["macro"]),
+    ("vim.repeat-indent", &["count", "indent-object"]),
+    ("vim.repeat-join", &["count", "join"]),
+    ("vim.repeat-paste", &["count"]),
+    ("vim.shorthand", &["append", "open-line", "d-to-end"]),
+    ("vim.visual-operator", &["ciw", "visual-object"]),
+    ("motion.count", &["count"]),
+    ("motion.paragraph", &["paragraph"]),
+    ("motion.screen", &["screen"]),
+    ("motion.file", &["file-ends"]),
+    ("motion.word", &["word"]),
+    ("motion.find", &["find"]),
+    ("motion.line-ends", &["line-ends"]),
+    ("motion.bracket", &["percent"]),
+    ("motion.star", &["star"]),
+    ("motion.jump-back", &["jump-back"]),
+    ("motion.page", &["half-page"]),
+    ("motion.search", &["search-next"]),
+    ("motion.scroll", &["center"]),
+    ("motion.mark", &["marks"]),
+    ("motion.text-object", &["ciw"]),
+    ("bash.up-history", &[]),
+    ("bash.backspace-clear", &[]),
+    ("bash.left-streak", &[]),
+    ("shell.cd-up", &[]),
+    ("shell.reused-arg", &[]),
+    ("shell.one-word-changed", &[]),
+    ("vscode.quick-open", &[]),
+    ("vscode.terminal-toggle", &[]),
+];
+
+/// The skills `rule_id` teaches, or `None` for a rule not in the tree.
+pub fn rule_skills(rule_id: &str) -> Option<&'static [&'static str]> {
+    RULE_SKILLS
+        .iter()
+        .find(|(r, _)| *r == rule_id)
+        .map(|(_, s)| *s)
+}
+
+/// The item a text object belongs to: `i(` → `ci-paren`.
+pub fn object_skill(object: &str) -> &'static str {
+    match object.chars().last() {
+        Some('w' | 'W') => "ciw",
+        Some('"' | '\'' | '`') => "ci-quote",
+        Some('(' | ')' | 'b' | '{' | '}' | 'B' | '[' | ']' | '<' | '>') => "ci-paren",
+        Some('p') => "dap",
+        Some('t') => "tag-object",
+        _ => "ciw",
+    }
+}
+
+/// The items you already use.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Known {
+    /// Nothing is known about you (no memory): everything is ready.
+    everything: bool,
+    ids: HashSet<&'static str>,
+}
+
+impl Default for Known {
+    fn default() -> Self {
+        Known::everything()
+    }
+}
+
+impl Known {
+    /// No knowledge either way: no tip is held back.
+    pub fn everything() -> Self {
+        Known {
+            everything: true,
+            ids: HashSet::new(),
+        }
+    }
+
+    pub fn of(ids: impl IntoIterator<Item = &'static str>) -> Self {
+        Known {
+            everything: false,
+            ids: ids.into_iter().collect(),
+        }
+    }
+
+    /// Items used often enough, or learned, plus the skills of rules
+    /// you've mastered.
+    pub fn from_progress<'a>(
+        progress: &dyn Fn(&str) -> Progress,
+        mastered_rules: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        let mut ids: HashSet<&'static str> = CURRICULUM
+            .iter()
+            .filter(|i| {
+                let p = progress(i.id);
+                p.learned || p.uses >= KNOWN_USES
+            })
+            .map(|i| i.id)
+            .collect();
+        for rule in mastered_rules {
+            ids.extend(rule_skills(rule).unwrap_or_default());
+        }
+        Known {
+            everything: false,
+            ids,
+        }
+    }
+
+    pub fn knows(&self, id: &str) -> bool {
+        self.everything || self.ids.contains(id)
+    }
+
+    /// Worth suggesting: known already, or one step up from what is.
+    pub fn ready(&self, id: &str) -> bool {
+        self.knows(id) || requires(id).iter().all(|r| self.knows(r))
+    }
+
+    /// Whether a rule's main advice is something you're ready for.
+    pub fn ready_for_rule(&self, rule_id: &str) -> bool {
+        rule_skills(rule_id)
+            .and_then(|s| s.first())
+            .is_none_or(|s| self.ready(s))
+    }
+}
+
 /// Used this many times, an item counts as known.
 pub const KNOWN_USES: u64 = 3;
 /// An item is shown at most this many times.
@@ -535,12 +719,17 @@ pub struct Progress {
     pub learned: bool,
 }
 
-/// The day's "something new": the first item you don't use yet, haven't
-/// learned, and weren't shown lately.
-pub fn pick(progress: &dyn Fn(&str) -> Progress, now_s: u64) -> Option<&'static Item> {
+/// The day's "something new": the first item you're ready for but don't
+/// use yet, haven't learned, and weren't shown lately.
+pub fn pick(
+    progress: &dyn Fn(&str) -> Progress,
+    known: &Known,
+    now_s: u64,
+) -> Option<&'static Item> {
     CURRICULUM.iter().find(|item| {
         let p = progress(item.id);
-        p.uses < KNOWN_USES
+        known.ready(item.id)
+            && p.uses < KNOWN_USES
             && !p.learned
             && p.times_shown < MAX_SHOWINGS
             && p.last_shown
@@ -627,7 +816,8 @@ mod tests {
         use std::collections::HashMap;
         let mut known: HashMap<&str, Progress> = HashMap::new();
         let first = |known: &HashMap<&str, Progress>, now| {
-            pick(&|id| known.get(id).copied().unwrap_or_default(), now).map(|i| i.id)
+            let progress = |id: &str| known.get(id).copied().unwrap_or_default();
+            pick(&progress, &Known::from_progress(&progress, []), now).map(|i| i.id)
         };
         assert_eq!(first(&known, 0), Some("word"));
         known.insert(
@@ -662,6 +852,58 @@ mod tests {
             tip_text(find("ci-quote").unwrap()),
             "`ci\"`: change everything inside the quotes, from anywhere in them. Replace a string's text in one go."
         );
+    }
+
+    #[test]
+    fn the_tree_is_whole() {
+        for (id, reqs) in REQUIRES {
+            let item = find(id).unwrap_or_else(|| panic!("{id} isn't an item"));
+            for r in *reqs {
+                let req = find(r).unwrap_or_else(|| panic!("{id} requires unknown {r}"));
+                assert!(req.level <= item.level, "{id} requires the harder {r}");
+            }
+        }
+        for rule in crate::rules::all() {
+            let skills = rule_skills(rule.id())
+                .unwrap_or_else(|| panic!("{} isn't in the skill tree", rule.id()));
+            for s in skills {
+                assert!(find(s).is_some(), "{} teaches unknown {s}", rule.id());
+            }
+        }
+    }
+
+    #[test]
+    fn ready_one_step_up() {
+        let none = Known::of([]);
+        assert!(none.ready("find") && !none.ready("till"));
+        assert!(!none.ready("ci-paren"), "not ci( before ciw");
+        let k = Known::of(["find", "change-word"]);
+        assert!(k.ready("till") && k.ready("ciw") && !k.ready("ci-paren"));
+        // Using it already makes it ready, whatever it builds on.
+        assert!(Known::of(["ci-paren"]).ready("ci-paren"));
+        assert!(Known::everything().ready("global"));
+        // A mastered rule's skills count as known.
+        let k = Known::from_progress(&|_| Progress::default(), ["motion.find"]);
+        assert!(k.knows("find") && k.ready("till"));
+        assert!(!none.ready_for_rule("motion.text-object"));
+        assert!(none.ready_for_rule("motion.count") && none.ready_for_rule("shell.cd-up"));
+    }
+
+    #[test]
+    fn something_new_waits_for_what_it_builds_on() {
+        // Everything is used but the text objects.
+        let objects = ["ciw", "ci-quote", "ci-paren", "tag-object", "visual-object"];
+        let progress = |id: &str| Progress {
+            uses: if objects.contains(&id) { 0 } else { 99 },
+            // ciw was shown three times already and won't be again.
+            times_shown: if id == "ciw" { 3 } else { 0 },
+            ..Default::default()
+        };
+        let known = Known::from_progress(&progress, []);
+        // ci" and ci( build on ciw, so nothing is left for now.
+        assert!(pick(&progress, &known, 0).is_none());
+        let known = Known::from_progress(&progress, ["motion.text-object"]);
+        assert_eq!(pick(&progress, &known, 0).map(|i| i.id), Some("ci-quote"));
     }
 
     #[test]

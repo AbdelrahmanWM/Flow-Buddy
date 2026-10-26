@@ -9,6 +9,19 @@ pub mod vscode;
 
 use crate::rule::Rule;
 
+/// When several rules fire on the same keys, the one listed first here
+/// wins: the more of the gesture its advice covers, the earlier. Rules
+/// not listed come after, in [`all`] order.
+pub const PRECEDENCE: &[&str] = &[
+    "vim.macro",
+    "vim.dot-repeat",
+    "vim.delete-then-insert",
+    "vim.visual-operator",
+    "motion.text-object",
+    "vim.shorthand",
+    "vim.w-then-q",
+];
+
 /// Every built-in rule.
 pub fn all() -> Vec<Box<dyn Rule>> {
     let mut rules = vim::all();

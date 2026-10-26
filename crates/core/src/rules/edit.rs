@@ -142,7 +142,15 @@ impl Rule for DeleteThenInsert {
             return;
         }
         let deleted = if c.is("x") {
-            Some(Deleted::Chars(c.count))
+            // `xxx` then `i` is `3s`.
+            let before = match last {
+                Some((Deleted::Chars(n), at)) if step.at_ms.saturating_sub(at) <= GESTURE_MS => {
+                    n.unwrap_or(1)
+                }
+                _ => 0,
+            };
+            let n = before + c.count.unwrap_or(1);
+            Some(Deleted::Chars((n > 1).then_some(n)))
         } else if c.is("D") || c.is("d$") {
             Some(Deleted::ToEnd)
         } else if c.is("dd") {

@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod context;
+pub mod curriculum;
 pub mod editor;
 pub mod engine;
 pub mod glossary;

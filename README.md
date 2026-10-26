@@ -115,7 +115,7 @@ flowbuddy explain 'ci"'            # what keys do, piece by piece
 flowbuddy coach [question]        # advice from your AI ([ai]; --prompt shows what it's sent)
 flowbuddy review [--apply 1 2]    # your AI proposes tuning the tips; apply what you agree with
 flowbuddy rules                   # list; `rules mute|disable|enable|reset <id>`
-flowbuddy memory show             # the mistake memory; `memory export`, `memory forget`
+flowbuddy memory show             # the mistake memory; `memory export`, `memory forget`, `memory fix-adoptions`
 flowbuddy report-fp               # the last nudge was wrong
 ```
 

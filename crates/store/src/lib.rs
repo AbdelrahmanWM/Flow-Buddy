@@ -268,6 +268,41 @@ impl Store {
         Ok(store)
     }
 
+    /// Days before `before_day` whose adoptions are implausibly high next to
+    /// their hits (over 10 × hits + 20: counted per key before the fix in
+    /// #48), as (day, context, rule, adoptions, capped at 3 × hits + 3).
+    pub fn inflated_adoptions(
+        &self,
+        before_day: &str,
+    ) -> Result<Vec<(String, String, String, u64, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT day, context, rule_id, adoptions, hits * 3 + 3 FROM daily_stats
+             WHERE day < ?1 AND adoptions > hits * 10 + 20 ORDER BY day, rule_id",
+        )?;
+        let rows = stmt.query_map(params![before_day], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?;
+        rows.collect()
+    }
+
+    /// Cap those days' adoptions, and recompute each pattern's total.
+    pub fn fix_adoptions(&self, before_day: &str) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let changed = tx.execute(
+            "UPDATE daily_stats SET adoptions = hits * 3 + 3
+             WHERE day < ?1 AND adoptions > hits * 10 + 20",
+            params![before_day],
+        )?;
+        tx.execute(
+            "UPDATE patterns SET adoptions = (
+                 SELECT COALESCE(SUM(d.adoptions), 0) FROM daily_stats d
+                 WHERE d.rule_id = patterns.rule_id AND d.context = patterns.context)",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(changed)
+    }
+
     /// Whether the database has every table this version knows. A database
     /// opened read-only by the CLI is only migrated by the daemon.
     pub fn is_current(&self) -> bool {
@@ -1000,5 +1035,40 @@ mod tests {
             (2, 100, 200)
         );
         assert_eq!(rows[0].learned_at, Some(300));
+    }
+
+    #[test]
+    fn inflated_adoptions_are_capped() {
+        let s = Store::open_in_memory().unwrap();
+        s.record("2026-10-24", "vscode-vim", "vim.arrows-normal", HIT, 0)
+            .unwrap();
+        for _ in 0..600 {
+            s.record(
+                "2026-10-24",
+                "vscode-vim",
+                "vim.arrows-normal",
+                Event::Adoption,
+                0,
+            )
+            .unwrap();
+        }
+        // After the fix: left alone.
+        for _ in 0..50 {
+            s.record(
+                "2026-10-27",
+                "vscode-vim",
+                "vim.arrows-normal",
+                Event::Adoption,
+                0,
+            )
+            .unwrap();
+        }
+        let found = s.inflated_adoptions("2026-10-26").unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].3, found[0].4), (600, 6));
+        assert_eq!(s.fix_adoptions("2026-10-26").unwrap(), 1);
+        let p = &s.patterns().unwrap()[0];
+        assert_eq!(p.adoptions, 56);
+        assert!(s.inflated_adoptions("2026-10-26").unwrap().is_empty());
     }
 }

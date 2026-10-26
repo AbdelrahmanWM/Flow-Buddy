@@ -117,6 +117,15 @@ enum MemoryCmd {
         #[arg(long, short)]
         yes: bool,
     },
+    /// Cap the "better way" counts recorded before they were fixed
+    /// (they counted every key instead of every run).
+    FixAdoptions {
+        /// Only days before this one (YYYY-MM-DD), when the fix arrived.
+        #[arg(long, default_value = "2026-10-26")]
+        before: String,
+        #[arg(long, short)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -659,6 +668,33 @@ fn memory(cmd: MemoryCmd) -> anyhow::Result<()> {
                 None => store.forget_all()?,
             }
             println!("Deleted {what}.");
+        }
+        MemoryCmd::FixAdoptions { before, yes } => {
+            let path = flowbuddy_core::paths::database();
+            if !path.exists() {
+                println!("Nothing recorded.");
+                return Ok(());
+            }
+            let store = flowbuddy_store::Store::open(&path)?;
+            let found = store.inflated_adoptions(&before)?;
+            if found.is_empty() {
+                println!("Nothing to fix.");
+                return Ok(());
+            }
+            for (day, ctx, rule, adoptions, capped) in &found {
+                println!("  {day} {rule} ({ctx}): better way {adoptions} → {capped}");
+            }
+            let days = if found.len() == 1 {
+                "this day".to_string()
+            } else {
+                format!("these {} days", found.len())
+            };
+            if !yes && !confirm(&format!("Fix {days}? [y/N] "))? {
+                println!("Kept.");
+                return Ok(());
+            }
+            store.fix_adoptions(&before)?;
+            println!("Fixed.");
         }
     }
     Ok(())

@@ -23,7 +23,7 @@ use tracing::{info, warn};
 use crate::app::App;
 use crate::capture::CaptureEvent;
 use crate::keymap::{Keymap, KeymapOptions, UsKeymap};
-use crate::resolver::{Procfs, Resolver};
+use crate::resolver::{Procfs, Resolver, TmuxCli};
 
 /// Flow Buddy daemon: watches how you work and coaches you locally.
 #[derive(Parser)]
@@ -76,7 +76,8 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(keymap::gnome_xkb_options);
     let options = KeymapOptions::from_xkb(xkb_options.iter().map(String::as_str));
     let mut keymap = make_keymap(&config, &xkb_options, options);
-    let resolver = Resolver::new(app::app_ids(&config), Box::new(Procfs));
+    let resolver =
+        Resolver::new(app::app_ids(&config), Box::new(Procfs)).with_tmux(Box::new(TmuxCli));
     let mut app =
         App::new(config, state, resolver, Box::new(notify::NotifySend)).with_state_path(state_path);
     let db = paths::database();

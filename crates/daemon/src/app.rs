@@ -502,6 +502,10 @@ impl App {
     /// another key.
     pub fn tick(&mut self, now_ms: u64) {
         self.check_claude(now_ms);
+        // Switching tmux panes tells no one; look again.
+        if self.resolver.via_tmux() {
+            self.update_context(None, now_ms);
+        }
         if self.paused_until.is_some_and(|t| t * 1000 <= now_ms) {
             self.paused_until = None;
             self.mode_changed();
@@ -686,7 +690,7 @@ impl App {
                 vi_mode,
                 shell_pid,
                 shape,
-                ..
+                tty,
             } => {
                 if let Some(shape) = shape.filter(|_| self.capturing(now_ms)) {
                     let ev = flowbuddy_core::rules::shell::ShellEvent {
@@ -714,7 +718,7 @@ impl App {
                         VimMode::Insert,
                     ),
                 };
-                self.resolver.shell_report(shell_pid, state, now_ms);
+                self.resolver.shell_report(shell_pid, state, tty, now_ms);
                 self.update_context(Some((shell_pid, known)), now_ms);
             }
             ClientMsg::NudgeResponse { nudge_id, action } => {

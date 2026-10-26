@@ -92,6 +92,62 @@ pub enum ShellState {
 struct Shell {
     state: ShellState,
     updated_ms: u64,
+    /// The shell's terminal, to find its tmux client.
+    tty: Option<String>,
+}
+
+/// What tmux says about the pane a client is showing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pane {
+    /// The pane's shell.
+    pub pid: u32,
+    /// What runs in the pane right now, e.g. `vim` (tmux's
+    /// `pane_current_command`).
+    pub command: String,
+}
+
+/// Ask tmux which pane the client on a terminal shows; injectable for tests.
+pub trait Tmux {
+    fn active_pane(&self, client_tty: &str) -> Option<Pane>;
+}
+
+/// No tmux: what tests and machines without it get.
+pub struct NoTmux;
+
+impl Tmux for NoTmux {
+    fn active_pane(&self, _client_tty: &str) -> Option<Pane> {
+        None
+    }
+}
+
+/// The real tmux, over its Unix socket. Only the pane's pid and command
+/// name are read.
+pub struct TmuxCli;
+
+impl Tmux for TmuxCli {
+    fn active_pane(&self, client_tty: &str) -> Option<Pane> {
+        let out = std::process::Command::new("tmux")
+            .args([
+                "list-clients",
+                "-F",
+                "#{client_tty} #{pane_pid} #{pane_current_command}",
+            ])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        parse_clients(&String::from_utf8_lossy(&out.stdout), client_tty)
+    }
+}
+
+/// The pane for `client_tty` in `tmux list-clients` output.
+pub fn parse_clients(out: &str, client_tty: &str) -> Option<Pane> {
+    out.lines().find_map(|line| {
+        let mut parts = line.splitn(3, ' ');
+        let tty = parts.next()?;
+        let pid = parts.next()?.parse().ok()?;
+        let command = parts.next()?.trim().to_string();
+        (tty == client_tty).then_some(Pane { pid, command })
+    })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -147,6 +203,7 @@ pub struct Resolver {
     editors: HashMap<EditorId, Editor>,
     /// Claude Code's Vim mode is on (its settings say so).
     claude_vim: bool,
+    tmux: Box<dyn Tmux>,
 }
 
 const VIMS: [EditorKind; 2] = [EditorKind::Vim, EditorKind::Nvim];
@@ -163,6 +220,7 @@ impl Resolver {
             shells: HashMap::new(),
             editors: HashMap::new(),
             claude_vim: false,
+            tmux: Box::new(NoTmux),
         }
     }
 
@@ -202,14 +260,55 @@ impl Resolver {
         self.focus.app_id.as_deref()
     }
 
-    pub fn shell_report(&mut self, shell_pid: u32, state: ShellState, now_ms: u64) {
+    pub fn shell_report(
+        &mut self,
+        shell_pid: u32,
+        state: ShellState,
+        tty: Option<String>,
+        now_ms: u64,
+    ) {
         self.shells.insert(
             shell_pid,
             Shell {
                 state,
                 updated_ms: now_ms,
+                tty,
             },
         );
+    }
+
+    pub fn with_tmux(mut self, tmux: Box<dyn Tmux>) -> Self {
+        self.tmux = tmux;
+        self
+    }
+
+    /// Whether the context comes through tmux, which can change without
+    /// telling anyone: worth resolving again now and then.
+    pub fn via_tmux(&self) -> bool {
+        self.shells
+            .values()
+            .any(|s| matches!(&s.state, ShellState::Fg(c) if c == "tmux"))
+    }
+
+    /// The context of the pane a tmux client on `tty` shows.
+    fn tmux_pane(&self, tty: &str) -> Option<Resolved> {
+        let pane = self.tmux.active_pane(tty)?;
+        let resolved = |kind| Resolved {
+            kind,
+            shell_pid: Some(pane.pid),
+            editor: None,
+        };
+        if self.ids.vims.contains(&pane.command) {
+            return Some(resolved(ContextKind::TerminalVim));
+        }
+        if self.claude_vim && self.ids.claudes.contains(&pane.command) {
+            return Some(resolved(ContextKind::ClaudeVim));
+        }
+        // The pane's shell at its prompt, if its hook reported.
+        match &self.shells.get(&pane.pid)?.state {
+            ShellState::Prompt { vi: true } => Some(resolved(ContextKind::BashVi)),
+            _ => None,
+        }
     }
 
     pub fn editor_hello(&mut self, id: EditorId, kind: EditorKind, pid: Option<u32>, now_ms: u64) {
@@ -360,6 +459,15 @@ impl Resolver {
             ShellState::Fg(cmd) if self.claude_vim && self.ids.claudes.contains(cmd) => {
                 ContextKind::ClaudeVim
             }
+            // tmux knows what its active pane is running.
+            ShellState::Fg(cmd) if cmd == "tmux" => {
+                return shell
+                    .tty
+                    .as_deref()
+                    .and_then(|tty| self.tmux_pane(tty))
+                    .or_else(focused_vim)
+                    .unwrap_or(Resolved::UNSUPPORTED);
+            }
             ShellState::Fg(_) => return focused_vim().unwrap_or(Resolved::UNSUPPORTED),
             _ => ContextKind::Unsupported,
         };
@@ -439,16 +547,16 @@ pub(crate) mod tests {
         r.set_focus(Some("org.gnome.Terminal.desktop".into()), Some(100));
         assert_eq!(kind(&r), ContextKind::Unsupported, "no shell report yet");
 
-        r.shell_report(200, ShellState::Prompt { vi: true }, 1);
+        r.shell_report_t(200, ShellState::Prompt { vi: true }, 1);
         assert_eq!(kind(&r), ContextKind::BashVi);
 
-        r.shell_report(200, ShellState::Fg("vim".into()), 2);
+        r.shell_report_t(200, ShellState::Fg("vim".into()), 2);
         assert_eq!(kind(&r), ContextKind::TerminalVim);
 
-        r.shell_report(200, ShellState::Fg("git".into()), 3);
+        r.shell_report_t(200, ShellState::Fg("git".into()), 3);
         assert_eq!(kind(&r), ContextKind::Unsupported);
 
-        r.shell_report(200, ShellState::Prompt { vi: false }, 4);
+        r.shell_report_t(200, ShellState::Prompt { vi: false }, 4);
         assert_eq!(kind(&r), ContextKind::Unsupported, "emacs-mode bash");
     }
 
@@ -456,8 +564,8 @@ pub(crate) mod tests {
     fn most_recent_shell_wins_within_one_terminal_server() {
         let mut r = resolver();
         r.set_focus(Some("org.gnome.Terminal".into()), Some(100));
-        r.shell_report(200, ShellState::Fg("vim".into()), 1);
-        r.shell_report(300, ShellState::Prompt { vi: true }, 2);
+        r.shell_report_t(200, ShellState::Fg("vim".into()), 1);
+        r.shell_report_t(300, ShellState::Prompt { vi: true }, 2);
         assert_eq!(r.resolve().shell_pid, Some(300));
         assert_eq!(kind(&r), ContextKind::BashVi);
     }
@@ -465,7 +573,7 @@ pub(crate) mod tests {
     #[test]
     fn shells_from_other_windows_are_ignored() {
         let mut r = resolver();
-        r.shell_report(200, ShellState::Fg("vim".into()), 1);
+        r.shell_report_t(200, ShellState::Fg("vim".into()), 1);
         r.set_focus(Some("kitty".into()), Some(900));
         assert_eq!(kind(&r), ContextKind::Unsupported);
     }
@@ -473,7 +581,7 @@ pub(crate) mod tests {
     #[test]
     fn dead_shells_are_pruned() {
         let mut r = resolver();
-        r.shell_report(4242, ShellState::Prompt { vi: true }, 1);
+        r.shell_report_t(4242, ShellState::Prompt { vi: true }, 1);
         r.prune();
         assert!(r.shells.is_empty());
     }
@@ -505,13 +613,13 @@ pub(crate) mod tests {
         let mut r = resolver();
         r.set_focus(Some("org.gnome.Terminal".into()), Some(100));
         // Started by `git commit`: the shell only knows `git` is running.
-        r.shell_report(200, ShellState::Fg("git".into()), 1);
+        r.shell_report_t(200, ShellState::Fg("git".into()), 1);
         assert_eq!(kind(&r), ContextKind::Unsupported);
         r.editor_hello(8, EditorKind::Vim, Some(210), 2);
         assert_eq!(kind(&r), ContextKind::TerminalVim);
         assert_eq!(r.resolve().editor, Some(8));
         // Another window's shell drew a prompt more recently.
-        r.shell_report(300, ShellState::Prompt { vi: true }, 3);
+        r.shell_report_t(300, ShellState::Prompt { vi: true }, 3);
         assert_eq!(kind(&r), ContextKind::BashVi);
         // Focus events settle it.
         r.editor_focus(8, true, None, 4);
@@ -524,7 +632,7 @@ pub(crate) mod tests {
     fn vim_in_tmux_counts_when_it_has_focus() {
         let mut r = resolver();
         r.set_focus(Some("org.gnome.Terminal".into()), Some(100));
-        r.shell_report(200, ShellState::Fg("tmux".into()), 1);
+        r.shell_report_t(200, ShellState::Fg("tmux".into()), 1);
         r.editor_hello(9, EditorKind::Nvim, Some(950), 2);
         assert_eq!(kind(&r), ContextKind::Unsupported);
         r.editor_focus(9, true, None, 3);
@@ -538,7 +646,7 @@ pub(crate) mod tests {
     fn claude_code_in_a_terminal() {
         let mut r = resolver();
         r.set_focus(Some("org.gnome.Ptyxis".into()), Some(100));
-        r.shell_report(200, ShellState::Fg("claude".into()), 1);
+        r.shell_report_t(200, ShellState::Fg("claude".into()), 1);
         assert_eq!(kind(&r), ContextKind::Unsupported, "Vim mode off");
         r.set_claude_vim(true);
         assert_eq!(kind(&r), ContextKind::ClaudeVim);
@@ -551,7 +659,7 @@ pub(crate) mod tests {
         r.set_focus(Some("code_code".into()), Some(500));
         r.editor_hello(7, EditorKind::Vscode, Some(510), 1);
         // A shell in VS Code's terminal (under the window's process).
-        r.shell_report(510, ShellState::Fg("claude".into()), 2);
+        r.shell_report_t(510, ShellState::Fg("claude".into()), 2);
         r.editor_focus(7, false, Some(Panel::Other), 3);
         assert_eq!(
             kind(&r),
@@ -560,7 +668,73 @@ pub(crate) mod tests {
         );
         r.editor_focus(7, false, Some(Panel::Terminal), 4);
         assert_eq!(kind(&r), ContextKind::ClaudeVim);
-        r.shell_report(510, ShellState::Prompt { vi: false }, 5);
+        r.shell_report_t(510, ShellState::Prompt { vi: false }, 5);
         assert_eq!(kind(&r), ContextKind::Unsupported, "claude exited");
+    }
+
+    impl Resolver {
+        /// `shell_report` without a tty, for tests.
+        pub(crate) fn shell_report_t(&mut self, pid: u32, state: ShellState, now_ms: u64) {
+            self.shell_report(pid, state, None, now_ms);
+        }
+    }
+
+    struct FakeTmux(Pane);
+
+    impl Tmux for FakeTmux {
+        fn active_pane(&self, client_tty: &str) -> Option<Pane> {
+            (client_tty == "/dev/pts/4").then(|| self.0.clone())
+        }
+    }
+
+    #[test]
+    fn tmux_pane_decides() {
+        let pane = |pid, command: &str| {
+            Box::new(FakeTmux(Pane {
+                pid,
+                command: command.into(),
+            }))
+        };
+        let mut r = resolver().with_tmux(pane(950, "vim"));
+        r.set_focus(Some("org.gnome.Ptyxis".into()), Some(100));
+        r.shell_report(
+            200,
+            ShellState::Fg("tmux".into()),
+            Some("/dev/pts/4".into()),
+            1,
+        );
+        assert_eq!(kind(&r), ContextKind::TerminalVim);
+        assert!(r.via_tmux());
+
+        // A shell pane at its vi-mode prompt (its hook reported).
+        let mut r = resolver().with_tmux(pane(940, "bash"));
+        r.set_focus(Some("org.gnome.Ptyxis".into()), Some(100));
+        r.shell_report(
+            200,
+            ShellState::Fg("tmux".into()),
+            Some("/dev/pts/4".into()),
+            1,
+        );
+        assert_eq!(
+            kind(&r),
+            ContextKind::Unsupported,
+            "no report from the pane yet"
+        );
+        r.shell_report(940, ShellState::Prompt { vi: true }, None, 2);
+        assert_eq!(kind(&r), ContextKind::BashVi);
+    }
+
+    #[test]
+    fn parses_tmux_clients() {
+        let out = "/dev/pts/2 3100 bash\n/dev/pts/4 3200 nvim\n";
+        assert_eq!(
+            parse_clients(out, "/dev/pts/4"),
+            Some(Pane {
+                pid: 3200,
+                command: "nvim".into()
+            })
+        );
+        assert_eq!(parse_clients(out, "/dev/pts/9"), None);
+        assert_eq!(parse_clients("garbage", "/dev/pts/4"), None);
     }
 }

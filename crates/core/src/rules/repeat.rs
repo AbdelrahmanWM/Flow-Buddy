@@ -29,9 +29,17 @@ pub struct RepeatSpec {
 struct Streak {
     unit: &'static str,
     n: u32,
+    first_ms: u64,
     last_ms: u64,
     mode: VimMode,
+    /// Of `n`, how many came from holding the key (auto-repeat).
+    repeats: u32,
+    /// Already nudged while it was going on (#114).
+    reported: bool,
 }
+
+/// A streak this many times its threshold is nudged while it goes on.
+pub const ONGOING_FACTOR: u32 = 3;
 
 pub struct RepeatRule {
     spec: RepeatSpec,
@@ -40,6 +48,8 @@ pub struct RepeatRule {
     /// counts as one adoption, not hundreds.
     adopting: Option<(Same, u64)>,
     replaced_by_editor: bool,
+    /// Tip text for a held key: unit and seconds held.
+    held: Option<fn(&'static str, f64) -> String>,
 }
 
 /// What makes two better-way steps "the same" for counting adoptions.
@@ -66,7 +76,30 @@ impl RepeatRule {
             streak: None,
             adopting: None,
             replaced_by_editor: false,
+            held: None,
         }
+    }
+
+    /// What to say when the streak came mostly from holding the key down.
+    pub fn when_held(mut self, message: fn(&'static str, f64) -> String) -> Self {
+        self.held = Some(message);
+        self
+    }
+
+    fn finding(&self, s: &Streak) -> RuleEvent {
+        let secs = s.last_ms.saturating_sub(s.first_ms) as f64 / 1000.0;
+        let text = match self.held {
+            Some(held) if s.repeats * 2 > s.n && s.repeats >= 5 => held(s.unit, secs),
+            _ => (self.spec.message)(s.unit, s.n),
+        };
+        RuleEvent::Finding(Finding {
+            rule_id: self.spec.id,
+            title: self.spec.title,
+            text,
+            shape: Shape::repeat(s.unit, s.n),
+            mode: s.mode,
+            at_ms: s.last_ms,
+        })
     }
 
     /// Step aside when an editor reports motions (see [`Rule::replaced_by_editor`]).
@@ -77,15 +110,8 @@ impl RepeatRule {
 
     fn end(&mut self, out: &mut Vec<RuleEvent>) {
         let Some(s) = self.streak.take() else { return };
-        if s.n >= self.spec.threshold {
-            out.push(RuleEvent::Finding(Finding {
-                rule_id: self.spec.id,
-                title: self.spec.title,
-                text: (self.spec.message)(s.unit, s.n),
-                shape: Shape::repeat(s.unit, s.n),
-                mode: s.mode,
-                at_ms: s.last_ms,
-            }));
+        if s.n >= self.spec.threshold && !s.reported {
+            out.push(self.finding(&s));
         }
     }
 }
@@ -145,15 +171,30 @@ impl Rule for RepeatRule {
             Some(s) if s.unit == unit && step.at_ms.saturating_sub(s.last_ms) <= MAX_GAP_MS => {
                 s.n += 1;
                 s.last_ms = step.at_ms;
+                s.repeats += u32::from(step.repeat);
             }
             _ => {
                 self.end(out);
                 self.streak = Some(Streak {
                     unit,
                     n: 1,
+                    first_ms: step.at_ms,
                     last_ms: step.at_ms,
                     mode: step.before,
+                    repeats: u32::from(step.repeat),
+                    reported: false,
                 });
+            }
+        }
+        // Far past the threshold: say so now rather than after it ends.
+        if let Some(s) = &self.streak
+            && !s.reported
+            && s.n >= self.spec.threshold * ONGOING_FACTOR
+        {
+            let finding = self.finding(s);
+            out.push(finding);
+            if let Some(s) = &mut self.streak {
+                s.reported = true;
             }
         }
     }
@@ -180,6 +221,55 @@ mod tests {
     use crate::rules::testing::{adoptions, run};
     use crate::rules::{bash, vim};
     use crate::vim::Flavor;
+
+    use crate::key::KeyStroke;
+    use crate::rule::{Rule, RuleEvent};
+    use crate::vim::Tracker;
+
+    fn findings(ev: &[RuleEvent]) -> Vec<String> {
+        ev.iter()
+            .filter_map(|e| match e {
+                RuleEvent::Finding(f) => Some(f.text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn long_streaks_are_nudged_while_they_go_on() {
+        // repeat-x nudges at 4; at 12 it says so straight away, once.
+        let keys = "x".repeat(20);
+        let ev = run(
+            Box::new(vim::repeat_x()),
+            Flavor::Vim,
+            VimMode::Normal,
+            &keys,
+        );
+        let f = findings(&ev);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].contains("12 times"), "{}", f[0]);
+    }
+
+    #[test]
+    fn holding_a_key_is_one_gesture() {
+        // j held down: one press, then auto-repeat every 33 ms for 2 s.
+        let mut t = Tracker::new(Flavor::Vim);
+        t.reset_known(VimMode::Normal);
+        let mut rule = vim::repeat_jk();
+        let mut out = Vec::new();
+        let j = crate::key::Key::ch('j');
+        for i in 0..60 {
+            let step = t.feed(KeyStroke {
+                key: j,
+                repeat: i > 0,
+                at_ms: 1000 + i * 33,
+            });
+            rule.on_step(&step, &mut out);
+        }
+        let f = findings(&out);
+        assert!(f[0].starts_with("You held j for"), "{f:?}");
+        assert!(f[0].contains("`Ctrl-d`"), "{f:?}");
+    }
 
     #[test]
     fn holding_a_better_key_is_one_adoption() {

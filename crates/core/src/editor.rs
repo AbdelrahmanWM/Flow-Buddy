@@ -245,6 +245,22 @@ pub struct OperatorReport {
     pub at_ms: u64,
     /// Best match first.
     pub objects: Vec<TextObject>,
+    /// With `[text] shapes` on: which motions would have covered the range
+    /// exactly (one line, charwise). Numbers only.
+    #[serde(default)]
+    pub range: Option<OperatorRange>,
+}
+
+/// A charwise range on one line, seen as an operator's motion: facts about
+/// its last character from its first, and `w` presses to just after it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorRange {
+    pub cols: i64,
+    #[serde(default)]
+    pub facts: MotionFacts,
+    #[serde(default)]
+    pub words: Option<u32>,
 }
 
 #[cfg(test)]

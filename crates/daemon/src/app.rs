@@ -582,8 +582,23 @@ impl App {
         self.resolver.set_ids(app_ids(&config));
         self.coach.set_config(PolicyConfig::from(&config.coaching));
         self.memory.set_config(&config);
+        let text_changed = config.text != self.config.text;
         self.config = config;
+        if text_changed {
+            let msg = self.editor_config();
+            for c in self.clients.values() {
+                if c.kind == Some(ClientKind::Editor) {
+                    let _ = c.tx.send(msg.clone());
+                }
+            }
+        }
         tracing::info!("config reloaded");
+    }
+
+    fn editor_config(&self) -> ServerMsg {
+        ServerMsg::EditorConfig(flowbuddy_core::ipc::EditorConfig::from_config(
+            &self.config.text,
+        ))
     }
 
     /// Findings and adoptions go here: coaching policy and storage hook in
@@ -1038,6 +1053,7 @@ impl App {
                 if let (ClientKind::Editor, Some(editor)) = (client, editor) {
                     self.resolver.editor_hello(conn, editor, pid, now_ms);
                     self.update_context(None, now_ms);
+                    self.reply(conn, self.editor_config());
                 }
             }
             ClientMsg::Focus { app_id, pid, .. } => self.set_focus(app_id, pid, now_ms),
@@ -2305,6 +2321,7 @@ pub(crate) mod tests {
             op: Operator::Delete,
             at_ms: 650,
             objects: vec![TextObject::InnerParen],
+            range: None,
         };
         send(&mut app, 3, ClientMsg::Operator(report), 700);
         let n = nudges(&mut ext);

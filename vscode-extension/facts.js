@@ -595,9 +595,60 @@ function rested(rests, line, now) {
     return visits;
 }
 
+// Character classes for w and e within a line: 0 blank, 1 keyword, 2 other.
+function lineClass(c) {
+    return /^\s$/.test(c) ? 0 : isKeywordChar(c) ? 1 : 2;
+}
+
+/**
+ * Facts about a charwise range on one line of `text`, from its first
+ * character (index `first`) to its last (`last`), as an operator's motion
+ * could have covered it, mirroring flowbuddy#range_facts in the Vim
+ * plugin: e presses to the last character, w presses to the one after it
+ * (past the line's end counts too), f and t presses, and whether it ran to
+ * the end of the line. Numbers only.
+ */
+function rangeFacts(text, first, last) {
+    const chars = [...text];
+    const n = chars.length;
+    if (first < 0 || last < first || last >= n)
+        return null;
+    const cls = chars.map(lineClass);
+    const idx = [...Array(n).keys()];
+    const starts = idx.filter(j => cls[j] !== 0 && (j === 0 || cls[j - 1] !== cls[j]));
+    const ends = idx.filter(j => cls[j] !== 0 && (j === n - 1 || cls[j + 1] !== cls[j]));
+    const facts = {};
+    if (ends.includes(last)) {
+        const k = ends.filter(j => j > first && j <= last).length;
+        if (k)
+            facts.word_end_hops = k;
+    }
+    const after = last + 1;
+    let words = 0;
+    if (after >= n)
+        words = starts.filter(j => j > first).length + 1;
+    else if (starts.includes(after))
+        words = starts.filter(j => j > first && j <= after).length;
+    const count = (from, to, ch) => idx.filter(j => j >= from && j <= to && chars[j] === ch).length;
+    const k = count(first + 1, last, chars[last]);
+    if (k)
+        facts.find_hops = k;
+    if (after < n) {
+        const t = count(first + 2, after, chars[after]);
+        if (t)
+            facts.till_hops = t;
+    }
+    facts.line_end = after >= n;
+    const out = {cols: last - first, facts};
+    if (words)
+        out.words = words;
+    return out;
+}
+
 if (typeof module !== 'undefined') {
     module.exports = {
         computeFacts,
+        rangeFacts,
         rested,
         charObjects,
         lineObjects,

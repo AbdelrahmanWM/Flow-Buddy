@@ -1181,6 +1181,7 @@ mod tests {
                 op: Operator::Delete,
                 at_ms: 9,
                 objects,
+                range: None,
             },
             keys_used,
         };

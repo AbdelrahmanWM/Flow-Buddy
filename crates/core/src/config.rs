@@ -27,6 +27,30 @@ pub struct Config {
     pub ai: AiConfig,
     pub typing: TypingConfig,
     pub learn: LearnConfig,
+    pub text: TextConfig,
+}
+
+/// Opt-in features that look at your text, in the editor plugins only.
+/// Everything is off by default; see `crate::text` for what's never looked
+/// at whatever this says.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TextConfig {
+    /// The plugins work out more about the text around a movement or edit
+    /// (which motions would have covered a change exactly) and send the
+    /// result as numbers. The text stays in the editor.
+    pub shapes: bool,
+    /// The plugins keep a few lines around recent slow edits in memory,
+    /// for `flowbuddy coach` to show your AI, redacted. Only in `projects`.
+    pub ai_snippets: bool,
+    /// Also send snippets to a cloud AI provider, not only a local one.
+    pub cloud: bool,
+    /// Folders where snippets may be taken (`~/code/myapp`). Empty means
+    /// nowhere.
+    pub projects: Vec<String>,
+    /// More files never to look at, as globs (`*.sql`, `notes/*`), on top
+    /// of the built-in list.
+    pub exclude: Vec<String>,
 }
 
 /// The daily "something new".

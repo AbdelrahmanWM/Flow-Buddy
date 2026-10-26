@@ -22,6 +22,10 @@ let s:rests = []
 let s:REST_HISTORY_MS = 600000
 let s:rest_timer = -1
 let s:simulating = 0
+" What the daemon allows with your text ([text] in its config): off until
+" it says otherwise. See flowbuddy#text_allowed.
+let s:text = {'shapes': v:false, 'snippets': v:false, 'exclude': [], 'projects': []}
+let s:partial = ''
 
 " Connection ----------------------------------------------------------------
 
@@ -51,9 +55,9 @@ function! s:open() abort
   endif
   try
     if has('nvim')
-      let s:ch = sockconnect('pipe', path, {'on_data': function('s:ignore')})
+      let s:ch = sockconnect('pipe', path, {'on_data': function('s:on_data')})
     else
-      let s:ch = ch_open('unix:' . path, {'mode': 'nl', 'callback': function('s:ignore')})
+      let s:ch = ch_open('unix:' . path, {'mode': 'nl', 'callback': function('s:on_line')})
       if ch_status(s:ch) !=# 'open'
         let s:ch = v:null
       endif
@@ -122,8 +126,79 @@ function! s:send(msg) abort
   endtry
 endfunction
 
-" The daemon's replies (welcome, acks) aren't needed.
-function! s:ignore(...) abort
+" From the daemon: only its text settings matter here; welcome and acks
+" are ignored.
+function! s:on_line(ch, line) abort
+  call flowbuddy#on_daemon(a:line)
+endfunction
+
+" Neovim hands over chunks: the first continues the last partial line.
+function! s:on_data(ch, data, event) abort
+  if empty(a:data)
+    return
+  endif
+  let lines = copy(a:data)
+  let lines[0] = s:partial . lines[0]
+  let s:partial = remove(lines, -1)
+  for line in lines
+    call flowbuddy#on_daemon(line)
+  endfor
+endfunction
+
+function! flowbuddy#on_daemon(line) abort
+  try
+    let msg = json_decode(a:line)
+  catch
+    return
+  endtry
+  if type(msg) == v:t_dict && get(msg, 'type', '') ==# 'editor_config'
+    let s:text = {'shapes': get(msg, 'shapes', v:false) is v:true,
+          \ 'snippets': get(msg, 'snippets', v:false) is v:true,
+          \ 'exclude': get(msg, 'exclude', []), 'projects': get(msg, 'projects', [])}
+  endif
+endfunction
+
+" Text features --------------------------------------------------------------
+
+" Whether `pattern` matches `path`, as crates/core/src/text.rs does: no
+" `/` matches the file name, otherwise the end of the path; `*` is any run.
+function! flowbuddy#glob_match(pattern, path) abort
+  if a:pattern !~# '/'
+    return fnamemodify(a:path, ':t') =~# glob2regpat(a:pattern)
+  endif
+  let p = substitute(a:pattern, '^/\+', '', '')
+  return a:path =~# glob2regpat('*/' . p) || a:path =~# glob2regpat(p)
+endfunction
+
+" Whether this buffer's text may be looked at for shapes, or for
+" snippets too: a real file, not encrypted, not excluded, and for
+" snippets inside one of your projects. Terminals, prompts and other
+" special buffers never are.
+function! flowbuddy#text_allowed(snippets) abort
+  if !(a:snippets ? s:text.snippets : s:text.shapes)
+    return 0
+  endif
+  if &buftype !=# '' || (exists('&key') && !empty(&key))
+    return 0
+  endif
+  let path = expand('%:p')
+  if path !~# '^/'
+    return 0
+  endif
+  for pattern in s:text.exclude
+    if flowbuddy#glob_match(pattern, path)
+      return 0
+    endif
+  endfor
+  if a:snippets
+    return !empty(filter(copy(s:text.projects), {_, p -> !empty(p) && stridx(path, p . '/') == 0}))
+  endif
+  return 1
+endfunction
+
+" For tests.
+function! flowbuddy#set_text(text) abort
+  let s:text = extend(copy(s:text), a:text)
 endfunction
 
 function! s:retry(...) abort
@@ -298,9 +373,78 @@ function! flowbuddy#on_operator(event) abort
     let after = matchstr(strpart(getline(l2), c2 - 1 + strlen(last)), '^.')
     let objects = flowbuddy#char_objects(join(a:event.regcontents, "\n"), before, after)
   endif
-  if !empty(objects)
-    call s:send({'type': 'operator', 'op': op, 'at_ms': s:now_ms(), 'objects': objects})
+  let msg = {'type': 'operator', 'op': op, 'at_ms': s:now_ms(), 'objects': objects}
+  " With [text] shapes on: which motions would have covered it exactly.
+  if a:event.regtype ==# 'v' && l1 == l2 && flowbuddy#text_allowed(0)
+    let range = flowbuddy#range_facts(getline(l1), c1, c2)
+    if !empty(range)
+      let msg.range = range
+    endif
   endif
+  if !empty(objects) || has_key(msg, 'range')
+    call s:send(msg)
+  endif
+endfunction
+
+" Character classes for w and e within a line: 0 blank, 1 keyword, 2 other.
+function! s:class(ch) abort
+  return a:ch =~# '\s' ? 0 : a:ch =~# '\k' ? 1 : 2
+endfunction
+
+" Facts about a charwise range on one line of `text`, from its first
+" character (byte column c1) to its last (c2), as an operator's motion
+" could have covered it: e presses to the last character, w presses to the
+" one after it (past the line's end counts too), f and t presses, and
+" whether it ran to the end of the line. Numbers only.
+function! flowbuddy#range_facts(text, c1, c2) abort
+  let chars = []
+  let col = 1
+  for ch in split(a:text, '\zs')
+    call add(chars, [col, ch])
+    let col += strlen(ch)
+  endfor
+  let cols = map(copy(chars), {_, c -> c[0]})
+  let i1 = index(cols, a:c1)
+  let i2 = index(cols, a:c2)
+  if i1 < 0 || i2 < i1
+    return {}
+  endif
+  let n = len(chars)
+  let cls = map(copy(chars), {_, c -> s:class(c[1])})
+  let starts = filter(range(n), {_, j -> cls[j] != 0 && (j == 0 || cls[j - 1] != cls[j])})
+  let ends = filter(range(n), {_, j -> cls[j] != 0 && (j == n - 1 || cls[j + 1] != cls[j])})
+  let f = {}
+  if index(ends, i2) >= 0
+    let k = len(filter(copy(ends), {_, j -> j > i1 && j <= i2}))
+    if k
+      let f.word_end_hops = k
+    endif
+  endif
+  let after = i2 + 1
+  let words = 0
+  if after >= n
+    let words = len(filter(copy(starts), {_, j -> j > i1})) + 1
+  elseif index(starts, after) >= 0
+    let words = len(filter(copy(starts), {_, j -> j > i1 && j <= after}))
+  endif
+  let last = chars[i2][1]
+  let k = len(filter(range(i1 + 1, i2), {_, j -> chars[j][1] ==# last}))
+  if k
+    let f.find_hops = k
+  endif
+  if after < n
+    let past = chars[after][1]
+    let k = len(filter(range(i1 + 2, after), {_, j -> chars[j][1] ==# past}))
+    if k
+      let f.till_hops = k
+    endif
+  endif
+  let f.line_end = after >= n ? v:true : v:false
+  let out = {'cols': i2 - i1, 'facts': f}
+  if words
+    let out.words = words
+  endif
+  return out
 endfunction
 
 function! s:edge_or_space(c) abort

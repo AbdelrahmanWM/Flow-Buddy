@@ -174,6 +174,60 @@ function! Test_no_text_in_facts() abort
   endfor
 endfunction
 
+function! Test_range_facts() abort
+  " 'call(foo, bar)': dw from c (col 1) covers 'call', the next word is (.
+  let r = flowbuddy#range_facts('call(foo, bar)', 1, 4)
+  call assert_equal(1, r.words)
+  call assert_equal(1, r.facts.word_end_hops)
+  " From f (col 6) to the comma's left: dt, de, or dw (it stops at ,).
+  let r = flowbuddy#range_facts('call(foo, bar)', 6, 8)
+  call assert_equal(1, r.facts.till_hops)
+  call assert_equal(1, r.facts.word_end_hops)
+  call assert_equal(1, r.words)
+  " 'foo,' and not the space: no w lands just after it.
+  call assert_false(has_key(flowbuddy#range_facts('call(foo, bar)', 6, 9), 'words'))
+  " To the end of the line: d$, and f) once.
+  let r = flowbuddy#range_facts('call(foo, bar)', 6, 14)
+  call assert_true(r.facts.line_end)
+  call assert_equal(1, r.facts.find_hops)
+  " Two words and the space after: d2w.
+  let r = flowbuddy#range_facts('one two three', 1, 8)
+  call assert_equal(2, r.words)
+  call assert_equal({}, flowbuddy#range_facts('abc', 5, 6))
+endfunction
+
+function! Test_text_guard() abort
+  call assert_true(flowbuddy#glob_match('*.pem', '/a/b/c.pem'))
+  call assert_false(flowbuddy#glob_match('*.pem', '/a/b.pem/c.txt'))
+  call assert_true(flowbuddy#glob_match('.ssh/*', '/home/me/.ssh/known_hosts'))
+  call assert_false(flowbuddy#glob_match('.ssh/*', '/home/me/ssh/known_hosts'))
+  call assert_true(flowbuddy#glob_match('.env.*', '/x/.env.local'))
+  enew!
+  call flowbuddy#set_text({'shapes': v:false, 'snippets': v:false, 'exclude': ['.env', '*.pem'], 'projects': ['/home/me/app']})
+  execute 'file /home/me/app/main.c'
+  call assert_false(flowbuddy#text_allowed(0), 'off')
+  call flowbuddy#set_text({'shapes': v:true, 'snippets': v:true})
+  call assert_true(flowbuddy#text_allowed(0))
+  call assert_true(flowbuddy#text_allowed(1))
+  execute 'file /home/me/app/.env'
+  call assert_false(flowbuddy#text_allowed(0), '.env')
+  execute 'file /tmp/x.c'
+  call assert_true(flowbuddy#text_allowed(0))
+  call assert_false(flowbuddy#text_allowed(1), 'outside projects')
+  setlocal buftype=nofile
+  call assert_false(flowbuddy#text_allowed(0), 'not a file')
+  bwipe!
+  call flowbuddy#set_text({'shapes': v:false, 'snippets': v:false})
+  " The daemon's message turns it on.
+  call flowbuddy#on_daemon('{"type":"editor_config","shapes":true,"snippets":false,"exclude":[],"projects":[]}')
+  enew!
+  execute 'file /tmp/y.c'
+  call assert_true(flowbuddy#text_allowed(0))
+  call assert_false(flowbuddy#text_allowed(1))
+  bwipe!
+  call flowbuddy#on_daemon('not json')
+endfunction
+
 " Runner
 let s:failed = 0
 for s:name in sort(filter(map(split(execute('function /^Test_'), "\n"), {_, l -> matchstr(l, 'Test_\w\+')}), '!empty(v:val)'))

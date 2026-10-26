@@ -19,6 +19,8 @@ class DaemonLink {
     constructor({version, onConnected}) {
         this._version = version;
         this._onConnected = onConnected;
+        // [text] settings from the daemon; see textguard.js.
+        this.editorConfig = null;
         this._backoff = 1;
         this._sock = null;
         this._ready = false;
@@ -83,6 +85,8 @@ class DaemonLink {
                 return;
             this._sock = null;
             this._ready = false;
+            // Whatever was allowed, it's off until the daemon says so again.
+            this.editorConfig = null;
             if (!this._stopped)
                 this._scheduleReconnect();
         });
@@ -96,7 +100,9 @@ class DaemonLink {
             console.warn(`flowbuddy: bad message from daemon: ${e}`);
             return;
         }
-        // Nothing to act on yet; errors mean this extension sent something wrong.
+        if (msg.type === 'editor_config')
+            this.editorConfig = msg;
+        // Errors mean this extension sent something wrong.
         if (msg.type === 'error')
             console.warn(`flowbuddy: daemon error ${msg.code}: ${msg.message}`);
     }

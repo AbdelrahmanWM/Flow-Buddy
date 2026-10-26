@@ -286,6 +286,37 @@ pub enum ServerMsg {
         /// Unix seconds.
         paused_until: Option<u64>,
     },
+    /// To editor plugins, on hello and when the config changes: which
+    /// opt-in text features are on, and the files never to look at.
+    EditorConfig(EditorConfig),
+}
+
+/// What editor plugins may do with your text; see `crate::text`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditorConfig {
+    /// Work out text-shape facts (sent as numbers).
+    pub shapes: bool,
+    /// Keep redacted snippets around slow edits, in memory, for `coach`.
+    pub snippets: bool,
+    /// Globs of files never looked at (built-in list plus yours).
+    pub exclude: Vec<String>,
+    /// Folders snippets may come from, expanded.
+    pub projects: Vec<String>,
+}
+
+impl EditorConfig {
+    pub fn from_config(text: &crate::config::TextConfig) -> Self {
+        EditorConfig {
+            shapes: text.shapes,
+            snippets: text.ai_snippets,
+            exclude: crate::text::exclusions(text),
+            projects: text
+                .projects
+                .iter()
+                .map(|p| crate::text::expand(p))
+                .collect(),
+        }
+    }
 }
 
 /// Data returned by [`Command::Status`].

@@ -306,6 +306,16 @@ pub static CURRICULUM: &[Item] = &[
         Some(UiWhat::FileOpened)
     ),
     item!(
+        "completion",
+        2,
+        "`Ctrl-n`",
+        "complete the word you're typing from words in your files",
+        "Type the start of a long name and let Vim finish it.",
+        // Insert-mode Ctrl-n isn't told apart from other keys: said with
+        // `flowbuddy learn --know completion`.
+        |_| false
+    ),
+    item!(
         "paragraph",
         2,
         "`}` and `{`",
@@ -691,6 +701,38 @@ pub static CURRICULUM: &[Item] = &[
         |s| ctrl(s, "v") && s.before == VimMode::Normal
     ),
     item!(
+        "block-append",
+        3,
+        "`Ctrl-v`, `$`, then `A`",
+        "add text at the end of several lines, however long they are",
+        "Put a semicolon at the end of ten lines at once.",
+        |s| s.before == VimMode::VisualBlock && head(s, "A")
+    ),
+    item!(
+        "sentence",
+        3,
+        "`das` and `cis`",
+        "delete or change a whole sentence, from anywhere in it",
+        "Rewrite a sentence in a comment or a README.",
+        |s| object(s, "cdy", "s")
+    ),
+    item!(
+        "gn-select",
+        3,
+        "`gn`",
+        "select the next search match",
+        "Search, then `gn` and `U` to upper-case each match in turn.",
+        |s| is(s, &["gn", "gN"]) && !s.before.is_visual()
+    ),
+    item!(
+        "fold",
+        3,
+        "`za`, `zc` and `zo`",
+        "toggle, close or open the fold under the cursor",
+        "Hide a long function to see what's around it.",
+        |s| is(s, &["za", "zc", "zo", "zR", "zM"])
+    ),
+    item!(
         "tag-object",
         3,
         "`cit`",
@@ -755,6 +797,14 @@ pub static CURRICULUM: &[Item] = &[
         "replace text everywhere in the file",
         "Rename a variable in the whole file.",
         |s| cmdline(s, &["%s"])
+    ),
+    item!(
+        "quickfix",
+        4,
+        "`:cn` and `:cp`",
+        "to the next or previous error or search result in the quickfix list",
+        "After `:make` or `:grep`, walk through the results.",
+        |s| cmdline(s, &["cn", "cp", "cnext", "cprev", "copen", "cc"])
     ),
     item!(
         "global",
@@ -831,6 +881,9 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("macro", &["dot"]),
     ("replay-macro", &["macro"]),
     ("cgn", &["dot", "star"]),
+    ("gn-select", &["cgn"]),
+    ("sentence", &["ciw"]),
+    ("block-append", &["visual-block"]),
     ("undo-time", &["undo-redo"]),
     ("increment", &["count"]),
     ("substitute-all", &["substitute-cmd"]),
@@ -1253,6 +1306,11 @@ mod tests {
             ("<C-w>l", "windows"),
             ("ia<C-r>", "insert-keys"),
             ("g;", "change-list"),
+            ("zc", "fold"),
+            (":cn<CR>", "quickfix"),
+            ("das", "sentence"),
+            ("<C-v>jj$A;<Esc>", "block-append"),
+            ("gn", "gn-select"),
             ("42G", "goto-line"),
             (":120<CR>", "goto-line"),
             (":earlier 1m<CR>", "undo-time"),
@@ -1487,7 +1545,14 @@ mod tests {
     #[test]
     fn something_new_waits_for_what_it_builds_on() {
         // Everything is used but the text objects.
-        let objects = ["ciw", "ci-quote", "ci-paren", "tag-object", "visual-object"];
+        let objects = [
+            "ciw",
+            "ci-quote",
+            "ci-paren",
+            "tag-object",
+            "visual-object",
+            "sentence",
+        ];
         let progress = |id: &str| Progress {
             // ciw once (not enough to count), the other objects never.
             uses: match id {

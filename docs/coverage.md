@@ -26,10 +26,17 @@ Flow Buddy coaches in five places. Each one supports a different part of Vim, so
 - **Claude Code's Vim mode** (checked against Claude Code 2.1.312's own key tables) has counts, motions including `%`, `gg`, `gj`/`gk`, `f`/`t` with `;`, operators with text objects, Visual and Visual Line mode, `x`, `s`, `r`, `~`, `J`, `p`, `.` and `u`. It has no search (`/` searches the prompt history), `*`/`n`, marks, macros, registers, redo, `:` commands, or other `g` commands (`gv`, `g;`, `gI`, `g~`).
 - **vi-mode shells** edit one line. They have no text objects (bash and fish), Visual mode, registers, `o`/`O` or `:` commands.
 
+## Taught, but not coached
+
+These are in the curriculum, so the daily "something new" teaches them and `flowbuddy learn` tracks them, but no rule spots a habit that calls for them:
+
+- Folding (`za`, `zc`, `zo`), the quickfix list (`:cn`, `:cp`), `gn` on its own, sentence objects (`das`, `cis`) and `Ctrl-v` then `$A`.
+- Insert-mode completion (`Ctrl-n`): Flow Buddy can't see that you used it, so say so with `flowbuddy learn --know completion`.
+- In the shell, `Alt-.` and `^old^new` the same way; `cd -` is seen through the shell hook.
+
 ## Not coached yet
 
-- Folding (`zc`, `zo`), the quickfix list, `:make`, and spelling.
-- Insert-mode completion (`Ctrl-n`, `Ctrl-x Ctrl-f`), because what was completed can't be seen without text.
+- `:make` and spelling.
 - `42G` when absolute line numbers aren't shown (the number would have to be sent).
 - In VS Code: the command palette and sidebar by mouse (VS Code doesn't tell extensions), and multi-cursor.
 - KDE on Wayland, browsers (Vimium) and JetBrains (IdeaVim): #123–#125.

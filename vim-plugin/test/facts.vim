@@ -214,6 +214,14 @@ function! Test_range_facts() abort
   call assert_equal({}, flowbuddy#range_facts('abc', 5, 6))
 endfunction
 
+function! Test_line_range() abort
+  let r = flowbuddy#line_range(['a', 'b', 'c'], '', 0)
+  call assert_equal({'linewise': v:true, 'lines': 2, 'facts': {'file_end': v:false, 'paragraph_hops': 1}}, r)
+  call assert_false(has_key(flowbuddy#line_range(['a', '', 'c'], '', 0).facts, 'paragraph_hops'))
+  call assert_false(has_key(flowbuddy#line_range(['a'], 'b', 0).facts, 'paragraph_hops'))
+  call assert_true(flowbuddy#line_range(['a'], '', 1).facts.file_end)
+endfunction
+
 function! Test_text_guard() abort
   call assert_true(flowbuddy#glob_match('*.pem', '/a/b/c.pem'))
   call assert_false(flowbuddy#glob_match('*.pem', '/a/b.pem/c.txt'))

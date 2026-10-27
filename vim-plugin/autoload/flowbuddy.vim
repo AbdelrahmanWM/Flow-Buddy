@@ -464,10 +464,23 @@ function! flowbuddy#on_operator(event) abort
     if !empty(range)
       let msg.range = range
     endif
+  elseif a:event.regtype ==# 'V' && flowbuddy#text_allowed(0)
+    let msg.range = flowbuddy#line_range(getline(l1, l2), l2 == line('$') ? '' : getline(l2 + 1), l2 == line('$'))
   endif
   if !empty(objects) || has_key(msg, 'range')
     call s:send(msg)
   endif
+endfunction
+
+" Facts about whole `lines` an operator covered, given the line after them
+" and whether they run to the end: `d}` lands on the next blank line
+" when there's none among them; `dG` runs to the end.
+function! flowbuddy#line_range(lines, after, at_end) abort
+  let f = {'file_end': a:at_end ? v:true : v:false}
+  if (a:at_end || a:after !~# '\S') && empty(filter(copy(a:lines), {_, l -> l !~# '\S'}))
+    let f.paragraph_hops = 1
+  endif
+  return {'linewise': v:true, 'lines': len(a:lines) - 1, 'facts': f}
 endfunction
 
 " Character classes for w and e within a line: 0 blank, 1 keyword, 2 other.

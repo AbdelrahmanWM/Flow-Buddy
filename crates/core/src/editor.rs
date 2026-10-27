@@ -260,6 +260,13 @@ pub struct OperatorReport {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperatorRange {
+    /// Whole lines (`V`, `dj`): then `lines` says how many after the first,
+    /// and `facts` has `paragraph_hops` and `file_end` for `d}` and `dG`.
+    #[serde(default)]
+    pub linewise: bool,
+    #[serde(default)]
+    pub lines: i64,
+    #[serde(default)]
     pub cols: i64,
     #[serde(default)]
     pub facts: MotionFacts,

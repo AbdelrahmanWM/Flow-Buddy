@@ -11,7 +11,7 @@
 'use strict';
 
 const vscode = require('vscode');
-const {charObjects, lineObjects, rangeFacts} = require('./facts');
+const {charObjects, lineObjects, lineRange, rangeFacts} = require('./facts');
 const {textAllowed} = require('./textguard');
 
 const OPERATOR_MODES = ['normal', 'visual', 'visual_line', 'visual_block'];
@@ -81,9 +81,14 @@ class OperatorTracker {
         const {start, end} = range;
         let objects;
         let shape = null;
+        const doc = this._document;
+        const shapes = textAllowed(this._link.editorConfig, doc?.uri.scheme, doc?.uri.fsPath, false);
         if (start.character === 0 && end.character === 0 && end.line > start.line) {
             objects = lineObjects(lines.slice(start.line, end.line),
                 blank(lines[start.line - 1]) || start.line === 0, blank(lines[end.line]));
+            // With [text] shapes on: `d}` or `dG` instead of counting lines.
+            if (shapes)
+                shape = lineRange(lines.slice(start.line, end.line), lines[end.line]);
         } else {
             const text = start.line === end.line
                 ? lines[start.line].slice(start.character, end.character)
@@ -94,9 +99,7 @@ class OperatorTracker {
             const after = lines[end.line].charAt(end.character);
             objects = charObjects(text, before, after);
             // With [text] shapes on: which motions would have covered it.
-            const doc = this._document;
-            if (start.line === end.line && end.character > start.character &&
-                textAllowed(this._link.editorConfig, doc?.uri.scheme, doc?.uri.fsPath, false)) {
+            if (start.line === end.line && end.character > start.character && shapes) {
                 const line = lines[start.line];
                 // Code points, as Vim counts characters.
                 const first = [...line.slice(0, start.character)].length;
@@ -107,7 +110,6 @@ class OperatorTracker {
         if (!objects.length && !shape)
             return;
         const atMs = Date.now();
-        const doc = this._document;
         if (doc && textAllowed(this._link.editorConfig, doc.uri.scheme, doc.uri.fsPath, true))
             this._link.snippets.add(atMs, doc.languageId, lines, start.line);
         setTimeout(() => {

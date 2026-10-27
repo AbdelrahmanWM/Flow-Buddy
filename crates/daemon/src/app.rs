@@ -143,6 +143,10 @@ enum CmdKind {
     Motion,
     /// d, c or y with its motion or text object.
     Operator,
+    /// `v` or `V` from Normal mode: a selection starts.
+    VisualStart,
+    /// An operator on a Visual selection (`d`, `y`, `>`…).
+    VisualOp,
     Other,
 }
 
@@ -923,10 +927,25 @@ impl App {
             .rev()
             .skip_while(|c| c.at_ms > at_ms + MOTION_LAG_MS);
         let Some(op) = recent.next().filter(|c| {
-            c.kind == CmdKind::Operator && at_ms.saturating_sub(c.at_ms) <= MOTION_LEAD_MS
+            matches!(c.kind, CmdKind::Operator | CmdKind::VisualOp)
+                && at_ms.saturating_sub(c.at_ms) <= MOTION_LEAD_MS
         }) else {
             return (0, 0);
         };
+        // A selection: everything from `v` to the operator is what a
+        // better command would replace.
+        if op.kind == CmdKind::VisualOp {
+            let mut keys = op.keys;
+            for c in recent {
+                keys += c.keys;
+                match c.kind {
+                    CmdKind::VisualStart => return (keys, keys),
+                    CmdKind::Motion => {}
+                    _ => break,
+                }
+            }
+            return (0, 0);
+        }
         let mut keys = op.keys;
         let mut next_at = op.at_ms;
         for c in recent {
@@ -1113,6 +1132,14 @@ impl App {
             }
             let kind = if motion::is_motion(c) {
                 CmdKind::Motion
+            } else if step.before.is_visual()
+                && c.single()
+                    .and_then(|k| k.plain_char())
+                    .is_some_and(|h| matches!(h, 'd' | 'c' | 'y' | 'x' | 's' | '>' | '<'))
+            {
+                CmdKind::VisualOp
+            } else if !step.before.is_visual() && (c.is("v") || c.is("V")) {
+                CmdKind::VisualStart
             } else if c.keys.len() >= 2 && c.head().is_some_and(|h| matches!(h, 'd' | 'c' | 'y')) {
                 CmdKind::Operator
             } else {
@@ -3366,6 +3393,45 @@ pub(crate) mod tests {
         assert_eq!(
             n.iter().map(|n| n.rule_id.as_str()).collect::<Vec<_>>(),
             ["vim.macro"]
+        );
+    }
+
+    #[test]
+    fn a_long_selection_gets_a_shorter_operator() {
+        use flowbuddy_core::editor::{Operator, OperatorRange, OperatorReport};
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        type_at(&mut app, "Vjjjjjjjjjjd", 1_000);
+        let report = OperatorReport {
+            op: Operator::Delete,
+            at_ms: 2_200,
+            objects: vec![],
+            range: Some(OperatorRange {
+                linewise: true,
+                lines: 10,
+                facts: flowbuddy_core::editor::MotionFacts {
+                    paragraph_hops: Some(1),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        };
+        send(&mut app, 3, ClientMsg::Operator(report), 2_250);
+        let n = nudges(&mut ext);
+        assert!(
+            n.iter()
+                .any(|n| n.rule_id == "motion.operator" && n.text.contains("`d}`")),
+            "{n:?}"
         );
     }
 }

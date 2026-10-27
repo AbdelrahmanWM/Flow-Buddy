@@ -16,6 +16,13 @@ const HOUR_MS: u64 = 3_600_000;
 
 pub use flowbuddy_store::days::day;
 
+/// What [`Memory::progress`] reads from the database.
+#[derive(Clone)]
+struct ProgressCache {
+    uses: HashMap<String, u64>,
+    items: HashMap<String, flowbuddy_store::LearnRow>,
+}
+
 /// A pattern: (rule id, context).
 type PatternKey = (String, String);
 
@@ -29,6 +36,9 @@ pub struct Memory {
     learning: LearningConfig,
     /// Curriculum levels taken as known (`[learn] level`).
     known_levels: u8,
+    /// Uses and daily-tip rows per curriculum item, read once and kept up
+    /// to date here, so knowing what you know needn't read the database.
+    progress_cache: std::cell::RefCell<Option<ProgressCache>>,
     retention_days: u32,
     /// The habit worth working on now (`flowbuddy next`), updated hourly.
     focus: Option<String>,
@@ -67,6 +77,7 @@ impl Memory {
             last_maintenance_ms: None,
             learning: config.learning,
             known_levels: config.learn.level.known_levels(),
+            progress_cache: std::cell::RefCell::new(None),
             retention_days: config.memory.episode_retention_days,
             focus: None,
             check_ins: HashSet::new(),
@@ -391,6 +402,11 @@ impl Memory {
         for (id, n) in &usage {
             let _ = store.add_command_use(&today, id, *n);
         }
+        if let Some(c) = self.progress_cache.borrow_mut().as_mut() {
+            for (id, n) in &usage {
+                *c.uses.entry(id.to_string()).or_default() += n;
+            }
+        }
         for row in store.learn_items().unwrap_or_default() {
             if row.learned_at.is_some() || !usage.contains_key(row.item_id.as_str()) {
                 continue;
@@ -403,6 +419,7 @@ impl Memory {
                 .unwrap_or(0);
             if uses >= curriculum::KNOWN_USES {
                 let _ = store.learn_learned(&row.item_id, now_ms / 1000);
+                self.progress_cache.replace(None);
             }
         }
     }
@@ -410,13 +427,19 @@ impl Memory {
     /// Uses and daily-tip rows per curriculum item.
     fn progress(&self) -> Option<impl Fn(&str) -> curriculum::Progress + use<>> {
         let store = self.store.as_ref()?;
-        let uses = store.command_uses("0000-00-00").ok()?;
-        let items: HashMap<String, flowbuddy_store::LearnRow> = store
-            .learn_items()
-            .ok()?
-            .into_iter()
-            .map(|r| (r.item_id.clone(), r))
-            .collect();
+        let mut cache = self.progress_cache.borrow_mut();
+        if cache.is_none() {
+            *cache = Some(ProgressCache {
+                uses: store.command_uses("0000-00-00").ok()?,
+                items: store
+                    .learn_items()
+                    .ok()?
+                    .into_iter()
+                    .map(|r| (r.item_id.clone(), r))
+                    .collect(),
+            });
+        }
+        let ProgressCache { uses, items } = cache.clone()?;
         Some(move |id: &str| {
             let row = items.get(id);
             curriculum::Progress {
@@ -455,6 +478,7 @@ impl Memory {
     pub fn learn_shown(&self, item_id: &str, now_ms: u64) {
         if let Some(store) = &self.store {
             let _ = store.learn_shown(item_id, now_ms / 1000);
+            self.progress_cache.replace(None);
         }
     }
 

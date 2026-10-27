@@ -85,12 +85,21 @@ impl Engine {
         let rank = |f: &Finding| self.rank.get(f.rule_id).copied().unwrap_or(usize::MAX);
         out.retain_mut(|e| match e {
             RuleEvent::Finding(f) => {
-                // Only what works here: vscodevim has no `:earlier`.
-                match crate::support::fit(context, &f.text) {
-                    Some(text) => f.text = text,
-                    None => return false,
+                // Only what works here (vscodevim has no `:earlier`), and
+                // what you're ready for, each alternative on its own.
+                // Insert-mode keys mean other things; they're not checked.
+                let insert = f.mode == crate::context::VimMode::Insert;
+                let ok = |c: &str| {
+                    crate::support::supports(context, c)
+                        && (insert || self.known.ready_for_command(c))
+                };
+                match crate::support::fit_by(&f.text, ok) {
+                    Some(text) => {
+                        f.text = text;
+                        true
+                    }
+                    None => false,
                 }
-                self.known.ready_for_rule(f.rule_id)
             }
             _ => true,
         });
@@ -473,5 +482,23 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn each_suggestion_waits_for_what_it_builds_on() {
+        let tips = |known: Known| {
+            let mut e = Engine::standard();
+            e.set_known(known);
+            feed(&mut e, ContextKind::TerminalVim, "viwd")
+                .into_iter()
+                .filter_map(|e| match e {
+                    RuleEvent::Finding(f) => Some(f.text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        // `diw` builds on `cw`: not for someone who doesn't use it yet.
+        assert!(tips(Known::of([])).is_empty());
+        assert_eq!(tips(Known::of(["change-word"])).len(), 1);
     }
 }

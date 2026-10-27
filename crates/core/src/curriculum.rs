@@ -318,7 +318,8 @@ pub static CURRICULUM: &[Item] = &[
         "`ciw`",
         "change the whole word under the cursor, from anywhere in it",
         "Rename a variable without moving to its start.",
-        |s| object(s, "c", "wW")
+        // Any operator on a word: `diw` and `yiw` are the same skill.
+        |s| object(s, "cdy", "wW")
     ),
     item!(
         "ci-quote",
@@ -789,6 +790,68 @@ pub fn object_skill(object: &str) -> &'static str {
     }
 }
 
+/// The keys a tip's command stands for: `Ctrl-d` → Ctrl+d, `f<char>` →
+/// `f` and a letter, `<line>G` → `42G`, `:sort` → `:sort` and Enter.
+fn command_keys(press: &str) -> Vec<crate::key::Key> {
+    use crate::key::Key;
+    let press = press
+        .replace("<char>", "x")
+        .replace("<line>", "42")
+        .replace("old", "x")
+        .replace("new", "y");
+    if let Some(rest) = press.strip_prefix(':') {
+        let mut keys = vec![Key::ch(':')];
+        keys.extend(rest.chars().map(Key::ch));
+        keys.push(Key::ENTER);
+        return keys;
+    }
+    let mut keys = Vec::new();
+    let mut rest = press.as_str();
+    while !rest.is_empty() {
+        if let Some(r) = rest.strip_prefix("Ctrl-")
+            && let Some(c) = r.chars().next()
+        {
+            keys.push(Key::ctrl(c));
+            rest = &r[c.len_utf8()..];
+        } else if let Some(r) = rest.strip_prefix("Esc") {
+            keys.push(Key::ESC);
+            rest = r;
+        } else {
+            let c = rest.chars().next().unwrap_or(' ');
+            keys.push(Key::ch(c));
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    keys
+}
+
+/// The curriculum items a tip's command is (`ci(` → `ci-paren`), by
+/// typing it into the key tracker from Normal mode.
+pub fn items_of_command(cmd: &str) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    for press in cmd
+        .split_whitespace()
+        .filter(|w| !matches!(*w, "then" | "or" | "and" | "…"))
+        .map(|w| w.split('×').next().unwrap_or(w).trim_end_matches(','))
+    {
+        let mut t = crate::vim::Tracker::new(crate::vim::Flavor::Vim);
+        t.reset_known(VimMode::Normal);
+        for (i, key) in command_keys(press).into_iter().enumerate() {
+            let step = t.feed(crate::key::KeyStroke {
+                key,
+                repeat: false,
+                at_ms: i as u64,
+            });
+            for item in CURRICULUM {
+                if item.used_in(&step) && !out.contains(&item.id) {
+                    out.push(item.id);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The items you already use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Known {
@@ -870,6 +933,12 @@ impl Known {
     /// Worth suggesting: known already, or one step up from what is.
     pub fn ready(&self, id: &str) -> bool {
         self.knows(id) || requires(id).iter().all(|r| self.knows(r))
+    }
+
+    /// Whether a tip's command is something you're ready for: every item
+    /// it is (commands the curriculum doesn't know are fine).
+    pub fn ready_for_command(&self, cmd: &str) -> bool {
+        self.everything || items_of_command(cmd).iter().all(|i| self.ready(i))
     }
 
     /// Whether a rule's main advice is something you're ready for.
@@ -1117,6 +1186,20 @@ mod tests {
         assert!(k.knows("find") && k.ready("till"));
         assert!(!none.ready_for_rule("motion.text-object"));
         assert!(none.ready_for_rule("motion.count") && none.ready_for_rule("shell.cd-up"));
+    }
+
+    #[test]
+    fn commands_are_items() {
+        assert_eq!(items_of_command("ci("), ["ci-paren"]);
+        assert_eq!(items_of_command("Ctrl-d"), ["half-page"]);
+        assert_eq!(items_of_command("3f<char>"), ["find"]);
+        assert_eq!(items_of_command("<line>G"), ["goto-line"]);
+        assert_eq!(items_of_command(":sort"), ["sort"]);
+        assert_eq!(items_of_command("Ctrl-d×3 then 4j"), ["half-page", "count"]);
+        let k = Known::of(["change-word"]);
+        assert!(k.ready_for_command("ciw") && !k.ready_for_command("ci("));
+        assert!(!k.ready_for_command("zz"), "zz builds on Ctrl-d");
+        assert!(k.ready_for_command("Ctrl-e"), "not a tree item");
     }
 
     #[test]

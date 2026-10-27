@@ -157,22 +157,94 @@ fn sentences(text: &str) -> Vec<String> {
 /// A tip made to fit `ctx`: sentences suggesting something that doesn't
 /// work there are taken out. `None` when no suggestion is left.
 pub fn fit(ctx: ContextKind, text: &str) -> Option<String> {
-    if supports_all(ctx, text) {
+    fit_by(text, |c| supports(ctx, c))
+}
+
+/// Separators between alternatives in a list: "`a`, `b` or `c`".
+const LIST_SEPARATORS: &[&str] = &[", ", " or ", ", or ", " and ", ", and "];
+
+/// `sentence` with the commands `ok` rejects taken out of their lists
+/// ("`7j`, `}` or `Ctrl-d`" → "`7j` or `}`"); `None` if one that isn't in
+/// a list is rejected. Also says whether a list was there.
+fn prune(sentence: &str, ok: &impl Fn(&str) -> bool) -> Option<(String, bool)> {
+    let segs = segments(sentence);
+    let mut out = String::new();
+    let mut had_list = false;
+    let mut i = 0;
+    while i < segs.len() {
+        let Segment::Code(first) = segs[i] else {
+            if let Segment::Text(t) = segs[i] {
+                out.push_str(t);
+            }
+            i += 1;
+            continue;
+        };
+        // The run of commands joined by list separators from here.
+        let mut items = vec![first];
+        let mut last_sep = "";
+        let mut j = i + 1;
+        while let (Some(Segment::Text(sep)), Some(Segment::Code(c))) =
+            (segs.get(j), segs.get(j + 1))
+        {
+            if !LIST_SEPARATORS.contains(sep) {
+                break;
+            }
+            last_sep = sep;
+            items.push(c);
+            j += 2;
+        }
+        let kept: Vec<&str> = items.iter().copied().filter(|c| ok(c)).collect();
+        if kept.is_empty() {
+            return None;
+        }
+        if items.len() > 1 {
+            had_list = true;
+        }
+        if kept.len() == items.len() {
+            // Nothing taken out: as it was written.
+            for seg in &segs[i..j] {
+                match seg {
+                    Segment::Code(c) => out.push_str(&crate::glossary::mark(c)),
+                    Segment::Text(t) => out.push_str(t),
+                }
+            }
+        } else {
+            let word = if last_sep.contains("and") {
+                "and"
+            } else {
+                "or"
+            };
+            let marked: Vec<String> = kept.iter().map(|c| crate::glossary::mark(c)).collect();
+            out.push_str(&match marked.len() {
+                1 => marked[0].clone(),
+                n => format!("{} {word} {}", marked[..n - 1].join(", "), marked[n - 1]),
+            });
+        }
+        i = j;
+    }
+    Some((out, had_list))
+}
+
+/// A tip with every command `ok` rejects taken out: out of its list of
+/// alternatives where it has one, else its sentence goes. `None` when no
+/// suggestion is left.
+pub fn fit_by(text: &str, ok: impl Fn(&str) -> bool) -> Option<String> {
+    if crate::glossary::code_spans(text).into_iter().all(&ok) {
         return Some(text.to_string());
     }
     // The first sentence usually says what you did (`u` 7 times): what's
-    // left must suggest something after it.
-    let kept: Vec<(usize, String)> = sentences(text)
+    // left must suggest something after it, or keep a list of choices.
+    let kept: Vec<(usize, String, bool)> = sentences(text)
         .into_iter()
         .enumerate()
-        .filter(|(_, s)| supports_all(ctx, s))
+        .filter_map(|(i, s)| prune(&s, &ok).map(|(s, list)| (i, s, list)))
         .collect();
     let suggests = kept
         .iter()
-        .any(|(i, s)| *i > 0 && !crate::glossary::code_spans(s).is_empty());
+        .any(|(i, s, list)| !crate::glossary::code_spans(s).is_empty() && (*i > 0 || *list));
     suggests.then(|| {
         kept.into_iter()
-            .map(|(_, s)| s)
+            .map(|(_, s, _)| s)
             .collect::<Vec<_>>()
             .join(" ")
     })
@@ -240,6 +312,26 @@ mod tests {
         ] {
             assert!(!supports(b, no), "{no}");
         }
+    }
+
+    #[test]
+    fn alternatives_are_taken_out_of_their_list() {
+        let ok = |c: &str| c != "Ctrl-d";
+        assert_eq!(
+            fit_by("You pressed j 7 times. Try `7j`, `}` or `Ctrl-d`.", ok).as_deref(),
+            Some("You pressed j 7 times. Try `7j` or `}`.")
+        );
+        assert_eq!(
+            fit_by("Try `Ctrl-d` or `7j`.", ok).as_deref(),
+            Some("Try `7j`.")
+        );
+        // Untouched lists keep their wording.
+        assert_eq!(
+            fit_by("Use `a`, `b` and `c`. Not `Ctrl-d`.", ok).as_deref(),
+            Some("Use `a`, `b` and `c`.")
+        );
+        // A rejected command not in a list takes its sentence with it.
+        assert_eq!(fit_by("`x` then `i` is `Ctrl-d`.", ok), None);
     }
 
     #[test]

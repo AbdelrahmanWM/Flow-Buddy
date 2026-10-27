@@ -836,17 +836,30 @@ impl App {
     }
 
     /// Keys pressed for a movement: the motion commands just before its end,
-    /// back to its start or the last command that wasn't a motion.
-    fn keys_for(&self, m: &Motion) -> u32 {
+    /// back to its start or the last command that wasn't a motion. 0 when
+    /// the count can't be trusted: a click came during it, or VS Code saw
+    /// fewer moves than the commands counted (keys from another moment).
+    /// Vim merges cursor events while keys are typed fast, so only VS
+    /// Code's count is checked.
+    fn keys_for(&self, m: &Motion, conn: ConnId) -> u32 {
         let from = m.start_ms.saturating_sub(MOTION_LEAD_MS);
         let to = m.end_ms + MOTION_LAG_MS;
-        self.commands
+        let (keys, commands) = self
+            .commands
             .iter()
             .rev()
             .skip_while(|c| c.at_ms > to)
             .take_while(|c| c.at_ms >= from && c.kind == CmdKind::Motion)
-            .map(|c| c.keys)
-            .sum()
+            .fold((0, 0), |(k, n), c| (k + c.keys, n + 1));
+        let clicked = self
+            .last_click_ms
+            .is_some_and(|t| t >= m.start_ms && t <= m.end_ms);
+        let too_many = self.is_vscode(conn) && commands > m.moves + 1;
+        if clicked || too_many {
+            tracing::debug!(clicked, commands, moves = m.moves, "key count not trusted");
+            return 0;
+        }
+        keys
     }
 
     /// Keys pressed for an operator the editor reported: the operator
@@ -1370,7 +1383,7 @@ impl App {
             }
             ClientMsg::Motion(m) if self.resolved.editor == Some(conn) => {
                 let ev = MotionEvent {
-                    keys_used: self.keys_for(&m),
+                    keys_used: self.keys_for(&m, conn),
                     motion: m,
                 };
                 self.record(now_ms, |t| {
@@ -3222,5 +3235,46 @@ pub(crate) mod tests {
         assert!(!app.mode_known().1, "mode unknown after a guess");
         keys(&mut app, "lllllllll");
         assert!(nudges(&mut ext).is_empty());
+    }
+
+    #[test]
+    fn key_counts_that_dont_add_up_are_dropped() {
+        let mut app = test_app(CoachingMode::Active);
+        let _rx = connect(&mut app, 1);
+        let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
+        focus(&mut app, "code_code", 500);
+        send(
+            &mut app,
+            2,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            0,
+        );
+        send(
+            &mut app,
+            2,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        keys(&mut app, "jjjjjjj");
+        let motion = |moves| Motion {
+            start_ms: 0,
+            end_ms: 700,
+            moves,
+            mode: EditorMode::Normal,
+            lines: 7,
+            cols: 0,
+            facts: Default::default(),
+        };
+        assert_eq!(app.keys_for(&motion(7), 2), 7);
+        // VS Code saw two moves: five of those keys belong elsewhere.
+        assert_eq!(app.keys_for(&motion(2), 2), 0);
+        // A click in the middle: the keys didn't make the whole move.
+        app.on_pointer_click(300);
+        assert_eq!(app.keys_for(&motion(7), 2), 0);
     }
 }

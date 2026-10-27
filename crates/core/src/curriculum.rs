@@ -133,10 +133,26 @@ pub static CURRICULUM: &[Item] = &[
     item!(
         "line-ends",
         1,
-        "`0`, `^` and `$`",
-        "the start, first character, or end of the line",
+        "`$`",
+        "the end of the line",
         "Get to the end of a long line in one key.",
-        |s| is(s, &["0", "^", "$"])
+        |s| is(s, &["$"])
+    ),
+    item!(
+        "line-start",
+        1,
+        "`0`",
+        "the very start of the line",
+        "Back to column one, before the indentation.",
+        |s| is(s, &["0"])
+    ),
+    item!(
+        "first-nonblank",
+        1,
+        "`^`",
+        "the first character of the line that isn't a space",
+        "Start of the code on an indented line.",
+        |s| is(s, &["^"])
     ),
     item!(
         "file-ends",
@@ -243,18 +259,34 @@ pub static CURRICULUM: &[Item] = &[
     item!(
         "star",
         2,
-        "`*` and `#`",
-        "jump to the next or previous use of the word under the cursor",
+        "`*`",
+        "jump to the next use of the word under the cursor",
         "Find where a variable is used next.",
-        |s| head(s, "*#")
+        |s| head(s, "*")
+    ),
+    item!(
+        "star-back",
+        2,
+        "`#`",
+        "jump to the previous use of the word under the cursor",
+        "Find where a variable was set.",
+        |s| head(s, "#")
     ),
     item!(
         "search-next",
         2,
-        "`n` and `N`",
-        "the next or previous match of your last search",
+        "`n`",
+        "the next match of your last search",
         "After `/name`, hop through every match.",
-        |s| is(s, &["n", "N"])
+        |s| is(s, &["n"])
+    ),
+    item!(
+        "search-back",
+        2,
+        "`N`",
+        "the previous match of your last search",
+        "Went past the one you wanted? Back one.",
+        |s| is(s, &["N"])
     ),
     item!(
         "percent",
@@ -267,10 +299,18 @@ pub static CURRICULUM: &[Item] = &[
     item!(
         "screen",
         2,
-        "`H`, `M` and `L`",
-        "the top, middle or bottom line of the window",
+        "`H` and `L`",
+        "the top or bottom line of the window",
         "Jump to something you can see without counting lines.",
-        |s| is(s, &["H", "M", "L"])
+        |s| is(s, &["H", "L"])
+    ),
+    item!(
+        "screen-middle",
+        2,
+        "`M`",
+        "the middle line of the window",
+        "Halfway down what you see, in one key.",
+        |s| is(s, &["M"])
     ),
     item!(
         "ciw",
@@ -331,10 +371,18 @@ pub static CURRICULUM: &[Item] = &[
     item!(
         "jump-back",
         2,
-        "`Ctrl-o` and `Ctrl-i`",
-        "back to where you were before a jump, and forward again",
+        "`Ctrl-o`",
+        "back to where you were before a jump",
         "Return after `gg` or a search.",
-        |s| ctrl(s, "oi") && s.before == VimMode::Normal
+        |s| ctrl(s, "o") && s.before == VimMode::Normal
+    ),
+    item!(
+        "jump-forward",
+        2,
+        "`Ctrl-i`",
+        "forward again after `Ctrl-o`",
+        "Went back one jump too many? Forward again.",
+        |s| ctrl(s, "i") && s.before == VimMode::Normal
     ),
     item!(
         "center",
@@ -616,6 +664,10 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("bigword", &["word"]),
     ("till", &["find"]),
     ("screen", &["half-page"]),
+    ("screen-middle", &["screen"]),
+    ("jump-forward", &["jump-back"]),
+    ("star-back", &["star"]),
+    ("search-back", &["search-next"]),
     ("center", &["half-page"]),
     ("ciw", &["change-word"]),
     ("ci-quote", &["ciw"]),

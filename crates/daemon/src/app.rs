@@ -3056,7 +3056,11 @@ pub(crate) mod tests {
         // The next day, the next thing.
         app.tick(at(21, 10));
         let n = nudges(&mut ext);
-        assert!(n[0].text.starts_with("`0`, `^` and `$`"), "{}", n[0].text);
+        assert!(
+            n[0].text.starts_with("`$`: the end of the line"),
+            "{}",
+            n[0].text
+        );
     }
 
     #[test]

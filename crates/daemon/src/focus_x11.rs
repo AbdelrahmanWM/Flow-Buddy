@@ -3,11 +3,12 @@
 //! server and the window's class and pid. Only those are read, never
 //! titles. The X server is a Unix socket, which the daemon's sandbox allows.
 
-use std::time::Duration;
-
 use tokio::sync::mpsc::UnboundedSender;
 use x11rb::connection::Connection;
-use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, Window};
+use x11rb::protocol::Event;
+use x11rb::protocol::xproto::{
+    AtomEnum, ChangeWindowAttributesAux, ConnectionExt, EventMask, Window,
+};
 
 /// The focused window: its class (the app id) and pid, when known.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,8 +31,8 @@ pub fn wanted() -> bool {
         && std::env::var_os("DISPLAY").is_some()
 }
 
-/// Poll the focused window twice a second and send it when it changes.
-/// Runs on its own thread; gives up quietly if X can't be reached.
+/// Send the focused window, and again each time the X server says it
+/// changed. Runs on its own thread; gives up quietly if X can't be reached.
 pub fn watch(tx: UnboundedSender<Focus>) {
     std::thread::spawn(move || {
         if let Err(e) = run(&tx) {
@@ -48,6 +49,13 @@ fn run(tx: &UnboundedSender<Focus>) -> Result<(), Box<dyn std::error::Error>> {
     };
     let active = atom(b"_NET_ACTIVE_WINDOW")?;
     let pid_atom = atom(b"_NET_WM_PID")?;
+    // The window manager sets _NET_ACTIVE_WINDOW on the root window: hear
+    // about each change instead of asking.
+    conn.change_window_attributes(
+        root,
+        &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+    )?
+    .check()?;
     let mut last: Option<Focus> = None;
     loop {
         let window: Option<Window> = conn
@@ -80,13 +88,22 @@ fn run(tx: &UnboundedSender<Focus>) -> Result<(), Box<dyn std::error::Error>> {
             }
             last = Some(focus);
         }
-        std::thread::sleep(Duration::from_millis(500));
+        // Until the active window changes (other root properties change
+        // too; those are skipped).
+        loop {
+            if let Event::PropertyNotify(e) = conn.wait_for_event()?
+                && e.atom == active
+            {
+                break;
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn class_from_wm_class() {

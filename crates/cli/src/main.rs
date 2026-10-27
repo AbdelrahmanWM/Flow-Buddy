@@ -3,6 +3,7 @@ mod coach;
 mod doctor;
 mod report;
 mod review;
+mod setup;
 mod tips;
 
 use clap::{Parser, Subcommand};
@@ -45,6 +46,9 @@ enum Cmd {
     Learn,
     /// Check everything Flow Buddy needs, and say how to fix what's missing.
     Doctor,
+    /// A few questions about how you'd like to be coached, saved to the
+    /// config file.
+    Setup,
     /// Show tips here as they come, with what their commands do: keep it
     /// open in a terminal beside your work. Ctrl-C to stop.
     Watch,
@@ -232,6 +236,7 @@ fn main() {
         Cmd::Next => next(),
         Cmd::Learn => learn(),
         Cmd::Watch => watch(),
+        Cmd::Setup => run_setup(),
         Cmd::Doctor => {
             let status = Client::connect(ClientKind::Cli)
                 .and_then(|mut c| c.query(Command::Status))
@@ -1066,6 +1071,29 @@ fn ctx(event: CtxCmd, shell_pid: Option<u32>, tty: Option<String>) -> anyhow::Re
 
 fn parent_pid() -> u32 {
     std::os::unix::process::parent_id()
+}
+
+fn run_setup() -> anyhow::Result<()> {
+    let path = flowbuddy_core::paths::config_file();
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    println!("A few questions; press Enter to keep the current choice (*).");
+    let answers = setup::ask(&text, &mut std::io::stdin().lock(), &mut std::io::stdout())?;
+    let written = setup::apply(&text, &answers);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, &written)?;
+    println!(
+        "\nSaved to {}; the daemon picks it up by itself.",
+        path.display()
+    );
+    if written.contains("provider = \"command\"") && !written.contains("command = [") {
+        println!(
+            "Add the program to run under [ai], e.g. command = [\"ollama\", \"run\", \"llama3.2:3b\"]."
+        );
+    }
+    println!("flowbuddy doctor checks the rest.");
+    Ok(())
 }
 
 fn watch() -> anyhow::Result<()> {

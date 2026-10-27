@@ -347,6 +347,7 @@ dependencies = [
  "flowbuddy-store",
  "serde",
  "serde_json",
+ "toml",
  "ureq",
 ]
 

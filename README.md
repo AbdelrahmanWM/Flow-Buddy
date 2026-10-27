@@ -119,6 +119,7 @@ flowbuddy status          # or --watch, then switch windows
 ## Use
 
 ```sh
+flowbuddy setup                   # a few questions: how often, your level, AI, text features
 flowbuddy doctor                  # checks every piece and says how to fix what's missing
 flowbuddy mode balanced           # off | passive | balanced | active
 flowbuddy pause 1h                # or 30m, until-tomorrow; `flowbuddy resume`

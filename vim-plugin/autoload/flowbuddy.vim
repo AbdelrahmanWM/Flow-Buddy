@@ -22,6 +22,8 @@ let s:rests = []
 let s:REST_HISTORY_MS = 600000
 let s:rest_timer = -1
 let s:simulating = 0
+let s:facts_started = reltime()
+let s:stats = {'facts': 0, 'over_budget': 0, 'max_ms': 0}
 " What the daemon allows with your text ([text] in its config): off until
 " it says otherwise. See flowbuddy#text_allowed.
 let s:text = {'shapes': v:false, 'snippets': v:false, 'exclude': [], 'projects': []}
@@ -626,6 +628,9 @@ function! s:hops(from, to, keys, same_line) abort
   call cursor(a:from[0], a:from[1])
   let prev = a:from
   for n in range(1, s:MAX_HOPS)
+    if s:over_budget()
+      return 0
+    endif
     execute 'keepjumps normal! ' . a:keys
     let pos = getpos('.')[1:2]
     if pos == prev || (a:same_line && pos[0] != a:to[0])
@@ -644,6 +649,9 @@ function! s:line_hops(from, to_line, keys) abort
   call cursor(a:from[0], a:from[1])
   let prev = a:from[0]
   for n in range(1, s:MAX_HOPS)
+    if s:over_budget()
+      return 0
+    endif
     execute 'keepjumps normal! ' . a:keys
     let line = line('.')
     if line == prev
@@ -684,13 +692,36 @@ function! flowbuddy#facts(start, end, jump) abort
   let s:simulating = 1
   let save_ei = &eventignore
   set eventignore=all
+  let s:facts_started = reltime()
   try
     return s:facts(a:start, a:end, a:jump)
   finally
     let &eventignore = save_ei
     call winrestview(view)
     let s:simulating = 0
+    let ms = reltimefloat(reltime(s:facts_started)) * 1000
+    let s:stats.facts += 1
+    let s:stats.max_ms = max([s:stats.max_ms, float2nr(ms)])
+    if ms > s:budget_ms()
+      let s:stats.over_budget += 1
+    endif
   endtry
+endfunction
+
+" How long working out the facts for one movement may take; past it, the
+" motions not tried yet are left out. Long files and slow folding stay
+" responsive.
+function! s:budget_ms() abort
+  return get(g:, 'flowbuddy_facts_budget_ms', 15)
+endfunction
+
+function! s:over_budget() abort
+  return reltimefloat(reltime(s:facts_started)) * 1000 > s:budget_ms()
+endfunction
+
+" How the facts are doing, for :echo flowbuddy#stats().
+function! flowbuddy#stats() abort
+  return copy(s:stats)
 endfunction
 
 function! s:facts(start, end, jump) abort
@@ -776,6 +807,9 @@ function! s:facts(start, end, jump) abort
     " Like * and #, count from the start of the word under the cursor.
     call search('\<', 'bcW', a:start[0])
     for n in range(1, s:MAX_HOPS)
+      if s:over_budget()
+        break
+      endif
       let pos = searchpos(pattern, back ? 'bW' : 'W')
       if pos == [0, 0]
         break
@@ -792,6 +826,9 @@ function! s:facts(start, end, jump) abort
     call cursor(a:start[0], a:start[1])
     let back = lines < 0 || (lines == 0 && a:end[1] < a:start[1])
     for n in range(1, s:MAX_HOPS)
+      if s:over_budget()
+        break
+      endif
       let pos = searchpos(pattern, back ? 'bW' : 'W', 0, 20)
       if pos == [0, 0]
         break

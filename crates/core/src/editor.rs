@@ -129,6 +129,119 @@ pub struct MotionFacts {
     /// `n` or `N` presses: the end is that many matches of the last search
     /// away, in the movement's direction. The pattern is never sent.
     pub search_hops: Option<u32>,
+    /// 'relativenumber' is on, so line counts on screen can be read off.
+    pub relative_numbers: bool,
+    /// How many lines the view scrolled during the movement (the top
+    /// visible line's delta; positive is further into the file).
+    pub view_scrolled: Option<i64>,
+    /// How many times recently (about 10 minutes) the cursor rested on the
+    /// end line before. The editor keeps the history; only the count is sent.
+    pub revisits: Option<u32>,
+}
+
+/// The operators an editor reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Operator {
+    Delete,
+    Change,
+    Yank,
+}
+
+impl Operator {
+    pub fn key(self) -> &'static str {
+        match self {
+            Operator::Delete => "d",
+            Operator::Change => "c",
+            Operator::Yank => "y",
+        }
+    }
+}
+
+/// Text objects, by their Vim names. A fixed list: an unknown name is
+/// rejected like an unknown field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextObject {
+    #[serde(rename = "iw")]
+    InnerWord,
+    #[serde(rename = "aw")]
+    AWord,
+    #[serde(rename = "iW")]
+    InnerBigWord,
+    #[serde(rename = "aW")]
+    ABigWord,
+    #[serde(rename = "ip")]
+    InnerParagraph,
+    #[serde(rename = "ap")]
+    AParagraph,
+    #[serde(rename = "i(")]
+    InnerParen,
+    #[serde(rename = "a(")]
+    AParen,
+    #[serde(rename = "i[")]
+    InnerBracket,
+    #[serde(rename = "a[")]
+    ABracket,
+    #[serde(rename = "i{")]
+    InnerBrace,
+    #[serde(rename = "a{")]
+    ABrace,
+    #[serde(rename = "i<")]
+    InnerAngle,
+    #[serde(rename = "a<")]
+    AAngle,
+    #[serde(rename = "i\"")]
+    InnerDoubleQuote,
+    #[serde(rename = "a\"")]
+    ADoubleQuote,
+    #[serde(rename = "i'")]
+    InnerSingleQuote,
+    #[serde(rename = "a'")]
+    ASingleQuote,
+    #[serde(rename = "i`")]
+    InnerBacktick,
+    #[serde(rename = "a`")]
+    ABacktick,
+}
+
+impl TextObject {
+    pub fn keys(self) -> &'static str {
+        match self {
+            TextObject::InnerWord => "iw",
+            TextObject::AWord => "aw",
+            TextObject::InnerBigWord => "iW",
+            TextObject::ABigWord => "aW",
+            TextObject::InnerParagraph => "ip",
+            TextObject::AParagraph => "ap",
+            TextObject::InnerParen => "i(",
+            TextObject::AParen => "a(",
+            TextObject::InnerBracket => "i[",
+            TextObject::ABracket => "a[",
+            TextObject::InnerBrace => "i{",
+            TextObject::ABrace => "a{",
+            TextObject::InnerAngle => "i<",
+            TextObject::AAngle => "a<",
+            TextObject::InnerDoubleQuote => "i\"",
+            TextObject::ADoubleQuote => "a\"",
+            TextObject::InnerSingleQuote => "i'",
+            TextObject::ASingleQuote => "a'",
+            TextObject::InnerBacktick => "i`",
+            TextObject::ABacktick => "a`",
+        }
+    }
+}
+
+/// An operator ran (Delete, Change or Yank), and the range it covered was
+/// exactly these text objects. Worked out by the editor; the text itself
+/// is never sent.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorReport {
+    pub op: Operator,
+    /// Unix epoch milliseconds.
+    pub at_ms: u64,
+    /// Best match first.
+    pub objects: Vec<TextObject>,
 }
 
 #[cfg(test)]
@@ -170,5 +283,33 @@ mod tests {
             Some(VimMode::VisualBlock)
         );
         assert_eq!(EditorMode::Other.vim_mode(), None);
+    }
+
+    #[test]
+    fn operator_reports_use_vim_names_only() {
+        let r: OperatorReport =
+            serde_json::from_str(r#"{"op":"delete","at_ms":5,"objects":["i(","a\"","iw"]}"#)
+                .unwrap();
+        assert_eq!(
+            r.objects,
+            [
+                TextObject::InnerParen,
+                TextObject::ADoubleQuote,
+                TextObject::InnerWord
+            ]
+        );
+        assert_eq!(r.objects[1].keys(), "a\"");
+        assert!(
+            serde_json::from_str::<OperatorReport>(
+                r#"{"op":"delete","at_ms":5,"objects":["secret"]}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<OperatorReport>(
+                r#"{"op":"delete","at_ms":5,"objects":[],"text":"x"}"#
+            )
+            .is_err()
+        );
     }
 }

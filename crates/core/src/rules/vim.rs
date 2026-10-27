@@ -68,7 +68,14 @@ pub fn repeat_jk() -> RepeatRule {
             } else {
                 ("{", "Ctrl-u")
             };
-            format!("You pressed {unit} {n} times. Try {n}{unit}, {down} or {up}.")
+            // A big count is right but useless: nobody counts 40 lines.
+            if n <= 9 {
+                format!("You pressed {unit} {n} times. Try `{n}{unit}`, `{down}` or `{up}`.")
+            } else {
+                format!(
+                    "You pressed {unit} {n} times. For long moves, `{up}` jumps half a page and `{down}` to the next blank line; or search with `/`."
+                )
+            }
         },
     })
     .replaced_by_editor()
@@ -94,9 +101,9 @@ pub fn repeat_hl() -> RepeatRule {
         },
         message: |unit, n| {
             let (word, find) = if unit == "l" {
-                ("w or e", "f<char>")
+                ("`w` or `e`", "`f<char>`")
             } else {
-                ("b", "F<char>")
+                ("`b`", "`F<char>`")
             };
             format!("You pressed {unit} {n} times. Try {word}, or jump with {find}.")
         },
@@ -122,7 +129,7 @@ pub fn repeat_x() -> RepeatRule {
                         }))
             })
         },
-        message: |_, n| format!("You pressed x {n} times. Try dw, de or D."),
+        message: |_, n| format!("You pressed x {n} times. Try `dw`, `de` or `D`."),
     })
 }
 
@@ -144,7 +151,9 @@ pub fn arrows_normal() -> RepeatRule {
                     c.count.is_some() && matches!(c.head(), Some('h' | 'j' | 'k' | 'l'))
                 })
         },
-        message: |_, n| format!("{n} arrow keys in Normal mode. Use h j k l, your hands stay put."),
+        message: |_, n| {
+            format!("{n} arrow keys in Normal mode. Use `h` `j` `k` `l`, your hands stay put.")
+        },
     })
 }
 
@@ -159,7 +168,7 @@ pub fn arrows_insert() -> RepeatRule {
         adopted: |s| matches!(insert_key(s), Some(InsertKey::CtrlO)),
         message: |_, n| {
             format!(
-                "{n} arrow keys in Insert mode. Press Esc, move with a motion, then i/a/A to continue."
+                "{n} arrow keys in Insert mode. Press `Esc`, move with a motion, then `i`, `a` or `A` to continue."
             )
         },
     })
@@ -191,7 +200,12 @@ pub fn repeat_dd() -> RepeatRule {
                         && c.keys[1].plain_char().is_some_and(|d| d.is_ascii_digit()))
             })
         },
-        message: |_, n| format!("You pressed dd {n} times. Try {n}dd, d{}j or dap.", n - 1),
+        message: |_, n| {
+            format!(
+                "You pressed dd {n} times. Try `{n}dd`, `d{}j` or `dap`.",
+                n - 1
+            )
+        },
     })
 }
 
@@ -212,7 +226,7 @@ pub fn backspace_insert() -> RepeatRule {
                 })
         },
         message: |_, n| {
-            format!("{n} Backspaces in a row. Try Ctrl-w to delete a word, or Esc then ciw.")
+            format!("{n} Backspaces in a row. Try `Ctrl-w` to delete a word, or `Esc` then `ciw`.")
         },
     })
 }
@@ -267,7 +281,7 @@ impl Rule for WriteThenQuit {
                 out.push(RuleEvent::Finding(Finding {
                     rule_id: Self::ID,
                     title: "Save and quit at once",
-                    text: ":w then :q can be one command: :wq, :x or ZZ.".into(),
+                    text: "`:w` then `:q` can be one command: `:wq`, `:x` or `ZZ`.".into(),
                     shape: Shape::fixed(":w then :q"),
                     mode: VimMode::Cmdline,
                     at_ms: step.at_ms,
@@ -328,6 +342,14 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].shape.to_string(), "j×7");
         assert!(f[0].text.contains("7j"), "{}", f[0].text);
+    }
+
+    #[test]
+    fn long_jk_streaks_suggest_paging_not_counts() {
+        let ev = vim(repeat_jk(), &format!("{}<Esc>", "j".repeat(30)));
+        let text = &findings(&ev)[0].text;
+        assert!(!text.contains("30j"), "{text}");
+        assert!(text.contains("Ctrl-d"), "{text}");
     }
 
     #[test]

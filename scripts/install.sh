@@ -9,6 +9,7 @@
 # Installs:
 #   ~/.local/bin/flowbuddyd, ~/.local/bin/flowbuddy
 #   ~/.config/systemd/user/flowbuddyd.service (enabled and started)
+#   ~/.config/systemd/user/flowbuddy-weekly.service (only runs with [ai] weekly)
 #   ~/.local/share/gnome-shell/extensions/flowbuddy@abdelrahmanwm.github.io/
 #   ~/.local/share/flowbuddy/flowbuddy.bash, sourced from ~/.bashrc
 #   ~/.vscode/extensions/flowbuddy.flowbuddy-vscode-<version>/ (if VS Code is installed)
@@ -177,6 +178,7 @@ fi
 
 say "Installing the systemd user service"
 run install -Dm644 "$repo/packaging/systemd/flowbuddyd.service" "$unit_dir/flowbuddyd.service"
+run install -Dm644 "$repo/packaging/systemd/flowbuddy-weekly.service" "$unit_dir/flowbuddy-weekly.service"
 run systemctl --user daemon-reload
 run systemctl --user enable --now flowbuddyd.service
 

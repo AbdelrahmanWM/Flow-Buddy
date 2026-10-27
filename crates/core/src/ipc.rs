@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::editor::{EditorKind, EditorMode, Motion};
+use crate::editor::{EditorKind, EditorMode, Motion, OperatorReport};
 use crate::policy::CoachingMode;
 
 pub const PROTOCOL_VERSION: u32 = 0;
@@ -115,6 +115,8 @@ pub enum ClientMsg {
     EditorMode { mode: EditorMode },
     /// Editor clients: a finished movement and facts about where it ended.
     Motion(Motion),
+    /// Editor clients: an operator's range matched these text objects.
+    Operator(OperatorReport),
     Command {
         #[serde(default)]
         id: Option<u64>,
@@ -124,7 +126,7 @@ pub enum ClientMsg {
 }
 
 impl ClientMsg {
-    pub const TYPES: [&'static str; 9] = [
+    pub const TYPES: [&'static str; 10] = [
         "hello",
         "focus",
         "ctx",
@@ -133,6 +135,7 @@ impl ClientMsg {
         "editor_focus",
         "editor_mode",
         "motion",
+        "operator",
         "command",
     ];
 }
@@ -168,6 +171,11 @@ pub struct Nudge {
     /// Added after v0 shipped; older extensions ignore it.
     #[serde(default)]
     pub style: NudgeStyle,
+    /// What the tip's commands do, one line each, for an optional
+    /// "what does it do?" section. Commands in `text` and here are marked
+    /// with backticks (see `glossary`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub explain: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -335,6 +343,7 @@ mod tests {
             r#"{"v":0,"type":"pointer_click"}"#,
             r#"{"v":0,"type":"hello","client":"editor","client_version":"0.1.0","editor":"vim","pid":61234}"#,
             r#"{"v":0,"type":"editor_focus","focused":false}"#,
+            r#"{"v":0,"type":"operator","op":"delete","at_ms":1729740000500,"objects":["i(","a("]}"#,
             r#"{"v":0,"type":"editor_mode","mode":"visual_line"}"#,
             r#"{"v":0,"type":"motion","start_ms":1729740000000,"end_ms":1729740000900,"moves":12,"mode":"normal","lines":12,"cols":0,"facts":{"paragraph_hops":2,"window_lines":40}}"#,
             r#"{"v":0,"type":"command","id":7,"name":"status"}"#,
@@ -351,7 +360,7 @@ mod tests {
     #[test]
     fn vim_plugin_motion_parses() {
         // Captured from vim-plugin/ sending to a test socket.
-        let line = r#"{"start_ms":1792942695843,"moves":1,"lines":6,"facts":{"line_start":true,"line_end":false,"file_start":false,"file_end":false,"jump_back":false,"first_nonblank":false,"window_lines":23,"paragraph_hops":2},"v":0,"mode":"normal","type":"motion","end_ms":1792942695843,"cols":0}"#;
+        let line = r#"{"start_ms":1792969179805,"moves":1,"lines":6,"facts":{"relative_numbers":false,"file_start":false,"file_end":false,"jump_back":false,"view_scrolled":0,"window_lines":23,"paragraph_hops":2},"v":0,"mode":"normal","type":"motion","end_ms":1792969179805,"cols":0}"#;
         match decode_client(line).unwrap() {
             ClientMsg::Motion(m) => assert_eq!(m.facts.paragraph_hops, Some(2)),
             other => panic!("{other:?}"),

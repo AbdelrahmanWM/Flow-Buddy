@@ -22,6 +22,7 @@ augroup flowbuddy
   autocmd VimEnter * call flowbuddy#start()
   autocmd ModeChanged * call flowbuddy#on_mode(v:event.new_mode)
   autocmd CursorMoved * call flowbuddy#on_cursor()
+  autocmd TextYankPost * call flowbuddy#on_operator(v:event)
   autocmd FocusGained * call flowbuddy#on_focus(1)
   autocmd FocusLost * call flowbuddy#on_focus(0)
   autocmd VimSuspend * call flowbuddy#on_focus(0)

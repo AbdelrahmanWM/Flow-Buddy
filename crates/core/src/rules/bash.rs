@@ -48,7 +48,7 @@ pub fn up_history() -> RepeatRule {
         },
         message: |_, n| {
             format!(
-                "{n} presses of Up to find a command. Try Ctrl-r and type part of it (or Esc then /)."
+                "{n} presses of Up to find a command. Try `Ctrl-r` and type part of it (or `Esc` then `/`)."
             )
         },
     })
@@ -72,7 +72,7 @@ pub fn backspace_clear() -> RepeatRule {
         },
         message: |_, n| {
             format!(
-                "{n} Backspaces. Ctrl-u clears to the start of the line, Ctrl-w deletes a word."
+                "{n} Backspaces. `Ctrl-u` clears to the start of the line, `Ctrl-w` deletes a word."
             )
         },
     })
@@ -91,7 +91,7 @@ pub fn left_streak() -> RepeatRule {
         },
         message: |_, n| {
             format!(
-                "{n} presses of Left. Press Esc, then b to jump back a word or F<char> to a character."
+                "{n} presses of Left. Press `Esc`, then `b` to jump back a word or `F<char>` to a character."
             )
         },
     })

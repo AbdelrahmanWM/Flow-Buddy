@@ -417,6 +417,66 @@ impl Store {
     }
 }
 
+/// A few lines about the week for the weekly note: what improved against
+/// the week before, what was mastered, and `focus`, the habit to work on.
+pub fn week_summary(
+    store: &Store,
+    now_ms: u64,
+    describe: &dyn Fn(&str) -> String,
+    focus: Option<&str>,
+) -> Option<String> {
+    let this = days::range(now_ms, 7, 0);
+    let before = days::range(now_ms, 7, 7);
+    let totals = |range: &(String, String)| -> HashMap<String, (u64, u64)> {
+        let mut out: HashMap<String, (u64, u64)> = HashMap::new();
+        for r in store.daily(&range.0, &range.1).unwrap_or_default() {
+            let e = out.entry(r.rule_id).or_default();
+            e.0 += r.hits;
+            e.1 += r.adoptions;
+        }
+        out
+    };
+    let (now, then) = (totals(&this), totals(&before));
+    let hits: u64 = now.values().map(|v| v.0).sum();
+    let adoptions: u64 = now.values().map(|v| v.1).sum();
+    if hits + adoptions == 0 {
+        return None;
+    }
+    let mut improved: Vec<String> = then
+        .iter()
+        .filter(|(id, (was, _))| {
+            let is = now.get(*id).map_or(0, |v| v.0);
+            *was >= 3 && is * 10 <= was * 7
+        })
+        .map(|(id, _)| describe(id))
+        .collect();
+    improved.sort();
+    let week_ago_s = (now_ms / 1000).saturating_sub(7 * 86_400);
+    let mut mastered: Vec<String> = store
+        .patterns()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.stage == Stage::Mastered && p.stage_since >= week_ago_s)
+        .map(|p| describe(&p.rule_id))
+        .collect();
+    mastered.sort();
+    mastered.dedup();
+    let mut text = format!("{adoptions} times the better way, {hits} habits spotted.");
+    if !improved.is_empty() {
+        text.push_str(&format!(
+            " Less often than last week: {}.",
+            improved.join("; ")
+        ));
+    }
+    if !mastered.is_empty() {
+        text.push_str(&format!(" Mastered: {}.", mastered.join("; ")));
+    }
+    if let Some(focus) = focus {
+        text.push_str(&format!(" Work on next: {}.", describe(focus)));
+    }
+    Some(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

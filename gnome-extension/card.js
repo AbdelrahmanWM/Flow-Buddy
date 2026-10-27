@@ -2,13 +2,15 @@
 //
 // It is never reactive, so clicks pass through to the window below, and it
 // never takes keyboard focus: it can't interrupt typing. It fades out after
-// the nudge's ttl.
+// the nudge's ttl. What the commands do is in the top-bar menu.
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import St from 'gi://St';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+
+import {toMarkup} from './markup.js';
 
 const FADE_MS = 250;
 const GAP_PX = 12;
@@ -34,7 +36,7 @@ export class Card {
 
     show(nudge) {
         this._title.text = nudge.title;
-        this._text.text = nudge.text;
+        this._text.clutter_text.set_markup(toMarkup(nudge.text));
         this._place();
         this._actor.remove_all_transitions();
         this._actor.visible = true;

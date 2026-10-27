@@ -88,7 +88,7 @@ struct Context {
 | Terminal emulator | other foreground command, or no report | `Unsupported` |
 | Anything else | — | `Unsupported` |
 
-The app ids are defaults and can be overridden in the config. The exact values reported on GNOME 50 are checked in #5.
+The app ids are defaults and can be overridden in the config. The values seen on GNOME 50 are in [spikes/gnome-focus.md](spikes/gnome-focus.md).
 
 **Matching a terminal window to a shell.** The extension reports the focused window's PID, and each hook report carries the shell's `$$` and TTY. The daemon walks the shell's parent processes until it reaches the window PID.
 
@@ -98,7 +98,7 @@ The app ids are defaults and can be overridden in the config. The exact values r
 - A Vim plugin that isn't a child of the terminal (inside tmux) counts when it has said it has focus.
 - An editor's reported mode replaces the guess, and stays known after clicks.
 
-**Open question for #5:** GNOME Terminal and Ptyxis run one server process for all their windows, so several shells can match the same window. Until there's a better signal, the daemon uses the shell that reported most recently.
+**One server for many windows.** GNOME Terminal and Ptyxis run one server process for all their windows, so several shells can match the same window. The daemon uses the shell that reported most recently; editor plugins that report focus settle it for Vim.
 
 ### Mode inference and confidence
 
@@ -216,6 +216,8 @@ When nothing is focused, `app_id` is `null`. The protocol accepts an optional `t
 ```
 In `balanced` mode, one batch may contain several `nudge` messages. `style` is `card` (a card at the top centre of the screen that fades out, the default in `active` mode) or `bar` (a label next to the top-bar icon, the default otherwise); `[coaching] nudge_style` overrides it. It was added after v0 shipped, so it is optional and defaults to `bar`. Either way the icon shows a dot until the menu is opened.
 
+Commands in `text` are marked with backticks, the Markdown way ("Try `` `Ctrl-d` `` then `` `5j` ``"); the extension shows them in a monospace font. `explain` (optional) has one line per piece of those commands, such as "`` `Ctrl-d` ``: down half a page", from the glossary in `crates/core/src/glossary.rs`. The extension shows it in a collapsed "What does it do?" section of the menu; plain notifications drop the markers and append it.
+
 **`mode_changed`**: the coaching mode changed. Broadcast to clients that stay connected, so the indicator stays in sync.
 ```json
 {"v":0,"type":"mode_changed","mode":"active","paused_until":null}
@@ -246,6 +248,12 @@ Keystrokes alone can't show which pane of an editor has focus, what mode it's re
 {"v":0,"type":"motion","start_ms":1729740000000,"end_ms":1729740000900,"moves":12,"mode":"normal","lines":12,"cols":0,"facts":{"paragraph_hops":2,"window_lines":40}}
 ```
 `lines` and `cols` are deltas, never positions; times are Unix epoch milliseconds, so the daemon can count the keys it saw in that window. `facts` describe the end position (see `MotionFacts` in `crates/core/src/editor.rs`), for example "`}` twice lands exactly here" or "`f` plus the target character, then `;` twice". The character itself is never sent. Every editor message rejects unknown fields, so nothing text-like can be added by accident.
+
+**`operator`**: `d`, `c` or `y` ran and its range was exactly these text objects, best match first. Names come from a fixed list (`iw`, `aw`, `iW`, `aW`, `ip`, `ap`, `i(`/`a(`, `i[`/`a[`, `i{`/`a{`, `i<`/`a<`, and the quotes); the text is never sent.
+```json
+{"v":0,"type":"operator","op":"delete","at_ms":1729740000500,"objects":["i(","a("]}
+```
+The daemon adds up the keys behind it: the operator plus the motions just before it that moved the cursor into place. A text object works from anywhere inside, so `F(ldt)` (6 keys) becomes "`di(` does it from anywhere inside, in 3".
 
 These were added after v0 shipped. They are new message types and optional fields only, so the version stays 0.
 

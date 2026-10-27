@@ -18,6 +18,7 @@ Flow Buddy reads your keyboard. That is a lot of trust to ask for, so this docum
 | Terminal foreground command **name** (e.g. `vim`, never its arguments) | Bash hook | Memory only | Replaced on every command |
 | That a click happened (no position, no target) | GNOME Shell extension | Not kept: it only marks the Vim mode as unknown | Immediately |
 | Whether a VS Code editor has focus, vscodevim's mode, and cursor movements as deltas, counts and flags (never text, characters, file names or positions) | VS Code companion (`vscode-extension/`) | Memory only | Replaced on every report |
+| Which text objects (`iw`, `i(`, `ap`…) a delete, change or yank covered, by name only | Vim plugin, VS Code companion | Memory only | Used for one nudge, then dropped |
 
 The key buffer is only filled while a supported context is focused (VS Code with Vim, Vim in a terminal, bash vi-mode). In any other app, keys are dropped as soon as they are read.
 
@@ -65,6 +66,11 @@ The comparison, and what was found on a real machine, is in [spikes/evdev.md](sp
 
 Details of the memory and its export format are in [memory.md](memory.md).
 
-## Future AI features
+## AI coaching (`flowbuddy coach`)
 
-When AI-based suggestions arrive, they will receive the **mistake memory export** (aggregates and abstract shapes), never raw input. Any feature that would send data off the machine will be opt-in, off by default, and documented here first.
+Off until you set `[ai] command` in `config.toml` to a program on this machine, such as `["ollama", "run", "llama3.2:3b"]`. Flow Buddy never talks to a network itself: it runs that program, writes the prompt to its stdin and shows what it writes back.
+
+- **What the model sees:** the mistake memory export only. That means habit descriptions, contexts, learning stages, counts, and abstract shapes such as `j×12`. It never sees keys, typed text, file names, window titles or positions.
+- **Check it first:** `flowbuddy coach --prompt` prints exactly what would be sent, without running anything.
+- **Only when you ask:** nothing runs unprompted, unless you also set `[ai] weekly = true`. Then, once a week, the daemon starts `flowbuddy-weekly.service`, which asks the model to write the weekly progress note from the same export. If the model fails, you get the usual note. The daemon itself still has no network access; that one-shot service has it so it can reach local model servers such as Ollama on localhost.
+- **Your choice of program:** the command is yours to pick. If you point it at a tool that sends data to a server, the prompt goes there, so pick one that runs locally.

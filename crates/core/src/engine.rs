@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::context::ContextKind;
-use crate::motion::MotionEvent;
+use crate::motion::{MotionEvent, OperatorEvent};
 use crate::rule::{Rule, RuleEvent};
 use crate::vim::Step;
 
@@ -96,6 +96,15 @@ impl Engine {
                     !r.needs_editor()
                 }
         })
+    }
+
+    /// An operator reported by an editor plugin.
+    pub fn on_operator(&mut self, context: ContextKind, ev: &OperatorEvent) -> Vec<RuleEvent> {
+        let mut out = Vec::new();
+        for rule in self.active(context) {
+            rule.on_operator(ev, &mut out);
+        }
+        out
     }
 
     /// A movement reported by an editor plugin.

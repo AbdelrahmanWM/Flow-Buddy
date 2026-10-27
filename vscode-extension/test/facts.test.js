@@ -16,14 +16,14 @@ function load() {
     return module.exports;
 }
 
-const {computeFacts, Cursor, wordForward, wordBackward, wordEndForward} = load();
+const {computeFacts, rested, charObjects, lineObjects, Cursor, wordForward, wordBackward, wordEndForward} = load();
 
 // Every field of MotionFacts; the daemon rejects anything else.
 const FIELDS = [
     'paragraph_hops', 'screen', 'window_lines', 'file_start', 'file_end',
     'word_hops', 'word_end_hops', 'bigword_hops', 'find_hops', 'till_hops',
     'line_start', 'first_nonblank', 'line_end', 'bracket_match', 'star_hops',
-    'jump_back',
+    'jump_back', 'search_hops', 'relative_numbers', 'view_scrolled', 'revisits',
 ];
 
 let failed = 0;
@@ -153,6 +153,48 @@ facts('Latin-1 letters are keyword chars', intl, [0, 0], [0, 6], {},
     {word_hops: 1}, ['word_hops']);
 facts('a snowman makes word facts unknown', intl, [0, 6], [0, 14], {},
     {find_hops: 1}, ['word_hops', 'word_end_hops', 'bigword_hops', 'find_hops']);
+
+// Relative line numbers let the daemon suggest counts you can read.
+facts('relative numbers on', words, [0, 0], [0, 4], {relativeNumbers: true},
+    {relative_numbers: true}, ['relative_numbers']);
+facts('relative numbers off', words, [0, 0], [0, 4], {},
+    {}, ['relative_numbers']);
+
+// Revisits: earlier rests on the same line in the last ten minutes.
+{
+    const rests = [];
+    check('first rest', {visits: rested(rests, 40, 1000)}, {visits: 0});
+    rested(rests, 12, 2000);
+    check('back again', {visits: rested(rests, 40, 3000)}, {visits: 1});
+    check('and again', {visits: rested(rests, 40, 4000)}, {visits: 2});
+    check('forgotten after ten minutes', {visits: rested(rests, 40, 604000)}, {visits: 0});
+}
+
+// Text objects, mirroring the Vim plugin's tests.
+const objs = (name, got, want) => check(name, {got}, {got: want});
+objs('word between spaces', charObjects('foo', ' ', ' '), ['iw', 'iW']);
+objs('word after a bracket', charObjects('foo', '(', ','), ['iw']);
+objs('word and its space', charObjects('foo ', '', 'b'), ['aw', 'aW']);
+objs('inside brackets', charObjects('foo, (bar)', '(', ')'), ['i(']);
+objs('around brackets', charObjects('(a, b)', 'f', ';'), ['a(']);
+objs('unbalanced', charObjects('a), (b', '(', ')'), []);
+objs('inside quotes', charObjects('hello there', '"', '"'), ['i"']);
+objs('around quotes', charObjects('"hi"', '=', ';'), ['a"']);
+objs('part of a word', charObjects('oo', 'f', ' '), []);
+objs('a paragraph', lineObjects(['a', 'b'], true, true), ['ip']);
+objs('a paragraph and its blank line', lineObjects(['a', 'b', ''], true, false), ['ap']);
+objs('not from the top of a paragraph', lineObjects(['a', 'b'], false, true), []);
+objs('two paragraphs', lineObjects(['a', '', 'b'], true, true), []);
+
+// A second top-level function with the same name silently replaces the
+// first in JavaScript; catch that here.
+{
+    const dir = GLib.path_get_dirname(GLib.path_get_dirname(System.programPath));
+    const [, src] = GLib.file_get_contents(GLib.build_filenamev([dir, 'facts.js']));
+    const names = [...new TextDecoder().decode(src).matchAll(/^function (\w+)/gm)].map(m => m[1]);
+    const dupes = names.filter((n, i) => names.indexOf(n) !== i);
+    check('no duplicate function names', {dupes}, {dupes: []});
+}
 
 // Nothing at all for a move that goes nowhere.
 facts('no move', words, [0, 3], [0, 3], {}, {});

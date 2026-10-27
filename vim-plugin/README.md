@@ -20,6 +20,8 @@ Over the daemon's Unix socket (`$FLOWBUDDY_SOCKET`, or `$XDG_RUNTIME_DIR/flowbud
 - `editor_focus` on focus gained/lost (needs a terminal with focus events; in tmux, `set -g focus-events on`) and on suspend/resume.
 - `motion` once the cursor rests (1 s, `g:flowbuddy_rest_ms`) after moving in Normal or Visual mode: the line and column deltas, how many moves, and **facts**: numbers and flags such as "`}` twice lands here" or "`f` plus the target character, then `;` once".
 
+- `operator` after `d`, `c` or `y` (from `TextYankPost`, before the text is removed): the names of the text objects its range was exactly, such as `i(` or `aw`.
+
 It never sends text, characters, file names, paths or positions. Facts are worked out inside Vim and only the counts leave it.
 
 ## How facts are worked out

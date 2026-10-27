@@ -53,6 +53,10 @@ The extension reads the active editor's cursor style and your settings, and find
 
 Limits: a charwise selection of exactly whole lines reads as Visual Line, a one-line Visual Block reads as Visual, and on an empty line the previous Visual kind is kept. vscodevim's EasyMotion mode looks like Normal, and "Vim disabled" via its toggle command looks like Insert.
 
+## Text objects
+
+After a delete or change in Normal or Visual mode, the companion works out which text objects (`iw`, `aw`, `i(`, `a"`, `ip`, `ap`…) the removed range was exactly, and sends only their names. VS Code doesn't say what an edit removed, so while you're in Normal or Visual mode it keeps a copy of the active document's lines (documents over 20 000 lines are skipped). The copy stays in the extension and is dropped when you start typing in Insert mode. Yanks don't change the document, so they aren't seen; the Vim plugin sees them.
+
 ## Motions
 
 In Normal, Visual and Visual Line mode, a movement starts at the first cursor move and ends when the cursor has rested for a second, the mode changes or you click. Edits and switching editors drop it without sending anything, and nothing is sent in Insert mode or Visual Block.

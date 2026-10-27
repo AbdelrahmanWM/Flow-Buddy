@@ -63,6 +63,66 @@ pub(crate) mod testing {
     }
 
     #[test]
+    fn every_marked_command_is_explained() {
+        use crate::vim::Flavor;
+        let sessions = [
+            (
+                Flavor::Vim,
+                VimMode::Normal,
+                "jjjjjjj<Esc>kkkkkkkkkkkk<Esc>llllll<Esc>xxxxx<Esc>",
+            ),
+            (
+                Flavor::Vim,
+                VimMode::Normal,
+                "<Down><Down><Down><Esc>ddddddd<Esc>i<BS><BS><BS><BS><BS><BS><Esc>",
+            ),
+            (
+                Flavor::Vim,
+                VimMode::Normal,
+                "i<Left><Left><Left><Left><Esc>:w<CR>:q<CR>",
+            ),
+            (
+                Flavor::Vim,
+                VimMode::Normal,
+                "xihi<Esc>dwihi<Esc>Dahi<Esc>ddOhi<Esc>d$c$hi<Esc>$ahi<Esc>kohi<Esc>",
+            ),
+            (
+                Flavor::Vim,
+                VimMode::Normal,
+                "viwdVjjdveey>>>>>>JJJpppciwfoo<Esc>wciwbar<Esc>",
+            ),
+            (
+                Flavor::Vim,
+                VimMode::Normal,
+                "0cwnew<Esc>j0cwnew<Esc>j0cwnew<Esc>j",
+            ),
+            (
+                Flavor::Readline,
+                VimMode::Insert,
+                "<Up><Up><Up><Up><Up><BS><BS><BS><BS><BS><BS><BS><BS><BS><BS><BS><Left><Left><Left><Left><Left><Left><Left><Left><Left>",
+            ),
+        ];
+        let mut seen = 0;
+        for (flavor, mode, keys) in sessions {
+            for rule in super::all() {
+                for f in findings(&run(rule, flavor, mode, keys)) {
+                    for span in crate::glossary::code_spans(&f.text) {
+                        seen += 1;
+                        let insert = f.mode == VimMode::Insert;
+                        assert!(
+                            !crate::glossary::explain_keys(span, insert).is_empty(),
+                            "{}: `{span}` has no explanation in: {}",
+                            f.rule_id,
+                            f.text
+                        );
+                    }
+                }
+            }
+        }
+        assert!(seen > 30, "only {seen} commands checked");
+    }
+
+    #[test]
     fn rule_ids_are_unique() {
         let mut ids: Vec<_> = super::all().iter().map(|r| r.id()).collect();
         let n = ids.len();

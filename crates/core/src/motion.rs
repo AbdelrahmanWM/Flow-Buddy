@@ -7,10 +7,17 @@
 //! and the motion rules nudge when it would have saved enough keys.
 
 use crate::context::{ContextKind, VimMode};
-use crate::editor::{Motion, MotionFacts, ScreenPos};
+use crate::editor::{Motion, MotionFacts, OperatorReport, ScreenPos};
 use crate::key::Sym;
 use crate::rule::{Finding, Rule, RuleEvent, Shape};
 use crate::vim::{Command, Step};
+
+/// An operator plus the keys the user pressed for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OperatorEvent {
+    pub report: OperatorReport,
+    pub keys_used: u32,
+}
 
 /// A movement plus the keys the user pressed to make it.
 #[derive(Clone, Debug, PartialEq)]
@@ -145,11 +152,21 @@ fn digits(n: u32) -> u32 {
     n.checked_ilog10().map_or(1, |d| d + 1)
 }
 
-/// `key` pressed `n` times, or with a count if that's shorter.
-fn repeated(category: Category, key: &str, key_cost: u32, n: u32) -> Part {
+/// Counts up to this are easy to see at a glance.
+const GLANCE: u32 = 9;
+
+/// Whether a count of lines can be read off the screen rather than
+/// counted: small, or shown by 'relativenumber' for a line in view.
+fn readable_lines(n: u32, f: &MotionFacts) -> bool {
+    n <= GLANCE || (f.relative_numbers && f.window_lines.is_some_and(|w| n < w))
+}
+
+/// `key` pressed `n` times, or with a count if that's shorter and
+/// `readable`: nobody types 193j, because nobody counts 193 lines.
+fn repeated(category: Category, key: &str, key_cost: u32, n: u32, readable: bool) -> Part {
     let plain = key_cost * n;
     let counted = digits(n) + key_cost;
-    if n == 1 || plain <= counted {
+    if n == 1 || plain <= counted || !readable {
         Part {
             category,
             keys: key.repeat(n as usize),
@@ -164,12 +181,14 @@ fn repeated(category: Category, key: &str, key_cost: u32, n: u32) -> Part {
     }
 }
 
-/// `f<char>`, `f<char>;`, or with a count from three on (`3f<char>`).
+/// `f<char>`, `f<char>;`, a readable count (`3f<char>`), or `;` again
+/// and again.
 fn find(category: Category, key: &str, n: u32) -> Part {
     let (keys, cost) = match n {
         1 => (format!("{key}<char>"), 2),
         2 => (format!("{key}<char>;"), 3),
-        _ => (format!("{n}{key}<char>"), digits(n) + 2),
+        _ if n <= GLANCE => (format!("{n}{key}<char>"), digits(n) + 2),
+        _ => (format!("{key}<char> then ;×{}", n - 1), n + 1),
     };
     Part {
         category,
@@ -181,18 +200,15 @@ fn find(category: Category, key: &str, n: u32) -> Part {
 fn vertical(lines: i64, f: &MotionFacts) -> Vec<Part> {
     let n = lines.unsigned_abs().min(u64::from(u32::MAX)) as u32;
     let down = lines > 0;
-    let mut parts = vec![repeated(
-        Category::Count,
-        if down { "j" } else { "k" },
-        1,
-        n,
-    )];
+    let (fwd, back) = if down { ("j", "k") } else { ("k", "j") };
+    let mut parts = vec![repeated(Category::Count, fwd, 1, n, readable_lines(n, f))];
     if let Some(k) = f.paragraph_hops {
         parts.push(repeated(
             Category::Paragraph,
             if down { "}" } else { "{" },
             1,
             k,
+            k <= GLANCE,
         ));
     }
     if let Some(pos) = f.screen {
@@ -207,19 +223,37 @@ fn vertical(lines: i64, f: &MotionFacts) -> Vec<Part> {
             cost: 1,
         });
     }
-    // Ctrl-d and Ctrl-u move by half the window ('scroll').
-    if let Some(half) = f.window_lines.map(|w| w / 2).filter(|h| *h > 0)
-        && n % half == 0
-    {
-        let key = if down { "Ctrl-d" } else { "Ctrl-u" };
+    // Ctrl-d and Ctrl-u move by half the window ('scroll'). Page close,
+    // then finish with a few lines; the target is on screen by then.
+    if let Some(half) = f.window_lines.map(|w| w / 2).filter(|h| *h > 0 && n >= *h) {
+        let page = if down { "Ctrl-d" } else { "Ctrl-u" };
+        let pages = |k: u32| {
+            if k == 1 {
+                page.to_string()
+            } else {
+                format!("{page}×{k}")
+            }
+        };
+        let rest = |key: &str, r: u32| repeated(Category::Count, key, 1, r, readable_lines(r, f));
+        let (k, r) = (n / half, n % half);
+        let mut options = vec![(k, rest(fwd, r))];
+        if r > 0 {
+            // One page too far, then back.
+            options.push((k + 1, rest(back, half - r)));
+        }
+        let (k, finish) = options
+            .into_iter()
+            .min_by_key(|(k, finish)| k + finish.cost)
+            .unwrap();
+        let keys = if finish.cost == 0 {
+            pages(k)
+        } else {
+            format!("{} then {}", pages(k), finish.keys)
+        };
         parts.push(Part {
             category: Category::Page,
-            keys: if n / half == 1 {
-                key.into()
-            } else {
-                format!("{key}×{}", n / half)
-            },
-            cost: n / half,
+            keys,
+            cost: k + finish.cost,
         });
     }
     if f.file_start && !down {
@@ -249,6 +283,7 @@ fn horizontal(lines: i64, cols: i64, f: &MotionFacts) -> Vec<Part> {
             if right { "l" } else { "h" },
             1,
             n,
+            n <= GLANCE,
         ));
     }
     let hop = |parts: &mut Vec<Part>, hops: Option<u32>, fwd: &str, back: &str, cost: u32| {
@@ -258,6 +293,7 @@ fn horizontal(lines: i64, cols: i64, f: &MotionFacts) -> Vec<Part> {
                 if right { fwd } else { back },
                 cost,
                 k,
+                k <= GLANCE,
             ));
         }
     };
@@ -304,6 +340,11 @@ fn cheapest_part(parts: Vec<Part>) -> Option<Part> {
 
 /// The shortest exact plan for `m`, if the facts allow one.
 pub fn cheapest(m: &Motion) -> Option<Plan> {
+    plans(m).into_iter().next()
+}
+
+/// Every practical exact plan for `m`, best first.
+pub fn plans(m: &Motion) -> Vec<Plan> {
     let f = &m.facts;
     let mut plans = Vec::new();
 
@@ -317,7 +358,13 @@ pub fn cheapest(m: &Motion) -> Option<Plan> {
         });
     }
     if let Some(k) = f.star_hops {
-        let p = repeated(Category::Star, if back { "#" } else { "*" }, 1, k);
+        let p = repeated(
+            Category::Star,
+            if back { "#" } else { "*" },
+            1,
+            k,
+            k <= GLANCE,
+        );
         plans.push(Plan {
             category: p.category,
             keys: p.keys,
@@ -325,7 +372,7 @@ pub fn cheapest(m: &Motion) -> Option<Plan> {
         });
     }
     if let Some(k) = f.search_hops {
-        let p = repeated(Category::Search, "n", 1, k);
+        let p = repeated(Category::Search, "n", 1, k, k <= GLANCE);
         plans.push(Plan {
             category: p.category,
             keys: p.keys,
@@ -341,46 +388,54 @@ pub fn cheapest(m: &Motion) -> Option<Plan> {
     }
 
     // A vertical part, then a part within the end line.
-    let v = if m.lines != 0 {
-        cheapest_part(vertical(m.lines, f))
+    let none = || Part {
+        category: Category::Count,
+        keys: String::new(),
+        cost: 0,
+    };
+    let verticals = if m.lines != 0 {
+        vertical(m.lines, f)
     } else {
-        Some(Part {
-            category: Category::Count,
-            keys: String::new(),
-            cost: 0,
-        })
+        vec![none()]
     };
     // Vertical motions keep the column, so no horizontal part is needed
     // when it didn't change.
     let h = if m.cols != 0 {
         cheapest_part(horizontal(m.lines, m.cols, f))
     } else {
-        Some(Part {
-            category: Category::Count,
-            keys: String::new(),
-            cost: 0,
-        })
+        Some(none())
     };
-    if let (Some(v), Some(h)) = (v, h) {
-        // Name the plan after its most specific part.
-        let category = if v.category != Category::Count || m.lines != 0 && h.cost == 0 {
-            v.category
-        } else {
-            h.category
-        };
-        plans.push(Plan {
-            category,
-            keys: v.keys + &h.keys,
-            cost: v.cost + h.cost,
-        });
-    }
-    plans.into_iter().filter(|p| p.cost > 0).reduce(|a, b| {
-        if better(a.cost, a.category, b.cost, b.category) {
-            b
-        } else {
-            a
+    if let Some(h) = h {
+        for v in verticals {
+            // Name the plan after its most specific part.
+            let category = if v.category != Category::Count || m.lines != 0 && h.cost == 0 {
+                v.category
+            } else {
+                h.category
+            };
+            let joiner = if v.keys.contains(' ') && !h.keys.is_empty() {
+                ", then "
+            } else {
+                ""
+            };
+            plans.push(Plan {
+                category,
+                keys: format!("{}{joiner}{}", v.keys, h.keys),
+                cost: v.cost + h.cost,
+            });
         }
-    })
+    }
+    plans.retain(|p| p.cost > 0);
+    plans.sort_by(|a, b| {
+        if better(a.cost, a.category, b.cost, b.category) {
+            std::cmp::Ordering::Greater
+        } else if better(b.cost, b.category, a.cost, a.category) {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    });
+    plans
 }
 
 /// Keys a command took, counting each chord (Ctrl-d) as one.
@@ -408,6 +463,26 @@ pub fn is_motion(c: &Command) -> bool {
 }
 
 const VIM: &[ContextKind] = &[ContextKind::VsCodeVim, ContextKind::TerminalVim];
+
+/// A plan's keys with each command marked: `Ctrl-d`×10 then `7k`.
+fn marked(keys: &str) -> String {
+    keys.split(' ')
+        .map(|word| {
+            if matches!(word, "then" | "") {
+                return word.to_string();
+            }
+            let (word, comma) = match word.strip_suffix(',') {
+                Some(w) => (w, ","),
+                None => (word, ""),
+            };
+            match word.split_once('×') {
+                Some((cmd, times)) => format!("{}×{times}{comma}", crate::glossary::mark(cmd)),
+                None => format!("{}{comma}", crate::glossary::mark(word)),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// One rule per [`Category`]: nudges when the cheapest plan is of its kind
 /// and saves at least `min_saving` keys.
@@ -460,9 +535,14 @@ impl Rule for MotionRule {
         if ev.keys_used == 0 {
             return;
         }
-        let Some(plan) = cheapest(&ev.motion) else {
+        let all = plans(&ev.motion);
+        let Some(plan) = all.first() else {
             return;
         };
+        // A second way of a different kind, if it's also worth it.
+        let alt = all
+            .iter()
+            .find(|p| p.category != plan.category && ev.keys_used >= p.cost + self.min_saving);
         if plan.category != self.category {
             return;
         }
@@ -472,10 +552,20 @@ impl Rule for MotionRule {
             out.push(RuleEvent::Finding(Finding {
                 rule_id: self.category.id(),
                 title: self.category.title(),
-                text: format!(
-                    "That took {used} keys. {} gets there in {}.",
-                    plan.keys, plan.cost
-                ),
+                text: match alt {
+                    Some(alt) => format!(
+                        "That took {used} keys. {} gets there in {}, or {} in {}.",
+                        marked(&plan.keys),
+                        plan.cost,
+                        marked(&alt.keys),
+                        alt.cost
+                    ),
+                    None => format!(
+                        "That took {used} keys. {} gets there in {}.",
+                        marked(&plan.keys),
+                        plan.cost
+                    ),
+                },
                 shape: Shape::repeat(self.category.shape_token(), used),
                 mode: ev.motion.mode.vim_mode().unwrap_or(VimMode::Normal),
                 at_ms,
@@ -492,11 +582,239 @@ impl Rule for MotionRule {
     fn reset(&mut self) {}
 }
 
+/// Moving the cursor away and back just to scroll the view.
+#[derive(Default)]
+pub struct ScrollRule {
+    /// The previous movement: (lines, scrolled, keys, end).
+    last: Option<(i64, i64, u32, u64)>,
+}
+
+impl ScrollRule {
+    const ID: &'static str = "motion.scroll";
+    /// Two movements this close together are one gesture.
+    const GESTURE_MS: u64 = 5000;
+}
+
+impl Rule for ScrollRule {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Moving the cursor away and back just to scroll the view"
+    }
+
+    fn title(&self) -> &'static str {
+        "Scroll without moving"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn needs_editor(&self) -> bool {
+        true
+    }
+
+    fn on_step(&mut self, _step: &Step, _out: &mut Vec<RuleEvent>) {}
+
+    fn on_motion(&mut self, ev: &MotionEvent, out: &mut Vec<RuleEvent>) {
+        let m = &ev.motion;
+        let scrolled = m.facts.view_scrolled.unwrap_or(0);
+        let last = self
+            .last
+            .replace((m.lines, scrolled, ev.keys_used, m.end_ms));
+        let Some((lines, prev_scrolled, prev_keys, end)) = last else {
+            return;
+        };
+        let view = prev_scrolled + scrolled;
+        let there_and_back = lines.signum() == -m.lines.signum() && (lines + m.lines).abs() <= 3;
+        let used = prev_keys + ev.keys_used;
+        if m.start_ms.saturating_sub(end) > Self::GESTURE_MS
+            || !there_and_back
+            || view.abs() < 3
+            || used < 6
+        {
+            return;
+        }
+        self.last = None;
+        let v = view.unsigned_abs();
+        let key = if view > 0 { "Ctrl-e" } else { "Ctrl-y" };
+        out.push(RuleEvent::Finding(Finding {
+            rule_id: Self::ID,
+            title: "Scroll without moving",
+            text: format!(
+                "That took {used} keys to scroll {v} lines and come back. `{key}` scrolls a line without moving the cursor; `zt`, `zz` and `zb` put this line at the top, middle or bottom."
+            ),
+            shape: Shape::repeat("keys to scroll", used),
+            mode: m.mode.vim_mode().unwrap_or(VimMode::Normal),
+            at_ms: m.end_ms,
+        }));
+    }
+
+    fn reset(&mut self) {
+        self.last = None;
+    }
+}
+
+/// Walking back to the same line again and again where a mark jumps.
+#[derive(Default)]
+pub struct MarkRule;
+
+impl MarkRule {
+    const ID: &'static str = "motion.mark";
+    /// This many earlier visits make it a habit worth a mark.
+    const VISITS: u32 = 2;
+}
+
+impl Rule for MarkRule {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Moving back to the same line again and again without a mark"
+    }
+
+    fn title(&self) -> &'static str {
+        "Set a mark"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn needs_editor(&self) -> bool {
+        true
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        // Jumping to a mark: ' or ` and a letter.
+        if crate::rules::vim::command(step)
+            .is_some_and(|c| c.keys.len() == 2 && c.head().is_some_and(|h| h == '\'' || h == '`'))
+        {
+            out.push(RuleEvent::Adoption {
+                rule_id: Self::ID,
+                at_ms: step.at_ms,
+            });
+        }
+    }
+
+    fn on_motion(&mut self, ev: &MotionEvent, out: &mut Vec<RuleEvent>) {
+        let m = &ev.motion;
+        let Some(visits) = m.facts.revisits.filter(|v| *v >= Self::VISITS) else {
+            return;
+        };
+        // A jump that's already short (a mark, '', Ctrl-o) is fine.
+        if ev.keys_used < 5 || m.lines.unsigned_abs() < 5 {
+            return;
+        }
+        let used = ev.keys_used;
+        out.push(RuleEvent::Finding(Finding {
+            rule_id: Self::ID,
+            title: "Set a mark",
+            text: format!(
+                "Back to this line for the {} time, {used} keys this trip. Mark it with `ma` once, then `'a` jumps here in 2 (`` `a `` for the exact spot).",
+                ordinal(visits + 1)
+            ),
+            shape: Shape::repeat("keys back to a line", used),
+            mode: m.mode.vim_mode().unwrap_or(VimMode::Normal),
+            at_ms: m.end_ms,
+        }));
+    }
+
+    fn reset(&mut self) {}
+}
+
+fn ordinal(n: u32) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
+/// Positioning and then operating where a text object does both.
+#[derive(Default)]
+pub struct TextObjectRule;
+
+impl TextObjectRule {
+    const ID: &'static str = "motion.text-object";
+    const MIN_SAVING: u32 = 2;
+}
+
+impl Rule for TextObjectRule {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Moving into place and then operating where a text object (iw, i(, ip) does it from anywhere inside"
+    }
+
+    fn title(&self) -> &'static str {
+        "Use a text object"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn needs_editor(&self) -> bool {
+        true
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        // An operator with a text object: d, c or y, then i or a and one key.
+        if crate::rules::vim::command(step).is_some_and(|c| {
+            c.keys.len() == 3
+                && c.head().is_some_and(|h| matches!(h, 'd' | 'c' | 'y'))
+                && c.keys[1].plain_char().is_some_and(|k| k == 'i' || k == 'a')
+        }) {
+            out.push(RuleEvent::Adoption {
+                rule_id: Self::ID,
+                at_ms: step.at_ms,
+            });
+        }
+    }
+
+    fn on_operator(&mut self, ev: &OperatorEvent, out: &mut Vec<RuleEvent>) {
+        let Some(object) = ev.report.objects.first() else {
+            return;
+        };
+        let cost = 1 + object.keys().len() as u32;
+        let used = ev.keys_used;
+        if used < cost + Self::MIN_SAVING {
+            return;
+        }
+        let better = crate::glossary::mark(&format!("{}{}", ev.report.op.key(), object.keys()));
+        out.push(RuleEvent::Finding(Finding {
+            rule_id: Self::ID,
+            title: "Use a text object",
+            text: format!(
+                "That took {used} keys. {better} does it from anywhere inside, in {cost}."
+            ),
+            shape: Shape::repeat("keys for a text object", used),
+            mode: VimMode::Normal,
+            at_ms: ev.report.at_ms,
+        }));
+    }
+
+    fn reset(&mut self) {}
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
-    Category::ALL
+    let mut rules: Vec<Box<dyn Rule>> = Category::ALL
         .into_iter()
         .map(|c| Box::new(MotionRule::new(c)) as Box<dyn Rule>)
-        .collect()
+        .collect();
+    rules.push(Box::new(ScrollRule::default()));
+    rules.push(Box::new(MarkRule));
+    rules.push(Box::new(TextObjectRule));
+    rules
 }
 
 #[cfg(test)]
@@ -524,13 +842,43 @@ mod tests {
     #[test]
     fn counts_for_plain_vertical_moves() {
         assert_eq!(
-            plan(12, 0, MotionFacts::default()),
-            (Category::Count, "12j".into(), 3)
+            plan(7, 0, MotionFacts::default()),
+            (Category::Count, "7j".into(), 2)
         );
         assert_eq!(
             plan(-2, 0, MotionFacts::default()),
             (Category::Count, "kk".into(), 2)
         );
+    }
+
+    #[test]
+    fn counts_only_when_they_can_be_read() {
+        // Nobody counts 12 lines by eye...
+        let p = plan(12, 0, MotionFacts::default());
+        assert_eq!((p.0, p.2), (Category::Count, 12));
+        // ...but 'relativenumber' shows it when the line is on screen.
+        let f = MotionFacts {
+            relative_numbers: true,
+            window_lines: Some(40),
+            ..Default::default()
+        };
+        assert_eq!(plan(12, 0, f.clone()), (Category::Count, "12j".into(), 3));
+        // Off screen it can't be read either.
+        assert_ne!(plan(45, 0, f).1, "45j");
+    }
+
+    #[test]
+    fn long_moves_page() {
+        let f = MotionFacts {
+            window_lines: Some(40),
+            ..Default::default()
+        };
+        // 193 = 10 half pages less 7 lines.
+        assert_eq!(
+            plan(193, 0, f.clone()),
+            (Category::Page, "Ctrl-d×10 then 7k".into(), 12)
+        );
+        assert_eq!(plan(-60, 0, f), (Category::Page, "Ctrl-u×3".into(), 3));
     }
 
     #[test]
@@ -584,7 +932,9 @@ mod tests {
         // 3f<char> (3 keys) beats f<char>;; (4).
         assert_eq!(find(Category::Find, "f", 3).keys, "3f<char>");
         assert_eq!(find(Category::Find, "f", 3).cost, 3);
-        assert_eq!(find(Category::Find, "f", 12).cost, 4);
+        // Nobody counts 12 commas: f then ; until there.
+        assert_eq!(find(Category::Find, "f", 12).keys, "f<char> then ;×11");
+        assert_eq!(find(Category::Find, "f", 12).cost, 13);
     }
 
     #[test]
@@ -614,6 +964,52 @@ mod tests {
     }
 
     #[test]
+    fn every_plan_is_explained() {
+        let facts = MotionFacts {
+            paragraph_hops: Some(3),
+            screen: Some(ScreenPos::Top),
+            window_lines: Some(40),
+            file_start: true,
+            word_hops: Some(12),
+            word_end_hops: Some(2),
+            bigword_hops: Some(1),
+            find_hops: Some(12),
+            till_hops: Some(2),
+            line_start: true,
+            first_nonblank: true,
+            line_end: true,
+            bracket_match: true,
+            star_hops: Some(2),
+            jump_back: true,
+            search_hops: Some(3),
+            ..Default::default()
+        };
+        let mut checked = 0;
+        for (lines, cols) in [
+            (193, 0),
+            (-193, 0),
+            (-30, 0),
+            (5, 3),
+            (0, 14),
+            (0, -14),
+            (-2, -5),
+        ] {
+            for p in plans(&motion(lines, cols, facts.clone())) {
+                for span in crate::glossary::code_spans(&marked(&p.keys)) {
+                    checked += 1;
+                    assert!(
+                        !crate::glossary::explain_keys(span, false).is_empty(),
+                        "`{span}` from {:?} has no explanation",
+                        p.keys
+                    );
+                }
+            }
+        }
+        assert!(checked > 40, "{checked}");
+        assert_eq!(marked("Ctrl-d×10 then 7k"), "`Ctrl-d`×10 then `7k`");
+    }
+
+    #[test]
     fn half_pages_and_search() {
         let f = MotionFacts {
             window_lines: Some(40),
@@ -627,8 +1023,8 @@ mod tests {
             plan(-20, 0, f.clone()),
             (Category::Page, "Ctrl-u".into(), 1)
         );
-        // Not a multiple of half a page: a count.
-        assert_eq!(plan(25, 0, f).1, "25j");
+        // Not a multiple of half a page: page, then finish.
+        assert_eq!(plan(25, 0, f).1, "Ctrl-d then 5j");
         let f = MotionFacts {
             search_hops: Some(2),
             ..Default::default()
@@ -660,7 +1056,10 @@ mod tests {
             panic!("{out:?}")
         };
         assert_eq!(finding.rule_id, "motion.paragraph");
-        assert_eq!(finding.text, "That took 7 keys. } gets there in 1.");
+        assert_eq!(
+            crate::glossary::plain(&finding.text),
+            "That took 7 keys. } gets there in 1, or 7j in 2."
+        );
         assert_eq!(finding.shape.to_string(), "keys for }×7");
         // Saving only 2 keys isn't worth a nudge.
         assert!(run(3, 3, 0, f).is_empty());
@@ -681,6 +1080,102 @@ mod tests {
         );
         // A single j is just a single j.
         assert!(run(1, 1, 0, MotionFacts::default()).is_empty());
+    }
+
+    fn ev(keys_used: u32, lines: i64, start_ms: u64, facts: MotionFacts) -> MotionEvent {
+        MotionEvent {
+            motion: Motion {
+                start_ms,
+                end_ms: start_ms + 800,
+                moves: 1,
+                mode: EditorMode::Normal,
+                lines,
+                cols: 0,
+                facts,
+            },
+            keys_used,
+        }
+    }
+
+    #[test]
+    fn text_objects_instead_of_positioning() {
+        use crate::editor::{Operator, TextObject};
+        let ev = |keys_used, objects: Vec<TextObject>| OperatorEvent {
+            report: OperatorReport {
+                op: Operator::Delete,
+                at_ms: 9,
+                objects,
+            },
+            keys_used,
+        };
+        let mut out = Vec::new();
+        TextObjectRule.on_operator(
+            &ev(6, vec![TextObject::InnerParen, TextObject::AParen]),
+            &mut out,
+        );
+        let RuleEvent::Finding(f) = &out[0] else {
+            panic!("{out:?}")
+        };
+        assert_eq!(
+            crate::glossary::plain(&f.text),
+            "That took 6 keys. di( does it from anywhere inside, in 3."
+        );
+        // Already short, or no text object matched.
+        let mut out = Vec::new();
+        TextObjectRule.on_operator(&ev(3, vec![TextObject::InnerParen]), &mut out);
+        TextObjectRule.on_operator(&ev(9, vec![]), &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn scrolling_by_moving_away_and_back() {
+        let mut r = ScrollRule::default();
+        let mut out = Vec::new();
+        let scrolled = |v| MotionFacts {
+            view_scrolled: Some(v),
+            ..Default::default()
+        };
+        r.on_motion(&ev(20, 20, 0, scrolled(12)), &mut out);
+        r.on_motion(&ev(19, -19, 1500, scrolled(0)), &mut out);
+        let RuleEvent::Finding(f) = &out[0] else {
+            panic!("{out:?}")
+        };
+        assert_eq!(
+            crate::glossary::plain(&f.text),
+            "That took 39 keys to scroll 12 lines and come back. Ctrl-e scrolls a line without moving the cursor; zt, zz and zb put this line at the top, middle or bottom."
+        );
+        // Going somewhere else isn't scrolling.
+        let mut out = Vec::new();
+        let mut r = ScrollRule::default();
+        r.on_motion(&ev(20, 20, 0, scrolled(12)), &mut out);
+        r.on_motion(&ev(5, 5, 1500, scrolled(5)), &mut out);
+        assert!(out.is_empty());
+        // Nor is coming back much later.
+        r.on_motion(&ev(25, -25, 60_000, scrolled(-5)), &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn marks_for_lines_you_keep_coming_back_to() {
+        let mut out = Vec::new();
+        let revisits = |n| MotionFacts {
+            revisits: Some(n),
+            ..Default::default()
+        };
+        MarkRule.on_motion(&ev(14, -14, 0, revisits(1)), &mut out);
+        assert!(out.is_empty(), "the second visit isn't a habit yet");
+        MarkRule.on_motion(&ev(14, -14, 0, revisits(2)), &mut out);
+        let RuleEvent::Finding(f) = &out[0] else {
+            panic!("{out:?}")
+        };
+        assert_eq!(
+            crate::glossary::plain(&f.text),
+            "Back to this line for the 3rd time, 14 keys this trip. Mark it with ma once, then 'a jumps here in 2 (`a for the exact spot)."
+        );
+        // A short trip is fine.
+        let mut out = Vec::new();
+        MarkRule.on_motion(&ev(2, -30, 0, revisits(4)), &mut out);
+        assert!(out.is_empty());
     }
 
     #[test]

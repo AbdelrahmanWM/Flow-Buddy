@@ -13,6 +13,8 @@ import Clutter from 'gi://Clutter';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
+import {toMarkup} from './markup.js';
+
 const MODES = [
     ['off', 'Off'],
     ['passive', 'Passive: summaries only'],
@@ -56,6 +58,11 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._tip.label.clutter_text.line_wrap = true;
         this.menu.addMenuItem(this._tip);
 
+        // What the tip's commands do: collapsed until you want it.
+        this._explain = new PopupMenu.PopupSubMenuMenuItem('What does it do?');
+        this._explain.visible = false;
+        this.menu.addMenuItem(this._explain);
+
         this._gotIt = this._action('Got it', 'dismiss');
         this._mute = this._action('Stop this tip', 'mute_rule');
         this._notHelpful = this._action('Not helpful', 'false_positive');
@@ -81,6 +88,18 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this.menu.addMenuItem(this._pause);
 
         this.setConnected(false);
+    }
+
+    _setExplanation(lines) {
+        this._explain.menu.removeAll();
+        this._explain.setSubmenuShown(false);
+        for (const line of lines) {
+            const item = new PopupMenu.PopupMenuItem('', {reactive: false});
+            item.label.clutter_text.line_wrap = true;
+            item.label.clutter_text.set_markup(toMarkup(line));
+            this._explain.menu.addMenuItem(item);
+        }
+        this._explain.visible = lines.length > 0;
     }
 
     _action(label, action) {
@@ -132,7 +151,8 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         if (this._nudge)
             this._link.send({type: 'nudge_response', nudge_id: this._nudge.nudge_id, action: 'seen'});
         this._nudge = nudge;
-        this._tip.label.text = nudge.text;
+        this._tip.label.clutter_text.set_markup(toMarkup(nudge.text));
+        this._setExplanation(nudge.explain ?? []);
         this._setNudgeActions(true);
         this._dot.visible = !this.menu.isOpen;
         if (!inBar)
@@ -159,6 +179,7 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._dot.visible = false;
         this._setNudgeActions(false);
         this._tip.label.text = 'No tips right now';
+        this._setExplanation([]);
     }
 
     destroy() {

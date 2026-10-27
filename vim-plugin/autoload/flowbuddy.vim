@@ -15,7 +15,11 @@ let s:reconnect_timer = -1
 let s:epoch_base_ms = 0
 let s:started = []
 let s:last = []
+let s:last_top = 0
 let s:seg = {}
+" Lines the cursor rested on lately, as [line, ms], for revisits. Never sent.
+let s:rests = []
+let s:REST_HISTORY_MS = 600000
 let s:rest_timer = -1
 let s:simulating = 0
 
@@ -112,6 +116,7 @@ function! flowbuddy#start() abort
     let s:epoch_base_ms = str2nr(trim(system('date +%s%3N')))
   endif
   let s:last = getpos('.')[1:2]
+  let s:last_top = line('w0')
   call s:open()
   let s:reconnect_timer = timer_start(s:RECONNECT_MS, function('s:retry'), {'repeat': -1})
 endfunction
@@ -179,15 +184,17 @@ function! flowbuddy#on_cursor() abort
   let pos = getpos('.')[1:2]
   if !s:moving_mode(mode(1)) || empty(s:last)
     let s:last = pos
+    let s:last_top = line('w0')
     return
   endif
   if empty(s:seg)
     let s:seg = {'start': s:last, 'start_ms': s:now_ms(), 'moves': 0,
-          \ 'mode': s:mode_name(mode(1)), 'jump': getpos("''")[1:2]}
+          \ 'mode': s:mode_name(mode(1)), 'jump': getpos("''")[1:2], 'top': s:last_top}
   endif
   let s:seg.moves += 1
   let s:seg.end_ms = s:now_ms()
   let s:last = pos
+  let s:last_top = line('w0')
   call timer_stop(s:rest_timer)
   let s:rest_timer = timer_start(get(g:, 'flowbuddy_rest_ms', 1000), function('s:rested'))
 endfunction
@@ -216,9 +223,130 @@ function! s:finish() abort
   endif
   " Facts run motions, which would change a Visual selection.
   let facts = mode(1) ==# 'n' ? flowbuddy#facts(seg.start, end, seg.jump) : {}
+  let facts.view_scrolled = line('w0') - seg.top
+  let visits = flowbuddy#rested(end[0], s:now_ms())
+  if visits
+    let facts.revisits = visits
+  endif
   call s:send({'type': 'motion', 'start_ms': seg.start_ms, 'end_ms': seg.end_ms,
         \ 'moves': seg.moves, 'mode': seg.mode, 'lines': end[0] - seg.start[0],
         \ 'cols': end[1] - seg.start[1], 'facts': facts})
+endfunction
+
+" Count earlier rests on `line` in the last few minutes, then remember this
+" one. Lines shift with edits; that's fine for spotting a habit.
+function! flowbuddy#rested(line, now) abort
+  call filter(s:rests, {_, r -> a:now - r[1] < s:REST_HISTORY_MS})
+  let visits = len(filter(copy(s:rests), {_, r -> r[0] == a:line}))
+  call add(s:rests, [a:line, a:now])
+  if len(s:rests) > 100
+    call remove(s:rests, 0)
+  endif
+  return visits
+endfunction
+
+" Operators -----------------------------------------------------------------
+
+let s:OPERATORS = {'d': 'delete', 'c': 'change', 'y': 'yank'}
+let s:PAIRS = [['(', ')'], ['[', ']'], ['{', '}'], ['<', '>']]
+let s:QUOTES = ['"', "'", '`']
+
+" d, c or y just ran (TextYankPost, before the text is removed): report
+" which text objects its range was exactly. The text stays here.
+function! flowbuddy#on_operator(event) abort
+  let op = get(s:OPERATORS, a:event.operator, '')
+  if empty(op) || !s:connected() || index(['v', 'V'], a:event.regtype) < 0
+    return
+  endif
+  let [l1, c1] = getpos("'[")[1:2]
+  let [l2, c2] = getpos("']")[1:2]
+  if a:event.regtype ==# 'V'
+    let objects = flowbuddy#line_objects(a:event.regcontents,
+          \ l1 == 1 || getline(l1 - 1) !~# '\S', l2 == line('$') || getline(l2 + 1) !~# '\S')
+  else
+    let before = matchstr(strpart(getline(l1), 0, c1 - 1), '.$')
+    " '] is where the last character starts; the one after follows it.
+    let last = matchstr(getline(l2), '\%' . c2 . 'c.')
+    let after = matchstr(strpart(getline(l2), c2 - 1 + strlen(last)), '^.')
+    let objects = flowbuddy#char_objects(join(a:event.regcontents, "\n"), before, after)
+  endif
+  if !empty(objects)
+    call s:send({'type': 'operator', 'op': op, 'at_ms': s:now_ms(), 'objects': objects})
+  endif
+endfunction
+
+function! s:edge_or_space(c) abort
+  return a:c ==# '' || a:c =~# '\s'
+endfunction
+
+function! s:balanced(text, open, close) abort
+  let depth = 0
+  for ch in split(a:text, '\zs')
+    let depth += ch ==# a:open ? 1 : ch ==# a:close ? -1 : 0
+    if depth < 0
+      return 0
+    endif
+  endfor
+  return depth == 0
+endfunction
+
+" Text objects a charwise range `text` is exactly, given the characters just
+" before and after it ('' at a line's edge). Best match first.
+function! flowbuddy#char_objects(text, before, after) abort
+  let found = []
+  if empty(a:text)
+    return found
+  endif
+  if a:text =~# '^\k\+$' && a:before !~# '\k' && a:after !~# '\k'
+    call add(found, 'iw')
+  endif
+  if a:text =~# '^\k\+\s\+$' && a:before !~# '\k' && a:after !~# '\s'
+    call add(found, 'aw')
+  endif
+  if a:text =~# '^\S\+$' && s:edge_or_space(a:before) && s:edge_or_space(a:after)
+    call add(found, 'iW')
+  endif
+  if a:text =~# '^\S\+\s\+$' && s:edge_or_space(a:before) && a:after !~# '\s'
+    call add(found, 'aW')
+  endif
+  for [open, close] in s:PAIRS
+    if a:before ==# open && a:after ==# close && s:balanced(a:text, open, close)
+      call add(found, 'i' . open)
+    endif
+    if a:text[0] ==# open && a:text[-1:] ==# close && strlen(a:text) >= 2
+          \ && s:balanced(a:text[1 : -2], open, close)
+      call add(found, 'a' . open)
+    endif
+  endfor
+  if a:text !~# "\n"
+    for q in s:QUOTES
+      if a:before ==# q && a:after ==# q && stridx(a:text, q) < 0
+        call add(found, 'i' . q)
+      endif
+      if strlen(a:text) >= 2 && a:text[0] ==# q && a:text[-1:] ==# q && stridx(a:text[1 : -2], q) < 0
+        call add(found, 'a' . q)
+      endif
+    endfor
+  endif
+  return found
+endfunction
+
+" Text objects whole lines `lines` are, given whether the lines around
+" them are blank (or missing).
+function! flowbuddy#line_objects(lines, blank_before, blank_after) abort
+  let filled = len(filter(copy(a:lines), {_, l -> l =~# '\S'}))
+  if !a:blank_before || filled == 0
+    return []
+  endif
+  if filled == len(a:lines) && a:blank_after
+    return ['ip']
+  endif
+  " A paragraph, then the blank lines after it.
+  let text_end = match(a:lines, '^\s*$')
+  if text_end > 0 && filled == text_end && !a:blank_after
+    return ['ap']
+  endif
+  return []
 endfunction
 
 " Facts ---------------------------------------------------------------------
@@ -402,5 +530,6 @@ function! s:facts(start, end, jump) abort
     endfor
   endif
   let f.jump_back = a:jump == a:end && a:jump != [0, 0] ? v:true : v:false
+  let f.relative_numbers = &relativenumber ? v:true : v:false
   return f
 endfunction

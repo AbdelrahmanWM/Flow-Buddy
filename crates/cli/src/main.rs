@@ -1,4 +1,5 @@
 mod client;
+mod coach;
 mod report;
 
 use clap::{Parser, Subcommand};
@@ -36,6 +37,25 @@ enum Cmd {
     ReportFp,
     /// The one habit worth working on now.
     Next,
+    /// Ask a local model about your habits (set `[ai] command` first).
+    Coach {
+        /// A question, e.g. "how do I move faster in big files?"
+        question: Vec<String>,
+        /// Print exactly what the model would be sent, and stop.
+        #[arg(long)]
+        prompt: bool,
+        /// Send this week's progress note, written by the model if
+        /// `[ai] weekly` is on (run by flowbuddy-weekly.service).
+        #[arg(long, hide = true)]
+        weekly_note: bool,
+    },
+    /// What Vim keys do, piece by piece: `flowbuddy explain 'ci"'`.
+    Explain {
+        keys: String,
+        /// Insert-mode meanings (Ctrl-w, Ctrl-u, Ctrl-o).
+        #[arg(long)]
+        insert: bool,
+    },
     /// How you did today (or this week) compared with before.
     Summary {
         /// The last 7 days instead of today.
@@ -126,6 +146,16 @@ fn main() {
         Cmd::Mode { mode } => set_mode(mode),
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),
+        Cmd::Coach {
+            weekly_note: true, ..
+        } => weekly_note(),
+        Cmd::Coach {
+            question, prompt, ..
+        } => coach(&question.join(" "), prompt),
+        Cmd::Explain { keys, insert } => {
+            explain(&keys, insert);
+            Ok(())
+        }
         Cmd::Memory { action } => memory(action.unwrap_or(MemoryCmd::Show)),
         Cmd::Pause { duration } => pause(&duration),
         Cmd::Resume => simple(Command::Resume, "resumed"),
@@ -244,6 +274,103 @@ fn summary(week: bool) -> anyhow::Result<()> {
     };
     print!("{}", report::summary(&store, now_ms(), period)?);
     Ok(())
+}
+
+fn coach(question: &str, show_prompt: bool) -> anyhow::Result<()> {
+    let store = match open_db()? {
+        Some(s) => s,
+        None => flowbuddy_store::Store::open_in_memory()?,
+    };
+    let now = now_ms();
+    let week = flowbuddy_store::days::range(now, 7, 0);
+    let describe = |id: &str| Some(report::describe(id));
+    let export = flowbuddy_store::Export::build(&store, &describe, (&week.0, &week.1), now / 1000)?;
+    let prompt = coach::prompt(&export, Some(question).filter(|q| !q.trim().is_empty()));
+    if show_prompt {
+        print!("{prompt}");
+        return Ok(());
+    }
+    let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
+        .map_err(anyhow::Error::msg)?;
+    let Some(command) = config.ai.command.filter(|c| !c.is_empty()) else {
+        print!("{}", coach::SETUP);
+        return Ok(());
+    };
+    coach::run(
+        &command,
+        &prompt,
+        config.ai.timeout_seconds,
+        &mut std::io::stdout(),
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!();
+    Ok(())
+}
+
+/// The weekly progress note, by the model when `[ai] weekly` is on, with
+/// the fixed note as the fallback. Sent as a desktop notification.
+fn weekly_note() -> anyhow::Result<()> {
+    let Some(store) = open_db()? else {
+        return Ok(());
+    };
+    let now = now_ms();
+    let describe = |id: &str| report::describe(id).to_lowercase();
+    let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
+        .unwrap_or_default();
+    let state = flowbuddy_core::config::State::load(&flowbuddy_core::paths::state_file());
+    let mut skip = state.muted();
+    skip.extend(flowbuddy_core::config::rule_settings(&config, &state).disabled);
+    let focus = report::focus(&store, now, &skip)?;
+    let Some(fixed) = flowbuddy_store::week_summary(&store, now, &describe, focus.as_deref())
+    else {
+        return Ok(());
+    };
+    let mut text = fixed.clone();
+    if let (true, Some(command)) = (config.ai.weekly, config.ai.command.as_ref()) {
+        let week = flowbuddy_store::days::range(now, 7, 0);
+        let full = |id: &str| Some(report::describe(id));
+        let export = flowbuddy_store::Export::build(&store, &full, (&week.0, &week.1), now / 1000)?;
+        let mut answer = Vec::new();
+        match coach::run(
+            command,
+            &coach::weekly_prompt(&export, &fixed),
+            config.ai.timeout_seconds,
+            &mut answer,
+        ) {
+            Ok(()) => {
+                if let Some(t) = coach::notification_text(&String::from_utf8_lossy(&answer)) {
+                    text = t;
+                }
+            }
+            Err(e) => {
+                eprintln!("flowbuddy: the model didn't write the note ({e}); sending the usual one")
+            }
+        }
+    }
+    std::process::Command::new("notify-send")
+        .args([
+            "--app-name=Flow Buddy",
+            "--expire-time=20000",
+            "Flow Buddy: your week",
+        ])
+        .arg(flowbuddy_core::glossary::plain(&text))
+        .status()?;
+    Ok(())
+}
+
+fn explain(keys: &str, insert: bool) {
+    let pieces = flowbuddy_core::glossary::explain_keys(keys, insert);
+    if pieces.is_empty() {
+        println!("Not sure what {keys} does.");
+    }
+    let width = pieces
+        .iter()
+        .map(|(p, _)| p.chars().count())
+        .max()
+        .unwrap_or(0);
+    for (piece, meaning) in pieces {
+        println!("{piece:<width$}  {meaning}");
+    }
 }
 
 fn next() -> anyhow::Result<()> {

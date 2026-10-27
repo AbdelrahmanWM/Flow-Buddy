@@ -206,6 +206,8 @@ fn whole(word: &str, insert: bool) -> Option<&'static str> {
         ":w" => "save",
         ":q" => "quit",
         "ZZ" => "save and quit",
+        "ZQ" => "quit without saving",
+        ":q!" => "quit without saving",
         "/" => "search forward for what you type, then Enter",
         "''" => "back to the line you jumped from",
         "@@" => "replay the macro you played last",
@@ -307,6 +309,7 @@ fn single(c: char) -> Option<&'static str> {
         'J' => "join the next line onto this one",
         'u' => "undo",
         'U' => "undo every change on the last changed line",
+        '&' => "repeat the last :s on this line",
         '.' => "repeat the last change",
         '~' => "switch the case of the character",
         'R' => "type over the existing text (Replace mode)",
@@ -364,6 +367,7 @@ fn parse(word: &str, out: &mut Vec<(String, &'static str)>) {
                 ('g', 'i') => Some("start typing where you last stopped typing"),
                 ('g', 'I') => Some("start typing at the very start of the line"),
                 ('g', '~') => Some("switch case over a motion"),
+                ('g', '&') => Some("repeat the last :s on every line"),
                 ('"', _) => {
                     Some("use that register for the next command (\"0 holds the last yank)")
                 }

@@ -275,6 +275,17 @@ impl Rule for Shorthand {
         if step.event.is_none() {
             return;
         }
+        if matches!(&step.event, Some(VimEvent::Cmdline { kind: ':', text: Some(t) }) if t.trim() == "q!")
+        {
+            out.push(finding(
+                Self::ID,
+                "One key does it",
+                "`:q!` is `ZQ`: quit without saving.".into(),
+                Shape::fixed(":q!"),
+                step,
+            ));
+            return;
+        }
         if let Some(at) = self.appended.take()
             && insert_key(step) == Some(InsertKey::Enter)
             && step.at_ms.saturating_sub(at) <= GESTURE_MS
@@ -309,7 +320,10 @@ impl Rule for Shorthand {
             ));
             return;
         }
-        if ["D", "C", "A", "I", "o", "O", "gI"].iter().any(|s| c.is(s)) {
+        if ["D", "C", "A", "I", "o", "O", "gI", "ZQ"]
+            .iter()
+            .any(|s| c.is(s))
+        {
             out.push(adoption(Self::ID, step));
         }
         if c.is("A") {
@@ -1348,6 +1362,229 @@ impl Rule for InsertKeys {
     }
 }
 
+/// The same operator and motion again and again: `dw dw dw` → `3dw`.
+#[derive(Default)]
+pub struct OperatorRun {
+    /// The operator and motion, how many in a row, and when the last was.
+    run: Option<(char, &'static str, u32, u64)>,
+}
+
+impl OperatorRun {
+    const ID: &'static str = "vim.operator-run";
+    const TIMES: u32 = 3;
+    /// Longer than a key streak: each one is a small decision.
+    const GAP_MS: u64 = 3000;
+
+    fn flush(&mut self, out: &mut Vec<RuleEvent>) {
+        let Some((op, motion, n, at_ms)) = self.run.take() else {
+            return;
+        };
+        if n < Self::TIMES {
+            return;
+        }
+        let once = glossary::mark(&format!("{op}{motion}"));
+        let counted = glossary::mark(&format!("{n}{op}{motion}"));
+        out.push(RuleEvent::Finding(Finding {
+            rule_id: Self::ID,
+            title: "Use a count",
+            text: format!("{once} {n} times. {counted} does it in one go."),
+            shape: Shape::repeat("same operator", n),
+            mode: VimMode::Normal,
+            at_ms,
+        }));
+    }
+}
+
+impl Rule for OperatorRun {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "The same operator and motion again and again (dw dw dw) where a count does it"
+    }
+
+    fn title(&self) -> &'static str {
+        "Use a count"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        LINE_AND_SHELL
+    }
+
+    fn threshold(&self) -> Option<u32> {
+        Some(Self::TIMES)
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if step.event.is_none() {
+            return;
+        }
+        let Some(c) = command(step).filter(|_| !step.before.is_visual()) else {
+            if !matches!(step.event, Some(VimEvent::Escape)) {
+                self.flush(out);
+            }
+            return;
+        };
+        // dd and >> have their own rules; c starts typing in between.
+        let this = split_operator(c).filter(|(op, _)| matches!(op, 'd' | 'y'));
+        if c.count.is_some() && this.is_some() {
+            out.push(adoption(Self::ID, step));
+        }
+        match (this.filter(|_| c.count.is_none()), self.run) {
+            (Some((op, m)), Some((rop, rm, n, last)))
+                if op == rop && m == rm && step.at_ms.saturating_sub(last) <= Self::GAP_MS =>
+            {
+                self.run = Some((op, m, n + 1, step.at_ms));
+            }
+            (next, _) => {
+                self.flush(out);
+                self.run = next.map(|(op, m)| (op, m, 1, step.at_ms));
+            }
+        }
+    }
+
+    fn tick(&mut self, now_ms: u64, out: &mut Vec<RuleEvent>) {
+        if self
+            .run
+            .is_some_and(|(_, _, _, last)| now_ms.saturating_sub(last) > Self::GAP_MS)
+        {
+            self.flush(out);
+        }
+    }
+
+    fn reset(&mut self) {
+        self.run = None;
+    }
+}
+
+pub fn scroll_run() -> RepeatRule {
+    RepeatRule::new(RepeatSpec {
+        id: "vim.scroll-run",
+        description: "Scrolling a line at a time with Ctrl-e or Ctrl-y, many times",
+        title: "Scroll further at once",
+        contexts: VIM,
+        threshold: 8,
+        unit: |s| {
+            let c = command(s).filter(|c| c.count.is_none())?;
+            let k = c.single()?;
+            if k.is_ctrl('e') {
+                Some("Ctrl-e")
+            } else if k.is_ctrl('y') {
+                Some("Ctrl-y")
+            } else {
+                None
+            }
+        },
+        adopted: |s| {
+            command(s).is_some_and(|c| {
+                c.single()
+                    .is_some_and(|k| ['d', 'u', 'f', 'b'].iter().any(|&ch| k.is_ctrl(ch)))
+                    || c.is("zt")
+                    || c.is("zz")
+                    || c.is("zb")
+                    || (c.count.is_some()
+                        && c.single().is_some_and(|k| k.is_ctrl('e') || k.is_ctrl('y')))
+            })
+        },
+        message: |unit, n| {
+            let page = if unit == "Ctrl-e" { "Ctrl-d" } else { "Ctrl-u" };
+            format!(
+                "`{unit}` {n} times. `{page}` scrolls half a page at once. `zt`, `zz` and `zb` put the cursor's line at the top, middle or bottom."
+            )
+        },
+    })
+    .when_held(|unit, secs| {
+        let page = if unit == "Ctrl-e" { "Ctrl-d" } else { "Ctrl-u" };
+        format!("You held `{unit}` for {secs:.1} s. `{page}` scrolls half a page at once.")
+    })
+}
+
+/// A search or `:s`, kept as a hash only, to tell if it came again.
+fn hash_of(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
+/// Typing the same search or `:s` again, where `n` or `&` repeat it.
+#[derive(Default)]
+pub struct SearchAgain {
+    /// The last search and `:s`, as hashes, and when.
+    search: Option<(u64, u64)>,
+    substitute: Option<(u64, u64)>,
+}
+
+impl SearchAgain {
+    const ID: &'static str = "vim.search-again";
+    /// Typed again within this long, it's the same hunt.
+    const WINDOW_MS: u64 = 120_000;
+}
+
+impl Rule for SearchAgain {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Typing the same search or :s again where n or & repeats it"
+    }
+
+    fn title(&self) -> &'static str {
+        "Repeat it"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if command(step).is_some_and(|c| c.is("n") || c.is("N") || c.is("&") || c.is("g&")) {
+            out.push(adoption(Self::ID, step));
+            return;
+        }
+        let Some(VimEvent::Cmdline {
+            kind,
+            text: Some(text),
+        }) = &step.event
+        else {
+            return;
+        };
+        let at = step.at_ms;
+        let text = text.trim();
+        let (slot, tip, shape) = match kind {
+            '/' | '?' if !text.is_empty() => (
+                &mut self.search,
+                "The same search again. `n` jumps to the next match, `N` back.",
+                "same search again",
+            ),
+            ':' if text.starts_with("s/") || text.starts_with("s#") => (
+                &mut self.substitute,
+                "The same `:s` again. `&` repeats the last `:s` on this line. `g&` repeats it on every line.",
+                "same :s again",
+            ),
+            _ => return,
+        };
+        let h = hash_of(text);
+        let again =
+            slot.is_some_and(|(prev, t)| prev == h && at.saturating_sub(t) <= Self::WINDOW_MS);
+        *slot = Some((h, at));
+        if again {
+            out.push(RuleEvent::Finding(Finding {
+                rule_id: Self::ID,
+                title: "Repeat it",
+                text: tip.into(),
+                shape: Shape::fixed(shape),
+                mode: VimMode::Normal,
+                at_ms: at,
+            }));
+        }
+    }
+
+    fn reset(&mut self) {}
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
     vec![
         Box::new(Macro::default()),
@@ -1365,6 +1602,9 @@ pub fn all() -> Vec<Box<dyn Rule>> {
         Box::new(case_run()),
         Box::new(Increment::default()),
         Box::new(InsertKeys::default()),
+        Box::new(OperatorRun::default()),
+        Box::new(scroll_run()),
+        Box::new(SearchAgain::default()),
     ]
 }
 
@@ -1666,5 +1906,46 @@ mod tests {
             .is_empty()
         );
         assert_eq!(adoptions(&vim(InsertKeys::default(), "ihi<C-o>w")), 1);
+    }
+
+    #[test]
+    fn operator_runs() {
+        assert_eq!(
+            texts(&vim(OperatorRun::default(), "dwdwdw<Esc>")),
+            ["dw 3 times. 3dw does it in one go."]
+        );
+        assert!(findings(&vim(OperatorRun::default(), "dwdw<Esc>")).is_empty());
+        assert!(findings(&vim(OperatorRun::default(), "dwdedw<Esc>")).is_empty());
+        // dd has its own rule.
+        assert!(findings(&vim(OperatorRun::default(), "dddddd<Esc>")).is_empty());
+        assert_eq!(adoptions(&vim(OperatorRun::default(), "3dw")), 1);
+    }
+
+    #[test]
+    fn scrolling_line_by_line() {
+        let ev = vim(
+            scroll_run(),
+            "<C-e><C-e><C-e><C-e><C-e><C-e><C-e><C-e><C-e><Esc>",
+        );
+        assert_eq!(findings(&ev).len(), 1);
+        assert!(texts(&ev)[0].contains("Ctrl-d scrolls half a page"));
+        assert_eq!(adoptions(&vim(scroll_run(), "zt")), 1);
+    }
+
+    #[test]
+    fn the_same_search_or_substitute_again() {
+        let ev = vim(SearchAgain::default(), "/foo<CR>/foo<CR>");
+        assert_eq!(
+            texts(&ev),
+            ["The same search again. n jumps to the next match, N back."]
+        );
+        assert!(findings(&vim(SearchAgain::default(), "/foo<CR>/bar<CR>")).is_empty());
+        let ev = vim(SearchAgain::default(), ":s/a/b/<CR>j:s/a/b/<CR>");
+        assert_eq!(findings(&ev).len(), 1);
+        assert_eq!(adoptions(&vim(SearchAgain::default(), "/foo<CR>n&")), 2);
+        assert_eq!(
+            texts(&vim(Shorthand::default(), ":q!<CR>")),
+            ["`:q!` is `ZQ`: quit without saving.".replace('`', "")]
+        );
     }
 }

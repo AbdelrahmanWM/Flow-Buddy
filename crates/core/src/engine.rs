@@ -448,10 +448,15 @@ mod tests {
             })
             .collect();
         let ids: Vec<_> = tips.iter().map(|t| t.0).collect();
-        assert!(ids.contains(&"vim.repeat-hl") && ids.contains(&"vim.repeat-x"), "{tips:?}");
+        assert!(
+            ids.contains(&"vim.repeat-hl") && ids.contains(&"vim.repeat-x"),
+            "{tips:?}"
+        );
         for (_, text) in &tips {
-            assert!(crate::support::supports_all(ContextKind::BashVi, text), "{text}");
+            assert!(
+                crate::support::supports_all(ContextKind::BashVi, text),
+                "{text}"
+            );
         }
     }
 }
-

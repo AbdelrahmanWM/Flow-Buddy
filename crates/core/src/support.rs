@@ -20,6 +20,7 @@ const NOT_IN_VSCODEVIM: &[&str] = &[
     ":changes",
     "g-",
     "g+",
+    "g&",
 ];
 
 /// Claude Code's Vim mode: Normal-mode movement and the common edits, no

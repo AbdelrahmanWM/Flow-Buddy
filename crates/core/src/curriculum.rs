@@ -898,7 +898,8 @@ impl Known {
     }
 
     /// Items used often enough, or learned, plus the skills of rules
-    /// you've mastered.
+    /// you've mastered that you've actually used: mastering `j`-streaks
+    /// with counts says nothing about `Ctrl-d`.
     pub fn from_progress<'a>(
         progress: &dyn Fn(&str) -> Progress,
         mastered_rules: impl IntoIterator<Item = &'a str>,
@@ -909,7 +910,12 @@ impl Known {
             .map(|i| i.id)
             .collect();
         for rule in mastered_rules {
-            ids.extend(rule_skills(rule).unwrap_or_default());
+            ids.extend(
+                rule_skills(rule)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|s| progress(s).uses > 0),
+            );
         }
         Known {
             everything: false,
@@ -1181,9 +1187,19 @@ mod tests {
         // Using it already makes it ready, whatever it builds on.
         assert!(Known::of(["ci-paren"]).ready("ci-paren"));
         assert!(Known::everything().ready("global"));
-        // A mastered rule's skills count as known.
-        let k = Known::from_progress(&|_| Progress::default(), ["motion.find"]);
+        // A mastered rule's skills count as known, the ones you've used.
+        let used_find = |id: &str| Progress {
+            uses: u64::from(id == "find"),
+            ..Default::default()
+        };
+        let k = Known::from_progress(&used_find, ["motion.find"]);
         assert!(k.knows("find") && k.ready("till"));
+        let used_count = |id: &str| Progress {
+            uses: u64::from(id == "count"),
+            ..Default::default()
+        };
+        let k = Known::from_progress(&used_count, ["vim.repeat-jk"]);
+        assert!(k.knows("count") && !k.knows("half-page") && !k.knows("paragraph"));
         assert!(!none.ready_for_rule("motion.text-object"));
         assert!(none.ready_for_rule("motion.count") && none.ready_for_rule("shell.cd-up"));
     }
@@ -1262,7 +1278,12 @@ mod tests {
         // Everything is used but the text objects.
         let objects = ["ciw", "ci-quote", "ci-paren", "tag-object", "visual-object"];
         let progress = |id: &str| Progress {
-            uses: if objects.contains(&id) { 0 } else { 99 },
+            // ciw once (not enough to count), the other objects never.
+            uses: match id {
+                "ciw" => 1,
+                _ if objects.contains(&id) => 0,
+                _ => 99,
+            },
             // ciw was shown three times already and won't be again.
             times_shown: if id == "ciw" { 3 } else { 0 },
             ..Default::default()

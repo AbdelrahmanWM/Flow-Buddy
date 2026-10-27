@@ -124,6 +124,21 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX tip_history_shown ON tip_history (shown_at);
 "#,
+    r#"
+    -- Uses of curriculum items per environment (terminal-vim, vscode-vim…);
+    -- the ones counted before are kept as 'any', which counts everywhere.
+    CREATE TABLE commands_used_ctx (
+        day     TEXT    NOT NULL,
+        context TEXT    NOT NULL,
+        item_id TEXT    NOT NULL,
+        count   INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day, context, item_id)
+    );
+    INSERT INTO commands_used_ctx (day, context, item_id, count)
+        SELECT day, 'any', item_id, count FROM commands_used;
+    DROP TABLE commands_used;
+    ALTER TABLE commands_used_ctx RENAME TO commands_used;
+"#,
 ];
 
 /// One tip as it was shown.
@@ -595,11 +610,17 @@ impl Store {
         Ok(())
     }
 
-    pub fn add_command_use(&self, day: &str, item_id: &str, count: u64) -> Result<()> {
+    pub fn add_command_use(
+        &self,
+        day: &str,
+        context: &str,
+        item_id: &str,
+        count: u64,
+    ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO commands_used (day, item_id, count) VALUES (?1, ?2, ?3)
-             ON CONFLICT (day, item_id) DO UPDATE SET count = count + excluded.count",
-            params![day, item_id, count],
+            "INSERT INTO commands_used (day, context, item_id, count) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (day, context, item_id) DO UPDATE SET count = count + excluded.count",
+            params![day, context, item_id, count],
         )?;
         Ok(())
     }
@@ -614,15 +635,22 @@ impl Store {
     }
 
     /// For each curriculum item: uses ever, uses since `recent_from`, and
-    /// days from its last use to `today` (ISO dates).
-    pub fn item_uses(&self, today: &str, recent_from: &str) -> Result<HashMap<String, ItemUse>> {
+    /// days from its last use to `today` (ISO dates); in one environment
+    /// (and uses from before they were told apart), or `None` for all.
+    pub fn item_uses(
+        &self,
+        today: &str,
+        recent_from: &str,
+        context: Option<&str>,
+    ) -> Result<HashMap<String, ItemUse>> {
         let mut stmt = self.conn.prepare(
             "SELECT item_id, SUM(count),
                     SUM(CASE WHEN day >= ?2 THEN count ELSE 0 END),
                     CAST(julianday(?1) - julianday(MAX(day)) AS INTEGER)
-             FROM commands_used GROUP BY item_id",
+             FROM commands_used WHERE ?3 IS NULL OR context = ?3 OR context = 'any'
+             GROUP BY item_id",
         )?;
-        let rows = stmt.query_map(params![today, recent_from], |r| {
+        let rows = stmt.query_map(params![today, recent_from, context], |r| {
             Ok((
                 r.get(0)?,
                 ItemUse {
@@ -632,6 +660,15 @@ impl Store {
                 },
             ))
         })?;
+        rows.collect()
+    }
+
+    /// The environments uses were counted in (not 'any').
+    pub fn use_contexts(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT context FROM commands_used WHERE context != 'any' ORDER BY context",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
         rows.collect()
     }
 
@@ -839,7 +876,7 @@ impl Store {
             ("typing", "day, context"),
             ("typo_pairs", "day, pair"),
             ("tip_outcomes", "rule_id, context, stage, mode"),
-            ("commands_used", "day, item_id"),
+            ("commands_used", "day, context, item_id"),
             ("learn_items", "item_id"),
             ("tip_history", "rule_id, title, text"),
         ] {
@@ -1107,10 +1144,12 @@ mod tests {
     #[test]
     fn recent_and_idle_uses() {
         let s = Store::open_in_memory().unwrap();
-        s.add_command_use("2026-06-01", "marks", 9).unwrap();
-        s.add_command_use("2026-10-20", "ciw", 2).unwrap();
-        s.add_command_use("2026-10-26", "ciw", 1).unwrap();
-        let u = s.item_uses("2026-10-27", "2026-09-27").unwrap();
+        s.add_command_use("2026-06-01", "any", "marks", 9).unwrap();
+        s.add_command_use("2026-10-20", "terminal-vim", "ciw", 2)
+            .unwrap();
+        s.add_command_use("2026-10-26", "vscode-vim", "ciw", 1)
+            .unwrap();
+        let u = s.item_uses("2026-10-27", "2026-09-27", None).unwrap();
         assert_eq!(
             u["ciw"],
             ItemUse {
@@ -1121,6 +1160,12 @@ mod tests {
         );
         assert_eq!(u["marks"].recent, 0);
         assert!(u["marks"].days_idle > 140);
+        // Per environment: its own uses, and the old ones.
+        let vs = s
+            .item_uses("2026-10-27", "2026-09-27", Some("vscode-vim"))
+            .unwrap();
+        assert_eq!(vs["ciw"].total, 1);
+        assert_eq!(vs["marks"].total, 9);
     }
 
     #[test]
@@ -1182,9 +1227,12 @@ mod tests {
     #[test]
     fn command_uses_and_learning() {
         let s = Store::open_in_memory().unwrap();
-        s.add_command_use("2026-10-24", "ciw", 2).unwrap();
-        s.add_command_use("2026-10-25", "ciw", 1).unwrap();
-        s.add_command_use("2026-10-25", "star", 4).unwrap();
+        s.add_command_use("2026-10-24", "terminal-vim", "ciw", 2)
+            .unwrap();
+        s.add_command_use("2026-10-25", "terminal-vim", "ciw", 1)
+            .unwrap();
+        s.add_command_use("2026-10-25", "terminal-vim", "star", 4)
+            .unwrap();
         let uses = s.command_uses("2026-10-25").unwrap();
         assert_eq!((uses["ciw"], uses["star"]), (1, 4));
         s.learn_shown("ciw", 100).unwrap();

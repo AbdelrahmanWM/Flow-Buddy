@@ -125,8 +125,8 @@ pub struct App {
     held_findings: Vec<(Finding, ContextKind)>,
     /// Personal sentences your AI wrote for each rule (`[ai] tips`).
     personal_tips: HashMap<String, String>,
-    /// Curriculum items used since the last write, by id.
-    usage: HashMap<&'static str, u64>,
+    /// Curriculum items used since the last write, by environment and id.
+    usage: HashMap<(ContextKind, &'static str), u64>,
     /// Opt-in typing accuracy, written once a minute.
     typing: crate::typing::Typing,
     typing_flushed_ms: u64,
@@ -479,7 +479,8 @@ impl App {
     /// Record stats and the mistake memory in `store`.
     pub fn with_store(mut self, store: flowbuddy_store::Store) -> Self {
         self.memory = Memory::new(Some(store), &self.config);
-        self.engine.set_known(self.memory.known(wall_ms()));
+        self.engine
+            .set_known(self.memory.known(Some(self.resolved.kind), wall_ms()));
         self
     }
 
@@ -808,7 +809,8 @@ impl App {
         self.resolver.set_ids(app_ids(&config));
         self.coach.set_config(PolicyConfig::from(&config.coaching));
         self.memory.set_config(&config);
-        self.engine.set_known(self.memory.known(wall_ms()));
+        self.engine
+            .set_known(self.memory.known(Some(self.resolved.kind), wall_ms()));
         let text_changed = config.text != self.config.text;
         self.config = config;
         if text_changed {
@@ -1127,7 +1129,8 @@ impl App {
             self.memory.typing(counts, now_ms);
             let usage = std::mem::take(&mut self.usage);
             self.memory.command_uses(usage, now_ms);
-            self.engine.set_known(self.memory.known(now_ms));
+            self.engine
+                .set_known(self.memory.known(Some(self.resolved.kind), now_ms));
             if let Some(r) = self.recorder.as_mut() {
                 r.flush();
             }
@@ -1194,12 +1197,15 @@ impl App {
         if step.confident
             && matches!(
                 kind,
-                ContextKind::VsCodeVim | ContextKind::TerminalVim | ContextKind::ClaudeVim
+                ContextKind::VsCodeVim
+                    | ContextKind::TerminalVim
+                    | ContextKind::ClaudeVim
+                    | ContextKind::BashVi
             )
         {
             for item in flowbuddy_core::curriculum::CURRICULUM {
                 if item.used_in(&step) {
-                    *self.usage.entry(item.id).or_default() += 1;
+                    *self.usage.entry((kind, item.id)).or_default() += 1;
                 }
             }
         }
@@ -1287,6 +1293,9 @@ impl App {
             self.commands.clear();
             self.typing.other();
             self.engine.set_editor_motions(new.editor.is_some());
+            // What you know here: progress is kept per environment.
+            self.engine
+                .set_known(self.memory.known(Some(new.kind), now_ms));
             let (context, editor) = (new.kind, new.editor.is_some());
             self.record(now_ms, |t| Some(Entry::Context { t, context, editor }));
         }
@@ -3599,5 +3608,26 @@ pub(crate) mod tests {
         app.tick(4_000);
         assert!(!app.on_record(None, 4_000).unwrap().recording);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn progress_is_kept_per_environment() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let _ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>ciwx<Esc>ciwx<Esc>ciwx<Esc>", 1_000_000);
+        app.tick(1_000_000 + 61_000);
+        let now = 1_000_000 + 62_000;
+        assert!(
+            app.memory
+                .known(Some(ContextKind::VsCodeVim), now)
+                .knows("ciw")
+        );
+        assert!(
+            !app.memory
+                .known(Some(ContextKind::TerminalVim), now)
+                .knows("ciw")
+        );
+        assert!(app.memory.known(None, now).knows("ciw"));
     }
 }

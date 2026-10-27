@@ -346,6 +346,16 @@ pub fn next(store: &Store, now_ms: u64, skip: &BTreeSet<String>) -> anyhow::Resu
     Ok(out)
 }
 
+fn place_name(ctx: &str) -> &str {
+    match ctx {
+        "vscode-vim" => "VS Code",
+        "terminal-vim" => "Vim",
+        "claude-vim" => "Claude Code",
+        "bash-vi" => "the shell",
+        other => other,
+    }
+}
+
 /// `flowbuddy learn`: the latest "something new", progress through the
 /// curriculum, and what's next.
 pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<String> {
@@ -354,7 +364,7 @@ pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<Str
     let today = flowbuddy_store::days::day(now_ms);
     let recent_from =
         flowbuddy_store::days::day(now_ms.saturating_sub(curriculum::RECENT_DAYS * 86_400_000));
-    let uses = store.item_uses(&today, &recent_from)?;
+    let uses = store.item_uses(&today, &recent_from, None)?;
     let rows: BTreeMap<String, flowbuddy_store::LearnRow> = store
         .learn_items()?
         .into_iter()
@@ -414,6 +424,26 @@ pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<Str
             })
             .collect();
         writeln!(out, "  level {level}  {bar}  {done} of {}", items.len())?;
+    }
+    // Each environment keeps its own progress.
+    let mut places = Vec::new();
+    for ctx in store.use_contexts()? {
+        let here = store.item_uses(&today, &recent_from, Some(&ctx))?;
+        let progress_here = |id: &str| {
+            let u = here.get(id).copied().unwrap_or_default();
+            Progress {
+                uses: u.total,
+                recent_uses: u.recent,
+                days_idle: here.contains_key(id).then_some(u.days_idle),
+                ..progress(id)
+            }
+        };
+        let k = Known::from_progress(&progress_here, std::iter::empty()).with_levels(known_levels);
+        let n = CURRICULUM.iter().filter(|i| k.knows(i.id)).count();
+        places.push(format!("{} {n}", place_name(&ctx)));
+    }
+    if places.len() > 1 {
+        writeln!(out, "  known by place: {}", places.join(", "))?;
     }
     let ready: Vec<String> = CURRICULUM
         .iter()
@@ -594,7 +624,7 @@ mod tests {
     fn learn_progress() {
         let s = Store::open_in_memory().unwrap();
         let day = days::day(at(24, 12));
-        s.add_command_use(&day, "word", 9).unwrap();
+        s.add_command_use(&day, "terminal-vim", "word", 9).unwrap();
         s.learn_shown("word-end", at(24, 12) / 1000).unwrap();
         s.learn_learned("word-end", at(24, 13) / 1000).unwrap();
         let out = learn(&s, at(24, 18), 0).unwrap();

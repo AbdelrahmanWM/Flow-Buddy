@@ -1109,10 +1109,16 @@ impl App {
             let (context, editor) = (new.kind, new.editor.is_some());
             self.record(now_ms, |t| Some(Entry::Context { t, context, editor }));
         }
-        if let Some(mode) = known {
+        // Only guessed that you went to VS Code's terminal (a background
+        // command can finish there too): the mode stays unknown until
+        // there's more to go on, so no tip comes from the guess.
+        let guessed = changed && self.resolver.terminal_guessed();
+        if guessed {
+            self.tracker.invalidate();
+        } else if let Some(mode) = known {
             self.tracker.reset_known(mode);
         }
-        if changed {
+        if changed && !guessed {
             self.apply_editor_mode();
         }
     }
@@ -3179,5 +3185,42 @@ pub(crate) mod tests {
         // Another shell's switch doesn't count here.
         mode(&mut app, EditorMode::Insert, 300);
         assert_eq!(app.mode_known(), (VimMode::Normal, true));
+    }
+
+    #[test]
+    fn a_guessed_terminal_switch_gives_no_tips() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
+        focus(&mut app, "code_code", 500);
+        send(
+            &mut app,
+            2,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            0,
+        );
+        // A shell under VS Code reports: maybe you clicked into the
+        // terminal, maybe a background command finished.
+        send(
+            &mut app,
+            1,
+            ClientMsg::Ctx {
+                event: CtxEvent::Prompt,
+                command: None,
+                vi_mode: Some(true),
+                shell_pid: 510,
+                tty: None,
+                shape: None,
+                mode: None,
+            },
+            10,
+        );
+        assert_eq!(app.context().kind, ContextKind::BashVi);
+        assert!(!app.mode_known().1, "mode unknown after a guess");
+        keys(&mut app, "lllllllll");
+        assert!(nudges(&mut ext).is_empty());
     }
 }

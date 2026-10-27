@@ -1,5 +1,6 @@
 mod client;
 mod coach;
+mod doctor;
 mod report;
 mod review;
 mod tips;
@@ -42,6 +43,8 @@ enum Cmd {
     Next,
     /// Your daily "something new" and your progress through Vim's features.
     Learn,
+    /// Check everything Flow Buddy needs, and say how to fix what's missing.
+    Doctor,
     /// Your recent tips, newest first; with words, only those that match:
     /// `flowbuddy tips undo`.
     Tips {
@@ -225,6 +228,18 @@ fn main() {
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),
         Cmd::Learn => learn(),
+        Cmd::Doctor => {
+            let status = Client::connect(ClientKind::Cli)
+                .and_then(|mut c| c.query(Command::Status))
+                .map_err(|e| format!("{e:#}"))
+                .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()));
+            let checks = doctor::checks(&doctor::Env::gather(status));
+            print!("{}", doctor::report(&checks));
+            if checks.iter().any(|c| !c.ok) {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Cmd::Tips {
             search,
             limit,

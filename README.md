@@ -119,6 +119,7 @@ flowbuddy status          # or --watch, then switch windows
 ## Use
 
 ```sh
+flowbuddy doctor                  # checks every piece and says how to fix what's missing
 flowbuddy mode balanced           # off | passive | balanced | active
 flowbuddy pause 1h                # or 30m, until-tomorrow; `flowbuddy resume`
 flowbuddy summary [--week]        # how you're doing vs. before

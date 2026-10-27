@@ -116,7 +116,7 @@ flowbuddy pause 1h                # or 30m, until-tomorrow; `flowbuddy resume`
 flowbuddy summary [--week]        # how you're doing vs. before
 flowbuddy next                    # the one habit worth working on now
 flowbuddy learn                   # today's "something new" and your progress through Vim
-flowbuddy explain 'ci"'            # what keys do, piece by piece
+flowbuddy explain 'ci"'            # what keys do, piece by piece; `explain --last`: your last slow move, done better
 flowbuddy coach [question]        # advice from your AI ([ai]; --prompt shows what it's sent)
 flowbuddy review [--apply 1 2]    # your AI proposes tuning the tips; apply what you agree with
 flowbuddy rules                   # list; `rules mute|disable|enable|reset <id>`

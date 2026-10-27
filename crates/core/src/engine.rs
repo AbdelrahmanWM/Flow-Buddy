@@ -59,6 +59,10 @@ impl Engine {
         }
     }
 
+    pub fn known(&self) -> &Known {
+        &self.known
+    }
+
     /// What you already use: advice you're not ready for is held back.
     pub fn set_known(&mut self, known: Known) {
         for rule in &mut self.rules {

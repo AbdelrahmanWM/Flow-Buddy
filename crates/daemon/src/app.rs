@@ -69,6 +69,8 @@ pub struct App {
     /// shortcut (Ctrl-P, Ctrl-`) as its letter and time.
     last_click_ms: Option<u64>,
     last_shortcut: Option<(char, u64)>,
+    /// The last movement or edit that could have been shorter.
+    last_slow: Option<flowbuddy_core::ipc::LastSlow>,
     /// How the mode guessed from keys compares with editors' reports.
     mode_guess: ModeGuess,
     /// A session being recorded (`flowbuddy record`), and where to.
@@ -219,6 +221,7 @@ impl App {
             last_click_ms: None,
             last_shortcut: None,
             mode_guess: ModeGuess::default(),
+            last_slow: None,
             recorder: None,
             recordings: flowbuddy_core::paths::recordings_dir(),
             last_nudge_ms: None,
@@ -279,6 +282,20 @@ impl App {
                 .as_ref()
                 .map(|r| r.path().display().to_string()),
         })
+    }
+
+    /// Remember a movement or edit if the best way saves two keys or more.
+    fn note_slow(&mut self, kind: &str, at_ms: u64, keys_used: u32, mut best: Vec<(String, u32)>) {
+        if best.first().is_none_or(|(_, cost)| keys_used < cost + 2) {
+            return;
+        }
+        best.truncate(3);
+        self.last_slow = Some(flowbuddy_core::ipc::LastSlow {
+            kind: kind.into(),
+            at_ms,
+            keys_used,
+            best,
+        });
     }
 
     fn with_memory_config(mut self) -> Self {
@@ -1168,6 +1185,8 @@ impl App {
                         keys_used: ev.keys_used,
                     })
                 });
+                let best = motion::best_for_motion(&ev, self.engine.known());
+                self.note_slow("move", ev.motion.end_ms, ev.keys_used, best);
                 let events = self.engine.on_motion(self.resolved.kind, &ev);
                 self.on_rule_events(&events, now_ms);
             }
@@ -1188,6 +1207,8 @@ impl App {
                         op_keys: ev.op_keys,
                     })
                 });
+                let best = motion::best_for_edit(&ev, self.engine.known());
+                self.note_slow("edit", ev.report.at_ms, ev.keys_used, best);
                 let events = self.engine.on_operator(self.resolved.kind, &ev);
                 self.on_rule_events(&events, now_ms);
             }
@@ -1252,6 +1273,10 @@ impl App {
                     }
                 }
             }
+            Command::LastSlow => ServerMsg::Result {
+                id,
+                data: serde_json::to_value(&self.last_slow).unwrap_or_default(),
+            },
             Command::Record { on } => match self.on_record(on, now_ms) {
                 Ok(r) => ServerMsg::Result {
                     id,
@@ -2712,5 +2737,37 @@ pub(crate) mod tests {
         );
         assert!(!app.on_record(None, 9000).unwrap().recording);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn remembers_the_last_slow_move() {
+        let mut app = test_app(CoachingMode::Active);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        keys(&mut app, "jjjjjjj");
+        let motion = Motion {
+            start_ms: 10,
+            end_ms: 610,
+            moves: 7,
+            mode: EditorMode::Normal,
+            lines: 7,
+            cols: 0,
+            facts: flowbuddy_core::editor::MotionFacts {
+                paragraph_hops: Some(1),
+                ..Default::default()
+            },
+        };
+        send(&mut app, 3, ClientMsg::Motion(motion), 700);
+        let last = app.last_slow.clone().unwrap();
+        assert_eq!((last.kind.as_str(), last.keys_used), ("move", 7));
+        assert_eq!(last.best[0], ("}".to_string(), 1));
     }
 }

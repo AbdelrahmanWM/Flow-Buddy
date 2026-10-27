@@ -525,7 +525,7 @@ pub fn is_motion(c: &Command) -> bool {
 const VIM: &[ContextKind] = &[ContextKind::VsCodeVim, ContextKind::TerminalVim];
 
 /// A plan's keys with each command marked: `Ctrl-d`×10 then `7k`.
-fn marked(keys: &str) -> String {
+pub fn marked(keys: &str) -> String {
     keys.split(' ')
         .map(|word| {
             if matches!(word, "then" | "") {
@@ -1001,6 +1001,43 @@ impl Rule for OperatorMotionRule {
     }
 
     fn reset(&mut self) {}
+}
+
+/// The best ways to make a movement or an edit, for `flowbuddy explain
+/// --last`: (keys, cost), best first, only ones you're ready for.
+pub fn best_for_motion(ev: &MotionEvent, known: &Known) -> Vec<(String, u32)> {
+    plans_for(&ev.motion, known)
+        .into_iter()
+        .map(|p| (p.keys, p.cost))
+        .collect()
+}
+
+/// For an edit: a text object from anywhere inside it (against all the
+/// keys used), and the operator's motions from where it started.
+pub fn best_for_edit(ev: &OperatorEvent, known: &Known) -> Vec<(String, u32)> {
+    let mut out: Vec<(String, u32)> = ev
+        .report
+        .objects
+        .iter()
+        .filter(|o| known.ready(crate::curriculum::object_skill(o.keys())))
+        .map(|o| {
+            (
+                format!("{}{}", ev.report.op.key(), o.keys()),
+                1 + o.keys().len() as u32,
+            )
+        })
+        .take(1)
+        .collect();
+    if let Some(range) = &ev.report.range {
+        out.extend(
+            range_plans(ev.report.op, range)
+                .into_iter()
+                .filter(|(_, _, skill)| known.ready(skill))
+                .map(|(k, c, _)| (k, c)),
+        );
+    }
+    out.sort_by_key(|(_, c)| *c);
+    out
 }
 
 pub fn all() -> Vec<Box<dyn Rule>> {

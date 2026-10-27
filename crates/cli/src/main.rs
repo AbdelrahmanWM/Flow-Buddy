@@ -78,7 +78,12 @@ enum Cmd {
     },
     /// What Vim keys do, piece by piece: `flowbuddy explain 'ci"'`.
     Explain {
+        /// Keys to explain; with --last, leave out.
+        #[arg(required_unless_present = "last", default_value = "")]
         keys: String,
+        /// Your last slow move or edit, and the best ways to do it.
+        #[arg(long)]
+        last: bool,
         /// Insert-mode meanings (Ctrl-w, Ctrl-u, Ctrl-o).
         #[arg(long)]
         insert: bool,
@@ -227,7 +232,8 @@ fn main() {
         Cmd::Coach {
             question, prompt, ..
         } => coach(&question.join(" "), prompt),
-        Cmd::Explain { keys, insert } => {
+        Cmd::Explain { last: true, .. } => explain_last(),
+        Cmd::Explain { keys, insert, .. } => {
             explain(&keys, insert);
             Ok(())
         }
@@ -509,6 +515,45 @@ fn weekly_note() -> anyhow::Result<()> {
         .arg(flowbuddy_core::glossary::plain(&text))
         .status()?;
     Ok(())
+}
+
+fn explain_last() -> anyhow::Result<()> {
+    use flowbuddy_core::glossary::{explain as pieces, plain};
+    use flowbuddy_core::ipc::LastSlow;
+    let mut client = Client::connect(ClientKind::Cli)?;
+    let last: Option<LastSlow> = serde_json::from_value(client.query(Command::LastSlow)?)?;
+    let Some(last) = last else {
+        println!("No slow move or edit since the daemon started.");
+        return Ok(());
+    };
+    print!("{}", last_slow_text(&last, now_ms()));
+    let marked: Vec<String> = last
+        .best
+        .iter()
+        .map(|(k, _)| flowbuddy_core::motion::marked(k))
+        .collect();
+    for line in pieces(&marked.join(" "), false) {
+        println!("  {}", plain(&line));
+    }
+    Ok(())
+}
+
+fn last_slow_text(last: &flowbuddy_core::ipc::LastSlow, now_ms: u64) -> String {
+    let ago = now_ms.saturating_sub(last.at_ms) / 1000;
+    let when = match ago {
+        0..60 => format!("{ago} s ago"),
+        60..3600 => format!("{} min ago", ago / 60),
+        _ => format!("{} h ago", ago / 3600),
+    };
+    let mut out = format!(
+        "Your last slow {} ({when}) took {} keys.\n",
+        last.kind, last.keys_used
+    );
+    for (i, (keys, cost)) in last.best.iter().enumerate() {
+        let lead = if i == 0 { "Best:" } else { "Or:  " };
+        out.push_str(&format!("  {lead} {keys}  ({cost} keys)\n"));
+    }
+    out
 }
 
 fn explain(keys: &str, insert: bool) {
@@ -1029,5 +1074,19 @@ mod status_tests {
             "{out}"
         );
         assert!(out.contains("StreamLocalBindUnlink yes"), "{out}");
+    }
+
+    #[test]
+    fn last_slow_lines() {
+        let last = flowbuddy_core::ipc::LastSlow {
+            kind: "edit".into(),
+            at_ms: 1_000,
+            keys_used: 9,
+            best: vec![("di(".into(), 3), ("dt<char>".into(), 3)],
+        };
+        assert_eq!(
+            last_slow_text(&last, 121_000),
+            "Your last slow edit (2 min ago) took 9 keys.\n  Best: di(  (3 keys)\n  Or:   dt<char>  (3 keys)\n"
+        );
     }
 }

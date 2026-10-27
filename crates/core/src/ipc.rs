@@ -112,6 +112,21 @@ pub enum Command {
         #[serde(default)]
         on: Option<bool>,
     },
+    /// The last movement or edit that took more keys than it needed, with
+    /// the best ways to do it. Answers with `Option<LastSlow>`.
+    LastSlow,
+}
+
+/// Data returned by [`Command::LastSlow`]: keys only, never text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastSlow {
+    /// "move" or "edit".
+    pub kind: String,
+    /// Unix epoch milliseconds.
+    pub at_ms: u64,
+    pub keys_used: u32,
+    /// Best first: what to type (`}}w`, `dt<char>`) and how many keys.
+    pub best: Vec<(String, u32)>,
 }
 
 /// Data returned by [`Command::Record`].

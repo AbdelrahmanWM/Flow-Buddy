@@ -348,7 +348,7 @@ pub fn next(store: &Store, now_ms: u64, skip: &BTreeSet<String>) -> anyhow::Resu
 
 /// `flowbuddy learn`: the latest "something new", progress through the
 /// curriculum, and what's next.
-pub fn learn(store: &Store, now_ms: u64) -> anyhow::Result<String> {
+pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<String> {
     use flowbuddy_core::curriculum::{self, CURRICULUM, Known, Progress};
     use flowbuddy_core::glossary::plain;
     let uses = store.command_uses("0000-00-00")?;
@@ -371,7 +371,7 @@ pub fn learn(store: &Store, now_ms: u64) -> anyhow::Result<String> {
         .iter()
         .filter(|(_, s)| **s == flowbuddy_core::learning::Stage::Mastered)
         .map(|((rule, _), _)| rule.as_str());
-    let tree = Known::from_progress(&progress, mastered);
+    let tree = Known::from_progress(&progress, mastered).with_levels(known_levels);
     let known = |id: &str| tree.knows(id);
     let mut out = String::new();
     if let Some(row) = rows.values().max_by_key(|r| r.last_shown)
@@ -591,7 +591,7 @@ mod tests {
         s.add_command_use(&day, "word", 9).unwrap();
         s.learn_shown("word-end", at(24, 12) / 1000).unwrap();
         s.learn_learned("word-end", at(24, 13) / 1000).unwrap();
-        let out = learn(&s, at(24, 18)).unwrap();
+        let out = learn(&s, at(24, 18), 0).unwrap();
         assert!(
             out.starts_with("Latest: e: jump to the end of the word"),
             "{out}"

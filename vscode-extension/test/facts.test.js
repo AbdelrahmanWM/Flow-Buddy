@@ -16,7 +16,7 @@ function load() {
     return module.exports;
 }
 
-const {computeFacts, rangeFacts, rested, charObjects, lineObjects, Cursor, wordForward, wordBackward, wordEndForward} = load();
+const {computeFacts, rangeFacts, lineRange, rested, charObjects, lineObjects, Cursor, wordForward, wordBackward, wordEndForward} = load();
 
 // Every field of MotionFacts; the daemon rejects anything else.
 const FIELDS = [
@@ -216,6 +216,9 @@ check('d$ and f)', rangeFacts('call(foo, bar)', 5, 13), {cols: 8, words: 4,
     facts: {word_end_hops: 4, find_hops: 1, line_end: true}});
 check('d2w', rangeFacts('one two three', 0, 7).words, 2);
 check('outside the line', {r: rangeFacts('abc', 4, 5)}, {r: null});
+check('d} over lines', lineRange(['a', 'b', 'c'], ''), {linewise: true, lines: 2, facts: {file_end: false, paragraph_hops: 1}});
+check('a blank among them', lineRange(['a', '', 'c'], '').facts, {file_end: false});
+check('dG', lineRange(['a'], undefined).facts, {file_end: true, paragraph_hops: 1});
 
 print(`${passed} passed, ${failed} failed`);
 if (failed)

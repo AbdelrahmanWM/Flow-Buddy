@@ -50,6 +50,7 @@ ls $secret
 cat $secret
 echo one two three four
 echo one two three five
+echo mode$(printf '\033')A
 exit
 "
     # Each line is typed after the previous prompt, give or take; the
@@ -72,6 +73,11 @@ exit
     check '^ctx fg cd --shape cd-up-many' "cd ../.. shape"
     check '^ctx fg cat --shape reused-arg' "reused argument shape"
     check '^ctx fg echo --shape one-word-changed' "one word changed shape"
+    # bash can't say when its vi-mode switches; zsh and fish do.
+    if [[ $sh != bash ]]; then
+        check '^ctx mode normal' "vi-mode switch to normal"
+        check '^ctx mode insert' "vi-mode switch back to insert"
+    fi
     if grep -q "secret" <<<"$log"; then
         echo "FAIL $sh: an argument leaked"
         failed=1

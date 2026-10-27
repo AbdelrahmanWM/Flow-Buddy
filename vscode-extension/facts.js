@@ -599,6 +599,21 @@ function rested(rests, line, now) {
     return visits;
 }
 
+/**
+ * Facts about whole lines an operator covered, given the line after them
+ * (undefined past the end), mirroring flowbuddy#line_range in the Vim
+ * plugin: `d}` lands on the next blank line when there's none among them,
+ * `dG` runs to the end.
+ */
+function lineRange(lines, after) {
+    const blank = l => !/\S/.test(l);
+    const atEnd = after === undefined;
+    const facts = {file_end: atEnd};
+    if ((atEnd || blank(after)) && !lines.some(blank))
+        facts.paragraph_hops = 1;
+    return {linewise: true, lines: lines.length - 1, facts};
+}
+
 // Character classes for w and e within a line: 0 blank, 1 keyword, 2 other.
 function lineClass(c) {
     return /^\s$/.test(c) ? 0 : isKeywordChar(c) ? 1 : 2;
@@ -653,6 +668,7 @@ if (typeof module !== 'undefined') {
     module.exports = {
         computeFacts,
         rangeFacts,
+        lineRange,
         rested,
         charObjects,
         lineObjects,

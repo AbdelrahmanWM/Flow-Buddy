@@ -95,6 +95,19 @@ function! Test_same_selection() abort
   call assert_false(flowbuddy#same_selection([], sel, 5000))
 endfunction
 
+function! Test_time_budget() abort
+  call s:buf(['a', 'b', '', 'c', 'd', '', 'e'])
+  call assert_equal(1, s:facts([1, 1], [3, 1]).paragraph_hops)
+  let before = flowbuddy#stats().over_budget
+  let g:flowbuddy_facts_budget_ms = -1
+  let f = s:facts([1, 1], [3, 1])
+  unlet g:flowbuddy_facts_budget_ms
+  " Out of time: the motions it would have tried are left out.
+  call assert_equal(v:t_dict, type(f))
+  call assert_false(has_key(f, 'paragraph_hops'))
+  call assert_equal(before + 1, flowbuddy#stats().over_budget)
+endfunction
+
 function! Test_last_change() abort
   call s:buf(map(range(1, 10), 'string(v:val)'))
   call cursor(3, 1)
@@ -212,6 +225,14 @@ function! Test_range_facts() abort
   let r = flowbuddy#range_facts('one two three', 1, 8)
   call assert_equal(2, r.words)
   call assert_equal({}, flowbuddy#range_facts('abc', 5, 6))
+endfunction
+
+function! Test_line_range() abort
+  let r = flowbuddy#line_range(['a', 'b', 'c'], '', 0)
+  call assert_equal({'linewise': v:true, 'lines': 2, 'facts': {'file_end': v:false, 'paragraph_hops': 1}}, r)
+  call assert_false(has_key(flowbuddy#line_range(['a', '', 'c'], '', 0).facts, 'paragraph_hops'))
+  call assert_false(has_key(flowbuddy#line_range(['a'], 'b', 0).facts, 'paragraph_hops'))
+  call assert_true(flowbuddy#line_range(['a'], '', 1).facts.file_end)
 endfunction
 
 function! Test_text_guard() abort

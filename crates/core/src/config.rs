@@ -28,6 +28,16 @@ pub struct Config {
     pub typing: TypingConfig,
     pub learn: LearnConfig,
     pub text: TextConfig,
+    pub record: RecordConfig,
+}
+
+/// Recording what the rules see, to tune them (`flowbuddy record tune`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RecordConfig {
+    /// Keep a rolling recording of this many days (0: only when you run
+    /// `flowbuddy record start`). Nothing typed is kept; see docs/privacy.md.
+    pub keep_days: u32,
 }
 
 /// Opt-in features that look at your text, in the editor plugins only.
@@ -59,11 +69,40 @@ pub struct TextConfig {
 pub struct LearnConfig {
     /// One small unused Vim feature a day, in every mode but off.
     pub daily: bool,
+    /// Where you start: tips build on what you're taken to know already.
+    pub level: Level,
 }
 
 impl Default for LearnConfig {
     fn default() -> Self {
-        LearnConfig { daily: true }
+        LearnConfig {
+            daily: true,
+            level: Level::Beginner,
+        }
+    }
+}
+
+/// How much Vim you know to begin with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Level {
+    /// Nothing is assumed: Flow Buddy learns what you use as you go.
+    #[default]
+    Beginner,
+    /// The basics (curriculum level 1) are known.
+    Intermediate,
+    /// Levels 1 and 2 are known.
+    Advanced,
+}
+
+impl Level {
+    /// Curriculum levels taken as known.
+    pub fn known_levels(self) -> u8 {
+        match self {
+            Level::Beginner => 0,
+            Level::Intermediate => 1,
+            Level::Advanced => 2,
+        }
     }
 }
 
@@ -165,6 +204,19 @@ pub struct CoachingConfig {
     pub quiet_hours: Option<String>,
     /// Passive mode: local time of the end-of-day summary notification.
     pub summary_time: String,
+    /// When a live tip shows: right away, or once you pause typing.
+    pub when: TipTiming,
+}
+
+/// When a live tip shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TipTiming {
+    /// As soon as the habit is seen.
+    #[default]
+    Now,
+    /// Once you stop typing for a moment, so it doesn't land mid-flow.
+    Pause,
 }
 
 impl Default for CoachingConfig {
@@ -179,6 +231,7 @@ impl Default for CoachingConfig {
             nudge_style: None,
             quiet_hours: None,
             summary_time: "18:00".into(),
+            when: TipTiming::Now,
         }
     }
 }

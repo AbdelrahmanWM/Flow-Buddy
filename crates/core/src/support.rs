@@ -23,14 +23,18 @@ const NOT_IN_VSCODEVIM: &[&str] = &[
     "g&",
 ];
 
-/// Claude Code's Vim mode: Normal-mode movement and the common edits, no
-/// Visual mode, search, marks, macros or `:` commands.
+/// Claude Code's Vim mode, as its own key tables have it (checked against
+/// Claude Code 2.1.312): counts, motions, operators with text objects,
+/// Visual and Visual Line mode, `.` and undo. No search (`/` searches the
+/// prompt history), `*`/`n`, marks, macros, registers, `:` commands, redo,
+/// or `g` commands other than `gg`, `gj` and `gk`.
 const CLAUDE_MOTIONS: &[&str] = &[
-    "h", "j", "k", "l", "w", "e", "b", "W", "E", "B", "0", "$", "^", "gg", "G", ";", ",",
+    "h", "j", "k", "l", "w", "e", "b", "W", "E", "B", "0", "$", "^", "%", "gg", "G", "gj", "gk",
+    ";", ",",
 ];
 const CLAUDE_COMMANDS: &[&str] = &[
-    "x", "dd", "D", "cc", "C", "yy", "Y", "p", "P", ".", "i", "I", "a", "A", "o", "O", ">>", "<<",
-    "J", "Esc", "Ctrl-w", "Ctrl-u",
+    "x", "s", "S", "dd", "D", "cc", "C", "yy", "Y", "p", "P", ".", "u", "~", "i", "I", "a", "A",
+    "o", "O", ">>", "<<", "J", "v", "V", "Esc", "Ctrl-w", "Ctrl-u",
 ];
 const CLAUDE_OBJECTS: &[&str] = &[
     "iw", "aw", "iW", "aW", "i\"", "a\"", "i'", "a'", "i(", "a(", "i)", "a)", "ib", "ab", "i[",
@@ -70,8 +74,12 @@ fn claude_supports(cmd: &str) -> bool {
     if CLAUDE_COMMANDS.contains(&cmd) || CLAUDE_MOTIONS.contains(&cmd) {
         return true;
     }
-    if let Some(rest) = cmd.strip_prefix(['f', 'F', 't', 'T'])
-        && rest == "<char>"
+    if cmd.strip_prefix(['f', 'F', 't', 'T', 'r']) == Some("<char>") {
+        return true;
+    }
+    // Visual mode, then a text object: `viw`.
+    if let Some(rest) = cmd.strip_prefix(['v', 'V'])
+        && CLAUDE_OBJECTS.contains(&rest)
     {
         return true;
     }
@@ -188,21 +196,23 @@ mod tests {
     fn claude_code_does_less() {
         let c = ContextKind::ClaudeVim;
         for ok in [
-            "5w", "e", "f<char>", "3f<char>", "dw", "ciw", "di(", "dt<char>", "D", ".",
+            "5w", "e", "f<char>", "3f<char>", "dw", "ciw", "di(", "dt<char>", "D", ".", "s",
+            "r<char>", "~", "%", "u", "viw", "5gg",
         ] {
             assert!(supports(c, ok), "{ok}");
         }
         for no in [
-            "s",
-            "r<char>",
-            "~",
             "g~iw",
             "gI",
+            "gv",
+            "g;",
             "Ctrl-v",
+            "Ctrl-r",
             "*",
-            "%",
+            "n",
             "ma",
             "qq",
+            "\"0p",
             ":s/old/new/",
         ] {
             assert!(!supports(c, no), "{no}");
@@ -244,7 +254,7 @@ mod tests {
         assert_eq!(
             fit(
                 ContextKind::ClaudeVim,
-                "`x` then `i` is `s`: substitute the character."
+                "`0` then `i` is `gI`: insert at the very start of the line."
             ),
             None
         );

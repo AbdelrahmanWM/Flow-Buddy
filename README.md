@@ -33,6 +33,7 @@ Flow Buddy is a local companion that helps you get better at your tools continuo
 ```
 
 - **Coaching modes:** `off`, `passive` (summaries only), `balanced` (occasional batched tips) and `active` (real-time nudges).
+- **Tips you can keep:** the top-bar menu lists recent tips and can keep one on screen while you practise it. `Super+Alt+T` keeps the current tip, `Super+Alt+D` dismisses it, `Super+Alt+N` marks it not helpful (change them with `gsettings` under `org.gnome.shell.extensions.flowbuddy`).
 - **Mistake memory:** remembers which patterns you repeat and how each habit is progressing (new → improving → mastered), so coaching adapts over time.
 
 Details, including the IPC protocol and the context model, are in [docs/architecture.md](docs/architecture.md).
@@ -67,6 +68,10 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh
 ```toml
 [learn]
 daily = true                                  # one small Vim feature you don't use yet, once a day
+level = "beginner"                            # or "intermediate" / "advanced": skip ahead instead of waiting to see you use the basics
+
+[record]
+keep_days = 0                                 # e.g. 7: keep a week of recordings for `flowbuddy record tune`
 
 [typing]
 accuracy = false                              # true: count corrections (counts only) for `flowbuddy summary`
@@ -118,11 +123,14 @@ flowbuddy status          # or --watch, then switch windows
 ## Use
 
 ```sh
+flowbuddy setup                   # a few questions: how often, your level, AI, text features
+flowbuddy doctor                  # checks every piece and says how to fix what's missing
 flowbuddy mode balanced           # off | passive | balanced | active
 flowbuddy pause 1h                # or 30m, until-tomorrow; `flowbuddy resume`
 flowbuddy summary [--week]        # how you're doing vs. before
 flowbuddy next                    # the one habit worth working on now
 flowbuddy learn                   # today's "something new" and your progress through Vim
+flowbuddy watch                   # tips as they come, with what they mean, in a terminal you keep open
 flowbuddy tips [words] [-e]       # your recent tips, or those that match; -e says what each command does
 flowbuddy explain 'ci"'            # what keys do, piece by piece; `explain --last`: your last slow move, done better
 flowbuddy coach [question]        # advice from your AI ([ai]; --prompt shows what it's sent)
@@ -130,7 +138,8 @@ flowbuddy review [--apply 1 2]    # your AI proposes tuning the tips; apply what
 flowbuddy rules                   # list; `rules mute|disable|enable|reset <id>`
 flowbuddy memory show             # the mistake memory; `memory export`, `memory forget`, `memory fix-adoptions`
 flowbuddy report-fp               # the last nudge was wrong
-flowbuddy record start|stop       # record what the rules see (nothing typed) to check them; `record check FILE`
+flowbuddy record start|stop       # record what the rules see (nothing typed); `record check FILE`
+flowbuddy record tune             # what each rule's threshold would give over your recordings, and what you marked unwanted
 ```
 
 Settings live in `~/.config/flowbuddy/config.toml` and are reloaded automatically:
@@ -140,6 +149,7 @@ Settings live in `~/.config/flowbuddy/config.toml` and are reloaded automaticall
 default_mode = "balanced"
 balanced_interval_minutes = 30
 quiet_hours = "22:00-08:00"
+when = "now"                 # or "pause": tips wait until you stop typing for a moment
 nudge_style = "card"              # or "bar"; default: card in active mode
 
 [rules."vim.repeat-jk"]

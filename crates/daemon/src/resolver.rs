@@ -247,6 +247,24 @@ impl Resolver {
         self.claude_vim = on;
     }
 
+    /// Whether VS Code's terminal is the context only by inference (a shell
+    /// spoke after the editor did), not because the companion said so.
+    pub fn terminal_guessed(&self) -> bool {
+        let Some(app_id) = self.focus.app_id.as_deref() else {
+            return false;
+        };
+        contains(&self.ids.vscode, app_id)
+            && self
+                .editor_in(self.focus.pid, &[EditorKind::Vscode])
+                .is_some_and(|(_, e)| {
+                    e.focused != Some(false)
+                        && self
+                            .focus
+                            .pid
+                            .is_some_and(|w| self.terminal_spoke_since(w, e.focused_ms))
+                })
+    }
+
     /// Whether a shell or a Vim plugin under `window_pid` reported after
     /// `since_ms`.
     fn terminal_spoke_since(&self, window_pid: u32, since_ms: u64) -> bool {
@@ -262,6 +280,13 @@ impl Resolver {
 
     pub fn focused_app(&self) -> Option<&str> {
         self.focus.app_id.as_deref()
+    }
+
+    /// The shell did something (its vi-mode switched): it's in use.
+    pub fn shell_active(&mut self, shell_pid: u32, now_ms: u64) {
+        if let Some(s) = self.shells.get_mut(&shell_pid) {
+            s.updated_ms = now_ms;
+        }
     }
 
     pub fn shell_report(

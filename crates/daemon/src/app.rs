@@ -48,6 +48,15 @@ struct SnippetWait {
     deadline_ms: u64,
 }
 
+/// How long a finding waits for a better one about the same keys.
+const HOLD_MS: u64 = 800;
+/// `when = "pause"`: no keys for this long is a pause.
+const PAUSE_MS: u64 = 1500;
+/// A tip still waiting for a pause after this long is stale: dropped.
+const PAUSE_GIVE_UP_MS: u64 = 120_000;
+/// Findings this close together are about the same keys.
+const SAME_GESTURE_MS: u64 = 2000;
+
 /// Recent tips kept for snippets: this many, at most.
 const RECENT_TIPS: usize = 8;
 /// How long editors get to answer.
@@ -89,12 +98,22 @@ pub struct App {
     recent_tips: VecDeque<(&'static str, String, u64)>,
     snippet_waits: Vec<SnippetWait>,
     snippet_seq: u64,
+    /// Findings waiting a moment for a better one about the same keys:
+    /// (finding, context, when it came).
+    holding: Vec<(Finding, ContextKind, u64)>,
+    hold_ms: u64,
+    /// When the last key came, for `when = "pause"`.
+    last_key_ms: Option<u64>,
     /// When `gv` was last typed, to tell it from reselecting by hand.
     last_gv_ms: Option<u64>,
     /// The last movement or edit that could have been shorter.
     last_slow: Option<flowbuddy_core::ipc::LastSlow>,
     /// How the mode guessed from keys compares with editors' reports.
     mode_guess: ModeGuess,
+    /// How long keys and messages take to handle.
+    timings: crate::timing::Timings,
+    /// The day the rolling recording (`[record] keep_days`) was started for.
+    auto_recording: Option<String>,
     /// A session being recorded (`flowbuddy record`), and where to.
     recorder: Option<crate::recorder::Recorder>,
     recordings: PathBuf,
@@ -134,6 +153,10 @@ enum CmdKind {
     Motion,
     /// d, c or y with its motion or text object.
     Operator,
+    /// `v` or `V` from Normal mode: a selection starts.
+    VisualStart,
+    /// An operator on a Visual selection (`d`, `y`, `>`…).
+    VisualOp,
     Other,
 }
 
@@ -246,12 +269,17 @@ impl App {
             last_click_ms: None,
             last_shortcut: None,
             mode_guess: ModeGuess::default(),
+            timings: Default::default(),
             last_slow: None,
             last_gv_ms: None,
+            last_key_ms: None,
+            holding: Vec::new(),
+            hold_ms: HOLD_MS,
             recent_tips: VecDeque::new(),
             snippet_waits: Vec::new(),
             snippet_seq: 0,
             recorder: None,
+            auto_recording: None,
             recordings: flowbuddy_core::paths::recordings_dir(),
             last_nudge_ms: None,
             held_findings: Vec::new(),
@@ -281,6 +309,34 @@ impl App {
     fn reset_rules(&mut self, now_ms: u64) {
         self.engine.reset();
         self.record(now_ms, |t| Some(Entry::Reset { t }));
+    }
+
+    /// With `[record] keep_days`: keep recording, one file per day, and
+    /// delete the old ones. A recording you started yourself is left alone.
+    fn roll_recording(&mut self, now_ms: u64) {
+        let days = self.config.record.keep_days;
+        let today = memory::day(now_ms);
+        if days == 0 {
+            if self.auto_recording.take().is_some() {
+                self.recorder.take().map(|r| r.stop());
+            }
+            return;
+        }
+        let manual = self.recorder.is_some() && self.auto_recording.is_none();
+        if manual || self.auto_recording.as_deref() == Some(today.as_str()) {
+            return;
+        }
+        self.recorder.take().map(|r| r.stop());
+        crate::recorder::Recorder::prune(&self.recordings, days);
+        match crate::recorder::Recorder::start_as(&self.recordings, "auto", now_ms) {
+            Ok(r) => {
+                self.recorder = Some(r);
+                let (context, editor) = (self.resolved.kind, self.resolved.editor.is_some());
+                self.record(now_ms, |t| Some(Entry::Context { t, context, editor }));
+            }
+            Err(e) => tracing::warn!(error = %e, "can't keep the rolling recording"),
+        }
+        self.auto_recording = Some(today);
     }
 
     fn on_record(&mut self, on: Option<bool>, now_ms: u64) -> Result<Recording, String> {
@@ -401,6 +457,11 @@ impl App {
             keys_used,
             best,
         });
+    }
+
+    /// A key or message took this long to handle.
+    pub fn took(&mut self, d: std::time::Duration) {
+        self.timings.record(d);
     }
 
     fn with_memory_config(mut self) -> Self {
@@ -586,9 +647,10 @@ impl App {
             }),
             explain: glossary::explain(text, insert),
         };
-        if self.extension_connected() {
-            self.broadcast(ServerMsg::Nudge(nudge.clone()));
-        } else {
+        // To the extension and anyone watching; a notification if there's
+        // no extension to show it.
+        self.broadcast(ServerMsg::Nudge(nudge.clone()));
+        if !self.extension_connected() {
             // Plain notifications show no markup: drop the markers and put
             // the explanation underneath.
             let mut body = glossary::plain(&nudge.text);
@@ -598,6 +660,13 @@ impl App {
             }
             self.notifier.notify(&nudge.title, &body, nudge.ttl_ms);
         }
+        self.record(now_ms, |t| {
+            Some(Entry::Feedback {
+                t,
+                rule: rule_id.into(),
+                what: "shown".into(),
+            })
+        });
         self.memory.add_history(&flowbuddy_store::HistoryTip {
             shown_at: now_ms / 1000,
             rule_id: rule_id.into(),
@@ -663,6 +732,17 @@ impl App {
             return;
         };
         self.memory.response(rule_id, action, now_ms);
+        let what = serde_json::to_value(action)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default();
+        self.record(now_ms, |t| {
+            Some(Entry::Feedback {
+                t,
+                rule: rule_id.into(),
+                what,
+            })
+        });
         if action == NudgeAction::MuteRule {
             self.set_rule(rule_id, RuleAction::Mute);
         }
@@ -721,6 +801,7 @@ impl App {
         self.resolver.set_ids(app_ids(&config));
         self.coach.set_config(PolicyConfig::from(&config.coaching));
         self.memory.set_config(&config);
+        self.engine.set_known(self.memory.known());
         let text_changed = config.text != self.config.text;
         self.config = config;
         if text_changed {
@@ -756,8 +837,6 @@ impl App {
         now_ms: u64,
         keyed: bool,
     ) {
-        let gate = self.gate(now_ms);
-        let muted = self.state.muted();
         for ev in events {
             match ev {
                 // VS Code: wait for editor activity after the keys (#110).
@@ -778,28 +857,77 @@ impl App {
                     );
                 }
                 RuleEvent::Adoption { at_ms, .. } if keyed && !self.editor_saw(*at_ms) => {}
-                RuleEvent::Finding(f) => {
-                    tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
-                    self.memory.hit(f, ctx, now_ms);
-                    if self.resolved.editor.is_some() {
-                        if self.recent_tips.len() == RECENT_TIPS {
-                            self.recent_tips.pop_front();
-                        }
-                        self.recent_tips
-                            .push_back((f.rule_id, f.text.clone(), f.at_ms));
-                    }
-                    let facts = RuleFacts {
-                        muted: muted.contains(f.rule_id),
-                        stage: self.memory.stage(f.rule_id, ctx),
-                        focus: self.memory.is_focus(f.rule_id),
-                        check_in: self.memory.check_in_due(f.rule_id, ctx),
-                    };
-                    if let Some(f) = self.coach.on_finding(f, facts, &gate, now_ms) {
-                        self.deliver(&f, now_ms);
-                    }
-                }
+                RuleEvent::Finding(f) => self.hold(f.clone(), ctx, now_ms),
                 RuleEvent::Adoption { rule_id, .. } => self.memory.adoption(rule_id, ctx, now_ms),
             }
+        }
+    }
+
+    /// Hold a finding a moment: rules that see the same keys can fire a
+    /// little apart (`.` on the third repeat, a macro on the fourth), and
+    /// only the better-ranked one should become a tip.
+    fn hold(&mut self, f: Finding, ctx: ContextKind, now_ms: u64) {
+        if self.hold_ms == 0 && !self.wait_for_pause() {
+            return self.take(&f, ctx, now_ms);
+        }
+        let rank = self.engine.rank_of(f.rule_id);
+        if let Some(p) = self
+            .holding
+            .iter_mut()
+            .find(|(h, _, _)| h.at_ms.abs_diff(f.at_ms) <= SAME_GESTURE_MS)
+        {
+            if rank < self.engine.rank_of(p.0.rule_id) {
+                tracing::debug!(kept = f.rule_id, dropped = p.0.rule_id, "same gesture");
+                *p = (f, ctx, now_ms);
+            } else {
+                tracing::debug!(kept = p.0.rule_id, dropped = f.rule_id, "same gesture");
+            }
+            return;
+        }
+        self.holding.push((f, ctx, now_ms));
+    }
+
+    fn wait_for_pause(&self) -> bool {
+        self.config.coaching.when == config::TipTiming::Pause
+    }
+
+    /// Findings held long enough become tips (or don't, by the policy);
+    /// with `when = "pause"`, only once no key came for a moment.
+    fn release(&mut self, now_ms: u64) {
+        let paused = !self.wait_for_pause()
+            || self
+                .last_key_ms
+                .is_none_or(|t| now_ms.saturating_sub(t) >= PAUSE_MS);
+        let stale = |at: u64| now_ms.saturating_sub(at) > PAUSE_GIVE_UP_MS;
+        let (ready, wait): (Vec<_>, Vec<_>) = std::mem::take(&mut self.holding)
+            .into_iter()
+            .filter(|(_, _, at)| !stale(*at))
+            .partition(|(_, _, at)| paused && now_ms.saturating_sub(*at) >= self.hold_ms);
+        self.holding = wait;
+        for (f, ctx, _) in ready {
+            self.take(&f, ctx, now_ms);
+        }
+    }
+
+    fn take(&mut self, f: &Finding, ctx: ContextKind, now_ms: u64) {
+        tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
+        self.memory.hit(f, ctx, now_ms);
+        if self.resolved.editor.is_some() {
+            if self.recent_tips.len() == RECENT_TIPS {
+                self.recent_tips.pop_front();
+            }
+            self.recent_tips
+                .push_back((f.rule_id, f.text.clone(), f.at_ms));
+        }
+        let gate = self.gate(now_ms);
+        let facts = RuleFacts {
+            muted: self.state.muted().contains(f.rule_id),
+            stage: self.memory.stage(f.rule_id, ctx),
+            focus: self.memory.is_focus(f.rule_id),
+            check_in: self.memory.check_in_due(f.rule_id, ctx),
+        };
+        if let Some(f) = self.coach.on_finding(f, facts, &gate, now_ms) {
+            self.deliver(&f, now_ms);
         }
     }
 
@@ -836,17 +964,30 @@ impl App {
     }
 
     /// Keys pressed for a movement: the motion commands just before its end,
-    /// back to its start or the last command that wasn't a motion.
-    fn keys_for(&self, m: &Motion) -> u32 {
+    /// back to its start or the last command that wasn't a motion. 0 when
+    /// the count can't be trusted: a click came during it, or VS Code saw
+    /// fewer moves than the commands counted (keys from another moment).
+    /// Vim merges cursor events while keys are typed fast, so only VS
+    /// Code's count is checked.
+    fn keys_for(&self, m: &Motion, conn: ConnId) -> u32 {
         let from = m.start_ms.saturating_sub(MOTION_LEAD_MS);
         let to = m.end_ms + MOTION_LAG_MS;
-        self.commands
+        let (keys, commands) = self
+            .commands
             .iter()
             .rev()
             .skip_while(|c| c.at_ms > to)
             .take_while(|c| c.at_ms >= from && c.kind == CmdKind::Motion)
-            .map(|c| c.keys)
-            .sum()
+            .fold((0, 0), |(k, n), c| (k + c.keys, n + 1));
+        let clicked = self
+            .last_click_ms
+            .is_some_and(|t| t >= m.start_ms && t <= m.end_ms);
+        let too_many = self.is_vscode(conn) && commands > m.moves + 1;
+        if clicked || too_many {
+            tracing::debug!(clicked, commands, moves = m.moves, "key count not trusted");
+            return 0;
+        }
+        keys
     }
 
     /// Keys pressed for an operator the editor reported: the operator
@@ -862,10 +1003,25 @@ impl App {
             .rev()
             .skip_while(|c| c.at_ms > at_ms + MOTION_LAG_MS);
         let Some(op) = recent.next().filter(|c| {
-            c.kind == CmdKind::Operator && at_ms.saturating_sub(c.at_ms) <= MOTION_LEAD_MS
+            matches!(c.kind, CmdKind::Operator | CmdKind::VisualOp)
+                && at_ms.saturating_sub(c.at_ms) <= MOTION_LEAD_MS
         }) else {
             return (0, 0);
         };
+        // A selection: everything from `v` to the operator is what a
+        // better command would replace.
+        if op.kind == CmdKind::VisualOp {
+            let mut keys = op.keys;
+            for c in recent {
+                keys += c.keys;
+                match c.kind {
+                    CmdKind::VisualStart => return (keys, keys),
+                    CmdKind::Motion => {}
+                    _ => break,
+                }
+            }
+            return (0, 0);
+        }
         let mut keys = op.keys;
         let mut next_at = op.at_ms;
         for c in recent {
@@ -981,11 +1137,20 @@ impl App {
         }
         self.something_new(now_ms);
         self.answer_snippets(now_ms);
+        self.roll_recording(now_ms);
+        self.release(now_ms);
         let events = self.engine.tick(self.resolved.kind, now_ms);
         self.on_rule_events(&events, now_ms);
-        let gate = self.gate(now_ms);
-        for f in self.coach.on_tick(&gate, now_ms) {
-            self.deliver(&f, now_ms);
+        // A batch waits for a pause too, if you asked for that.
+        let typing = self.wait_for_pause()
+            && self
+                .last_key_ms
+                .is_some_and(|t| now_ms.saturating_sub(t) < PAUSE_MS);
+        if !typing {
+            let gate = self.gate(now_ms);
+            for f in self.coach.on_tick(&gate, now_ms) {
+                self.deliver(&f, now_ms);
+            }
         }
         self.memory.maintain(now_ms);
         self.end_of_day(now_ms);
@@ -1014,6 +1179,7 @@ impl App {
             return Vec::new();
         }
         self.memory.active(kind, now_ms);
+        self.last_key_ms = Some(stroke.at_ms);
         let step = self.tracker.feed(stroke);
         if !step.confident {
             self.mode_guess.keys_unsure += 1;
@@ -1051,6 +1217,14 @@ impl App {
             }
             let kind = if motion::is_motion(c) {
                 CmdKind::Motion
+            } else if step.before.is_visual()
+                && c.single()
+                    .and_then(|k| k.plain_char())
+                    .is_some_and(|h| matches!(h, 'd' | 'c' | 'y' | 'x' | 's' | '>' | '<'))
+            {
+                CmdKind::VisualOp
+            } else if !step.before.is_visual() && (c.is("v") || c.is("V")) {
+                CmdKind::VisualStart
             } else if c.keys.len() >= 2 && c.head().is_some_and(|h| matches!(h, 'd' | 'c' | 'y')) {
                 CmdKind::Operator
             } else {
@@ -1109,10 +1283,16 @@ impl App {
             let (context, editor) = (new.kind, new.editor.is_some());
             self.record(now_ms, |t| Some(Entry::Context { t, context, editor }));
         }
-        if let Some(mode) = known {
+        // Only guessed that you went to VS Code's terminal (a background
+        // command can finish there too): the mode stays unknown until
+        // there's more to go on, so no tip comes from the guess.
+        let guessed = changed && self.resolver.terminal_guessed();
+        if guessed {
+            self.tracker.invalidate();
+        } else if let Some(mode) = known {
             self.tracker.reset_known(mode);
         }
-        if changed {
+        if changed && !guessed {
             self.apply_editor_mode();
         }
     }
@@ -1179,10 +1359,11 @@ impl App {
         }
     }
 
-    /// Send to every client that stays connected (the extension).
+    /// Send to every client that stays connected to show things: the
+    /// extension and `flowbuddy watch`.
     fn broadcast(&self, msg: ServerMsg) {
         for c in self.clients.values() {
-            if c.kind == Some(ClientKind::GnomeExtension) {
+            if matches!(c.kind, Some(ClientKind::GnomeExtension | ClientKind::Watch)) {
                 let _ = c.tx.send(msg.clone());
             }
         }
@@ -1214,12 +1395,30 @@ impl App {
             }
             ClientMsg::Focus { app_id, pid, .. } => self.set_focus(app_id, pid, now_ms),
             ClientMsg::Ctx {
+                event: CtxEvent::Mode,
+                mode,
+                shell_pid,
+                ..
+            } => {
+                // The shell said which vi-mode it's in: better than our guess.
+                // Only a disagreement resets, so keys typed meanwhile count.
+                self.resolver.shell_active(shell_pid, now_ms);
+                self.update_context(None, now_ms);
+                if let Some(m) = mode.and_then(|m| m.vim_mode())
+                    && self.resolved.shell_pid == Some(shell_pid)
+                    && (!self.tracker.confident() || !self.tracker.mode().same_kind(m))
+                {
+                    self.tracker.reset_known(m);
+                }
+            }
+            ClientMsg::Ctx {
                 event,
                 command,
                 vi_mode,
                 shell_pid,
                 shape,
                 tty,
+                ..
             } => {
                 // Two habits are plain from the command's name alone.
                 let named = match (event, command.as_deref()) {
@@ -1246,7 +1445,7 @@ impl App {
                         };
                         (ShellState::Fg(command), known)
                     }
-                    CtxEvent::Prompt => (
+                    CtxEvent::Prompt | CtxEvent::Mode => (
                         ShellState::Prompt {
                             vi: vi_mode.unwrap_or(false),
                         },
@@ -1346,7 +1545,7 @@ impl App {
             }
             ClientMsg::Motion(m) if self.resolved.editor == Some(conn) => {
                 let ev = MotionEvent {
-                    keys_used: self.keys_for(&m),
+                    keys_used: self.keys_for(&m, conn),
                     motion: m,
                 };
                 self.record(now_ms, |t| {
@@ -1582,6 +1781,7 @@ impl App {
                 .is_some(),
             confident: self.tracker.confident(),
             mode_guess: (self.mode_guess != ModeGuess::default()).then_some(self.mode_guess),
+            timing: self.timings.summary(),
             keyboards: self.keyboards,
             clients,
         }
@@ -1609,6 +1809,8 @@ pub(crate) mod tests {
             Box::new(crate::notify::fake::Recorder::default()),
         );
         app.claude_probe = || false;
+        // Tips straight away, as most tests expect; the hold has its own.
+        app.hold_ms = 0;
         app
     }
 
@@ -1716,6 +1918,7 @@ pub(crate) mod tests {
                 shell_pid,
                 tty: None,
                 shape: None,
+                mode: None,
             },
             0,
         );
@@ -1944,6 +2147,7 @@ pub(crate) mod tests {
             Box::new(recorder.clone()),
         );
         app.claude_probe = || false;
+        app.hold_ms = 0;
         let _cli = connect(&mut app, 1);
         focus(&mut app, "code_code", 500);
         keys(&mut app, "<Esc>xxxxxw");
@@ -2016,6 +2220,7 @@ pub(crate) mod tests {
         )
         .with_store(store);
         app.claude_probe = || false;
+        app.hold_ms = 0;
         (app, recorder)
     }
 
@@ -2256,6 +2461,7 @@ pub(crate) mod tests {
                     shell_pid: 200,
                     tty: None,
                     shape: Some(CommandShape::CdUp),
+                    mode: None,
                 },
                 at,
             )
@@ -2609,6 +2815,7 @@ pub(crate) mod tests {
                 shell_pid: 200,
                 tty: None,
                 shape: None,
+                mode: None,
             },
             0,
         );
@@ -3127,5 +3334,259 @@ pub(crate) mod tests {
         let n = nudges(&mut ext);
         assert_eq!(n.len(), 1, "{n:?}");
         assert_eq!(n[0].rule_id, "vim.reselect");
+    }
+
+    #[test]
+    fn shells_say_their_vi_mode() {
+        let mut app = test_app(CoachingMode::Active);
+        let _rx = connect(&mut app, 1);
+        focus(&mut app, "org.gnome.Terminal", 100);
+        ctx(&mut app, CtxEvent::Prompt, None, 200);
+        assert_eq!(app.context().kind, ContextKind::BashVi);
+        assert_eq!(app.mode_known(), (VimMode::Insert, true));
+        let mode = |app: &mut App, m, pid| {
+            send(
+                app,
+                1,
+                ClientMsg::Ctx {
+                    event: CtxEvent::Mode,
+                    command: None,
+                    vi_mode: Some(true),
+                    shell_pid: pid,
+                    tty: None,
+                    shape: None,
+                    mode: Some(m),
+                },
+                0,
+            )
+        };
+        mode(&mut app, EditorMode::Normal, 200);
+        assert_eq!(app.mode_known(), (VimMode::Normal, true));
+        // Another shell's switch doesn't count here.
+        mode(&mut app, EditorMode::Insert, 300);
+        assert_eq!(app.mode_known(), (VimMode::Normal, true));
+    }
+
+    #[test]
+    fn a_guessed_terminal_switch_gives_no_tips() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
+        focus(&mut app, "code_code", 500);
+        send(
+            &mut app,
+            2,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            0,
+        );
+        // A shell under VS Code reports: maybe you clicked into the
+        // terminal, maybe a background command finished.
+        send(
+            &mut app,
+            1,
+            ClientMsg::Ctx {
+                event: CtxEvent::Prompt,
+                command: None,
+                vi_mode: Some(true),
+                shell_pid: 510,
+                tty: None,
+                shape: None,
+                mode: None,
+            },
+            10,
+        );
+        assert_eq!(app.context().kind, ContextKind::BashVi);
+        assert!(!app.mode_known().1, "mode unknown after a guess");
+        keys(&mut app, "lllllllll");
+        assert!(nudges(&mut ext).is_empty());
+    }
+
+    #[test]
+    fn key_counts_that_dont_add_up_are_dropped() {
+        let mut app = test_app(CoachingMode::Active);
+        let _rx = connect(&mut app, 1);
+        let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
+        focus(&mut app, "code_code", 500);
+        send(
+            &mut app,
+            2,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            0,
+        );
+        send(
+            &mut app,
+            2,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        keys(&mut app, "jjjjjjj");
+        let motion = |moves| Motion {
+            start_ms: 0,
+            end_ms: 700,
+            moves,
+            mode: EditorMode::Normal,
+            lines: 7,
+            cols: 0,
+            facts: Default::default(),
+        };
+        assert_eq!(app.keys_for(&motion(7), 2), 7);
+        // VS Code saw two moves: five of those keys belong elsewhere.
+        assert_eq!(app.keys_for(&motion(2), 2), 0);
+        // A click in the middle: the keys didn't make the whole move.
+        app.on_pointer_click(300);
+        assert_eq!(app.keys_for(&motion(7), 2), 0);
+    }
+
+    #[test]
+    fn one_tip_when_two_rules_fire_a_moment_apart() {
+        let mut app = test_app(CoachingMode::Active);
+        app.hold_ms = HOLD_MS;
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "org.gnome.Terminal", 100);
+        ctx(&mut app, CtxEvent::Fg, Some("vim"), 200);
+        let finding = |rule_id, at_ms| Finding {
+            rule_id,
+            title: "t",
+            text: "Use `.`".into(),
+            shape: flowbuddy_core::rule::Shape::fixed("x"),
+            mode: VimMode::Normal,
+            at_ms,
+        };
+        // The dot-repeat tip, then the macro tip a second later: the macro
+        // ranks higher and is the one shown.
+        app.on_rule_events_in(
+            ContextKind::TerminalVim,
+            &[RuleEvent::Finding(finding("vim.dot-repeat", 1_000))],
+            1_000,
+            false,
+        );
+        app.on_rule_events_in(
+            ContextKind::TerminalVim,
+            &[RuleEvent::Finding(finding("vim.macro", 1_900))],
+            1_900,
+            false,
+        );
+        assert!(nudges(&mut ext).is_empty(), "held");
+        app.tick(3_000);
+        let n = nudges(&mut ext);
+        assert_eq!(
+            n.iter().map(|n| n.rule_id.as_str()).collect::<Vec<_>>(),
+            ["vim.macro"]
+        );
+    }
+
+    #[test]
+    fn a_long_selection_gets_a_shorter_operator() {
+        use flowbuddy_core::editor::{Operator, OperatorRange, OperatorReport};
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        type_at(&mut app, "Vjjjjjjjjjjd", 1_000);
+        let report = OperatorReport {
+            op: Operator::Delete,
+            at_ms: 2_200,
+            objects: vec![],
+            range: Some(OperatorRange {
+                linewise: true,
+                lines: 10,
+                facts: flowbuddy_core::editor::MotionFacts {
+                    paragraph_hops: Some(1),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        };
+        send(&mut app, 3, ClientMsg::Operator(report), 2_250);
+        let n = nudges(&mut ext);
+        assert!(
+            n.iter()
+                .any(|n| n.rule_id == "motion.operator" && n.text.contains("`d}`")),
+            "{n:?}"
+        );
+    }
+
+    #[test]
+    fn watchers_get_tips_too() {
+        let (mut app, notes) = app_with_store(CoachingMode::Active);
+        let mut watch = connect(&mut app, 2);
+        send(&mut app, 2, hello(ClientKind::Watch), 0);
+        // Without the extension: a notification, and the watcher too.
+        app.show("vim.repeat-jk", "Try a count", "Try `7j`.", false, 1_000);
+        assert_eq!(nudges(&mut watch).len(), 1);
+        assert_eq!(notes.0.borrow().len(), 1);
+        // With it: the extension and the watcher, no notification.
+        let mut ext = ext_hello(&mut app, 1);
+        app.show("vim.repeat-jk", "Try a count", "Try `7j`.", false, 2_000);
+        assert_eq!(nudges(&mut ext).len(), 1);
+        assert_eq!(nudges(&mut watch).len(), 1);
+        assert_eq!(notes.0.borrow().len(), 1);
+    }
+
+    #[test]
+    fn tips_wait_for_a_pause_when_asked() {
+        let mut app = test_app(CoachingMode::Active);
+        app.config.coaching.when = config::TipTiming::Pause;
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "org.gnome.Terminal", 100);
+        ctx(&mut app, CtxEvent::Fg, Some("vim"), 200);
+        // jjjjjjj then more typing: the tip waits.
+        type_at(&mut app, "<Esc>jjjjjjjxw", 10_000);
+        app.tick(11_200);
+        assert!(nudges(&mut ext).is_empty(), "still typing");
+        app.tick(13_000);
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1, "{n:?}");
+    }
+
+    #[test]
+    fn a_rolling_recording_with_feedback() {
+        let dir = std::env::temp_dir().join(format!("flowbuddy-roll-{}", std::process::id()));
+        let mut app = test_app(CoachingMode::Active);
+        app.recordings = dir.clone();
+        app.config.record.keep_days = 3;
+        let mut ext = ext_hello(&mut app, 1);
+        app.tick(1_000);
+        assert!(app.on_record(None, 1_000).unwrap().recording);
+        app.show("vim.repeat-jk", "Try a count", "Try `7j`.", false, 2_000);
+        let id = nudges(&mut ext)[0].nudge_id.clone();
+        send(
+            &mut app,
+            1,
+            ClientMsg::NudgeResponse {
+                nudge_id: id,
+                action: NudgeAction::FalsePositive,
+            },
+            3_000,
+        );
+        let path = app.on_record(None, 3_000).unwrap().path.unwrap();
+        app.recorder.as_mut().unwrap().flush();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(path.contains("/auto-"), "{path}");
+        assert!(
+            text.contains(r#""what":"shown""#) && text.contains(r#""what":"false_positive""#),
+            "{text}"
+        );
+        // Turned off: it stops.
+        app.config.record.keep_days = 0;
+        app.tick(4_000);
+        assert!(!app.on_record(None, 4_000).unwrap().recording);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

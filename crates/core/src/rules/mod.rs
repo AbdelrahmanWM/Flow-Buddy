@@ -18,9 +18,9 @@ pub const PRECEDENCE: &[&str] = &[
     "vim.change-matches",
     "vim.dot-repeat",
     "vim.delete-then-insert",
-    "vim.visual-operator",
     "motion.text-object",
     "motion.operator",
+    "vim.visual-operator",
     "vim.shorthand",
     "vim.w-then-q",
 ];

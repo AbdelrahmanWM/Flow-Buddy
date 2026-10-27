@@ -80,6 +80,17 @@ __flowbuddy_precmd() {
     __flowbuddy_send prompt --vi-mode $vi
 }
 
+# zsh says when the vi-mode switches: report it, so Flow Buddy needn't
+# guess the mode from keys.
+__flowbuddy_keymap() {
+    case $KEYMAP in
+        vicmd) __flowbuddy_send mode normal ;;
+        viins | main) __flowbuddy_send mode insert ;;
+    esac
+}
+
 autoload -Uz add-zsh-hook
 add-zsh-hook preexec __flowbuddy_preexec
 add-zsh-hook precmd __flowbuddy_precmd
+autoload -Uz add-zle-hook-widget 2>/dev/null &&
+    add-zle-hook-widget keymap-select __flowbuddy_keymap

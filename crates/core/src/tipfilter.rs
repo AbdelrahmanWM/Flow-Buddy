@@ -139,15 +139,25 @@ pub const ALWAYS_FIRST: u32 = 3;
 /// filter keeps learning whether it was right.
 pub const EXPLORE_EVERY: u32 = 5;
 
-/// Whether to show a tip: `shown_before` tips of this rule were shown, and
-/// `skipped_in_a_row` have been skipped since the last one shown.
+/// Before the model has learned: this many of a rule's tips in a row
+/// dismissed, marked not helpful or ignored, and it backs off.
+pub const COLD_BACKOFF: u32 = 3;
+
+/// Whether to show a tip: `shown_before` tips of this rule were shown,
+/// `skipped_in_a_row` have been skipped since the last one shown, and its
+/// latest `unhelpful_in_a_row` tips weren't acted on.
 pub fn should_show(
     model: Option<&Model>,
     f: &TipFeatures<'_>,
     shown_before: u32,
     skipped_in_a_row: u32,
+    unhelpful_in_a_row: u32,
 ) -> bool {
-    let Some(model) = model else { return true };
+    let Some(model) = model else {
+        // Not learned yet: back off a rule that keeps going unheeded, but
+        // let one through now and then, as the model does.
+        return unhelpful_in_a_row < COLD_BACKOFF || skipped_in_a_row + 1 >= EXPLORE_EVERY;
+    };
     shown_before < ALWAYS_FIRST || skipped_in_a_row + 1 >= EXPLORE_EVERY || model.score(f) >= CUTOFF
 }
 
@@ -177,7 +187,12 @@ mod tests {
     fn nothing_filtered_before_enough_outcomes() {
         let rows: Vec<_> = (0..10).map(|_| (tip("a", 10, 0), label(false))).collect();
         assert!(Model::train(&rows).is_none());
-        assert!(should_show(None, &tip("a", 10, 0), 99, 0));
+        assert!(should_show(None, &tip("a", 10, 0), 99, 0, 0));
+        // Before learning: three unheeded in a row back off, with a look now
+        // and then.
+        assert!(should_show(None, &tip("a", 10, 0), 9, 0, 2));
+        assert!(!should_show(None, &tip("a", 10, 0), 9, 0, 3));
+        assert!(should_show(None, &tip("a", 10, 0), 9, EXPLORE_EVERY - 1, 3));
     }
 
     #[test]
@@ -192,15 +207,16 @@ mod tests {
         let good = m.score(&tip("vim.helps", 14, 1));
         let bad = m.score(&tip("vim.noise", 14, 1));
         assert!(good > 0.8 && bad < 0.2, "{good} {bad}");
-        assert!(should_show(Some(&m), &tip("vim.helps", 14, 1), 10, 0));
-        assert!(!should_show(Some(&m), &tip("vim.noise", 14, 1), 10, 0));
+        assert!(should_show(Some(&m), &tip("vim.helps", 14, 1), 10, 0, 0));
+        assert!(!should_show(Some(&m), &tip("vim.noise", 14, 1), 10, 0, 0));
         // But never a rule's first tips, and now and then anyway.
-        assert!(should_show(Some(&m), &tip("vim.noise", 14, 1), 1, 0));
+        assert!(should_show(Some(&m), &tip("vim.noise", 14, 1), 1, 0, 0));
         assert!(should_show(
             Some(&m),
             &tip("vim.noise", 14, 1),
             10,
-            EXPLORE_EVERY - 1
+            EXPLORE_EVERY - 1,
+            0
         ));
     }
 

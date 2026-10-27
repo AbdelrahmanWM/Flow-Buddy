@@ -56,6 +56,9 @@ function linesOf(document) {
     });
 }
 
+// Facts slower than this are logged (Help > Toggle Developer Tools).
+const SLOW_MS = 20;
+
 class MotionTracker {
     constructor(link, modeTracker) {
         this._link = link;
@@ -160,6 +163,7 @@ class MotionTracker {
         const window = ranges.length === 1
             ? {top: ranges[0].start.line, bottom: ranges[0].end.line} : null;
         let facts = {};
+        const started = Date.now();
         try {
             facts = computeFacts(linesOf(editor.document), seg.start, seg.end, {
                 window,
@@ -170,6 +174,9 @@ class MotionTracker {
         } catch (e) {
             console.warn(`flowbuddy: motion facts failed: ${e}`);
         }
+        const took = Date.now() - started;
+        if (took > SLOW_MS)
+            console.warn(`flowbuddy: motion facts took ${took} ms`);
         const top = topLine(editor);
         if (seg.top !== null && top !== null)
             facts.view_scrolled = top - seg.top;

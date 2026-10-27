@@ -16,6 +16,13 @@ const HOUR_MS: u64 = 3_600_000;
 
 pub use flowbuddy_store::days::day;
 
+/// What [`Memory::progress`] reads from the database.
+#[derive(Clone)]
+struct ProgressCache {
+    uses: HashMap<String, u64>,
+    items: HashMap<String, flowbuddy_store::LearnRow>,
+}
+
 /// A pattern: (rule id, context).
 type PatternKey = (String, String);
 
@@ -27,6 +34,11 @@ pub struct Memory {
     last_active_minute: Option<(u64, ContextKind)>,
     last_maintenance_ms: Option<u64>,
     learning: LearningConfig,
+    /// Curriculum levels taken as known (`[learn] level`).
+    known_levels: u8,
+    /// Uses and daily-tip rows per curriculum item, read once and kept up
+    /// to date here, so knowing what you know needn't read the database.
+    progress_cache: std::cell::RefCell<Option<ProgressCache>>,
     retention_days: u32,
     /// The habit worth working on now (`flowbuddy next`), updated hourly.
     focus: Option<String>,
@@ -64,6 +76,8 @@ impl Memory {
             last_active_minute: None,
             last_maintenance_ms: None,
             learning: config.learning,
+            known_levels: config.learn.level.known_levels(),
+            progress_cache: std::cell::RefCell::new(None),
             retention_days: config.memory.episode_retention_days,
             focus: None,
             check_ins: HashSet::new(),
@@ -101,6 +115,7 @@ impl Memory {
     pub fn set_config(&mut self, config: &Config) {
         self.learning = config.learning;
         self.retention_days = config.memory.episode_retention_days;
+        self.known_levels = config.learn.level.known_levels();
     }
 
     /// A tip as it was shown, for `flowbuddy tips` and the menu.
@@ -213,7 +228,12 @@ impl Memory {
         };
         let shown = self.shown.get(rule_id).copied().unwrap_or(0);
         let skipped = self.skipped.get(rule_id).copied().unwrap_or(0);
-        if tipfilter::should_show(self.filter.as_ref(), &f, shown, skipped) {
+        let unhelpful = if self.filter.is_none() {
+            self.unhelpful_in_a_row(rule_id, now_ms)
+        } else {
+            0
+        };
+        if tipfilter::should_show(self.filter.as_ref(), &f, shown, skipped, unhelpful) {
             return true;
         }
         *self.skipped.entry(rule_id).or_default() += 1;
@@ -223,6 +243,27 @@ impl Memory {
         self.skipped_today.1 += 1;
         tracing::debug!(rule = rule_id, "tip skipped by the learned filter");
         false
+    }
+
+    /// How many of this rule's latest tips (last 30 days) were dismissed,
+    /// marked not helpful or ignored, counting back from the newest that
+    /// has an outcome.
+    fn unhelpful_in_a_row(&self, rule_id: &str, now_ms: u64) -> u32 {
+        use flowbuddy_store::Outcome;
+        let Some(store) = &self.store else { return 0 };
+        let since = (now_ms / 1000).saturating_sub(30 * 86_400);
+        let rows = store.tips(since).unwrap_or_default();
+        rows.iter()
+            .rev()
+            .filter(|r| r.rule_id == rule_id)
+            .filter_map(|r| r.outcome)
+            .take_while(|o| {
+                matches!(
+                    o,
+                    Outcome::Dismissed | Outcome::NotHelpful | Outcome::Ignored
+                )
+            })
+            .count() as u32
     }
 
     /// What the filter is doing, for `flowbuddy status`.
@@ -361,6 +402,11 @@ impl Memory {
         for (id, n) in &usage {
             let _ = store.add_command_use(&today, id, *n);
         }
+        if let Some(c) = self.progress_cache.borrow_mut().as_mut() {
+            for (id, n) in &usage {
+                *c.uses.entry(id.to_string()).or_default() += n;
+            }
+        }
         for row in store.learn_items().unwrap_or_default() {
             if row.learned_at.is_some() || !usage.contains_key(row.item_id.as_str()) {
                 continue;
@@ -373,6 +419,7 @@ impl Memory {
                 .unwrap_or(0);
             if uses >= curriculum::KNOWN_USES {
                 let _ = store.learn_learned(&row.item_id, now_ms / 1000);
+                self.progress_cache.replace(None);
             }
         }
     }
@@ -380,13 +427,19 @@ impl Memory {
     /// Uses and daily-tip rows per curriculum item.
     fn progress(&self) -> Option<impl Fn(&str) -> curriculum::Progress + use<>> {
         let store = self.store.as_ref()?;
-        let uses = store.command_uses("0000-00-00").ok()?;
-        let items: HashMap<String, flowbuddy_store::LearnRow> = store
-            .learn_items()
-            .ok()?
-            .into_iter()
-            .map(|r| (r.item_id.clone(), r))
-            .collect();
+        let mut cache = self.progress_cache.borrow_mut();
+        if cache.is_none() {
+            *cache = Some(ProgressCache {
+                uses: store.command_uses("0000-00-00").ok()?,
+                items: store
+                    .learn_items()
+                    .ok()?
+                    .into_iter()
+                    .map(|r| (r.item_id.clone(), r))
+                    .collect(),
+            });
+        }
+        let ProgressCache { uses, items } = cache.clone()?;
         Some(move |id: &str| {
             let row = items.get(id);
             curriculum::Progress {
@@ -409,7 +462,7 @@ impl Memory {
             .iter()
             .filter(|(_, s)| **s == Stage::Mastered)
             .map(|((rule, _), _)| rule.as_str());
-        curriculum::Known::from_progress(&progress, mastered)
+        curriculum::Known::from_progress(&progress, mastered).with_levels(self.known_levels)
     }
 
     /// The day's "something new", if anything's left to learn.
@@ -425,6 +478,7 @@ impl Memory {
     pub fn learn_shown(&self, item_id: &str, now_ms: u64) {
         if let Some(store) = &self.store {
             let _ = store.learn_shown(item_id, now_ms / 1000);
+            self.progress_cache.replace(None);
         }
     }
 
@@ -561,5 +615,50 @@ impl Memory {
             describe,
             self.focus.as_deref(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flowbuddy_store::{Outcome, TipShown};
+
+    #[test]
+    fn backs_off_a_rule_nobody_heeds_before_the_filter_learns() {
+        let store = Store::open_in_memory().unwrap();
+        let tip = |at| TipShown {
+            shown_at: at,
+            rule_id: "vim.repeat-jk",
+            context: "terminal-vim",
+            stage: "nudged",
+            hour: 10,
+            mode: "active",
+            prior_today: 0,
+        };
+        for (i, outcome) in [
+            Outcome::Adopted,
+            Outcome::Dismissed,
+            Outcome::Ignored,
+            Outcome::NotHelpful,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = store.tip_shown(&tip(1_000 + i as u64)).unwrap();
+            store.close_tip(id, outcome).unwrap();
+        }
+        let mut m = Memory::new(Some(store), &Config::default());
+        assert_eq!(m.unhelpful_in_a_row("vim.repeat-jk", 2_000_000), 3);
+        assert_eq!(m.unhelpful_in_a_row("vim.repeat-x", 2_000_000), 0);
+        let f = Finding {
+            rule_id: "vim.repeat-jk",
+            title: "t",
+            text: "x".into(),
+            shape: flowbuddy_core::rule::Shape::fixed("x"),
+            mode: flowbuddy_core::context::VimMode::Normal,
+            at_ms: 0,
+        };
+        m.hit(&f, ContextKind::TerminalVim, 2_000_000);
+        assert!(!m.filter_allows("vim.repeat-jk", "active", 10, 2_000_000));
     }
 }

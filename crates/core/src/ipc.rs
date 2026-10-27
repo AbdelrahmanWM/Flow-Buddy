@@ -19,6 +19,8 @@ pub enum ClientKind {
     BashHook,
     /// An editor plugin: the VS Code companion or the Vim/Neovim plugin.
     Editor,
+    /// `flowbuddy watch`: gets every tip as it's shown.
+    Watch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +30,8 @@ pub enum CtxEvent {
     Fg,
     /// The prompt is back.
     Prompt,
+    /// The shell's vi-mode switched (zsh and fish say so; bash can't).
+    Mode,
 }
 
 /// UI events an editor reports for the VS Code pack.
@@ -201,6 +205,9 @@ pub enum ClientMsg {
         /// fixed list; the command line itself is never sent.
         #[serde(default)]
         shape: Option<CommandShape>,
+        /// With [`CtxEvent::Mode`]: the mode it switched to.
+        #[serde(default)]
+        mode: Option<crate::editor::EditorMode>,
     },
     NudgeResponse {
         nudge_id: String,
@@ -421,6 +428,9 @@ pub struct Status {
     /// since the daemon started; `None` before any report.
     #[serde(default)]
     pub mode_guess: Option<ModeGuess>,
+    /// How long the daemon takes per key and message.
+    #[serde(default)]
+    pub timing: Option<String>,
     pub keyboards: usize,
     pub clients: Vec<ClientKind>,
 }

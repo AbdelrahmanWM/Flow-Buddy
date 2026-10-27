@@ -768,6 +768,14 @@ impl Known {
         }
     }
 
+    /// Also everything up to curriculum level `up_to`, as `[learn] level`
+    /// says you know it.
+    pub fn with_levels(mut self, up_to: u8) -> Self {
+        self.ids
+            .extend(CURRICULUM.iter().filter(|i| i.level <= up_to).map(|i| i.id));
+        self
+    }
+
     pub fn knows(&self, id: &str) -> bool {
         self.everything || self.ids.contains(id)
     }
@@ -995,6 +1003,15 @@ mod tests {
         assert!(k.knows("find") && k.ready("till"));
         assert!(!none.ready_for_rule("motion.text-object"));
         assert!(none.ready_for_rule("motion.count") && none.ready_for_rule("shell.cd-up"));
+    }
+
+    #[test]
+    fn your_level_counts_as_known() {
+        let k = Known::of([]).with_levels(1);
+        assert!(k.knows("change-word") && k.ready("ciw") && !k.knows("ciw"));
+        let k = Known::of([]).with_levels(2);
+        assert!(k.knows("ciw") && k.ready("ci-paren"));
+        assert!(!Known::of([]).with_levels(0).knows("word"));
     }
 
     #[test]

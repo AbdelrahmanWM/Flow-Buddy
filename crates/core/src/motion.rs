@@ -930,6 +930,25 @@ pub fn range_plans(
         }
     };
     let mut out = Vec::new();
+    if range.linewise {
+        let n = range.lines.max(0) as u32 + 1;
+        if f.paragraph_hops == Some(1) {
+            out.push((format!("{o}}}"), 2, "paragraph"));
+        }
+        if f.file_end {
+            out.push((format!("{o}G"), 2, "file-ends"));
+        }
+        if n <= GLANCE {
+            let (k, c) = if n == 1 {
+                (format!("{o}{o}"), 2)
+            } else {
+                (format!("{n}{o}{o}"), digits(n) + 2)
+            };
+            out.push((k, c, "count"));
+        }
+        out.sort_by_key(|(_, c, _)| *c);
+        return out;
+    }
     if f.line_end {
         match op {
             Operator::Delete => out.push(("D".to_string(), 1, "d-to-end")),
@@ -1538,6 +1557,7 @@ mod tests {
                 ..Default::default()
             },
             words: None,
+            ..Default::default()
         };
         let mut out = Vec::new();
         OperatorMotionRule::default().on_operator(&ev(Operator::Delete, 3, word.clone()), &mut out);
@@ -1557,6 +1577,7 @@ mod tests {
                 ..Default::default()
             },
             words: Some(4),
+            ..Default::default()
         };
         let plans = range_plans(Operator::Change, &to_end);
         assert_eq!(plans[0].0, "C");
@@ -1591,5 +1612,34 @@ mod tests {
         );
         // Close by, a count or a few presses do.
         assert_ne!(plan(5, 0, f).0, Category::LineNumber);
+    }
+
+    #[test]
+    fn whole_lines_for_an_operator() {
+        use crate::editor::{Operator, OperatorRange};
+        let range = OperatorRange {
+            linewise: true,
+            lines: 10,
+            facts: MotionFacts {
+                paragraph_hops: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // 11 lines up to a blank line: `d}`, not counting them.
+        let keys: Vec<_> = range_plans(Operator::Delete, &range)
+            .into_iter()
+            .map(|p| p.0)
+            .collect();
+        assert_eq!(keys, ["d}"]);
+        let three = OperatorRange {
+            linewise: true,
+            lines: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            range_plans(Operator::Yank, &three)[0],
+            ("3yy".to_string(), 3, "count")
+        );
     }
 }

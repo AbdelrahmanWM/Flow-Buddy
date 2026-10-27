@@ -11,6 +11,8 @@ Tells the local `flowbuddyd` what Vim knows and keystrokes don't: the real mode,
 
 It does nothing when the daemon isn't running, and retries every few seconds. To turn it off: `let g:flowbuddy_enabled = 0`.
 
+The facts are worked out by trying motions on the buffer, which stops after 15 ms per movement so long files and slow folding stay responsive (`let g:flowbuddy_facts_budget_ms = 30` to allow more). `:echo flowbuddy#stats()` shows how many movements were looked at, how many ran out of time, and the slowest in milliseconds.
+
 ## Over ssh
 
 Run `flowbuddy ssh-config <host>` on your machine and add what it prints to `~/.ssh/config`. It forwards Flow Buddy's socket to the remote host as `/tmp/flowbuddy-<you>.sock` (readable only by you), where the plugin looks for it whenever `$SSH_CONNECTION` is set. Install the plugin on the remote host too. Vim there then counts while its terminal has focus, if your terminal and ssh pass focus events through.

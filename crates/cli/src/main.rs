@@ -1,10 +1,13 @@
 mod client;
 mod coach;
+mod doctor;
 mod report;
 mod review;
+mod setup;
 mod tips;
 
 use clap::{Parser, Subcommand};
+use flowbuddy_core::editor::EditorMode;
 use flowbuddy_core::ipc::{ClientKind, ClientMsg, Command, CtxEvent, RuleAction, RuleInfo, Status};
 use flowbuddy_core::policy::CoachingMode;
 
@@ -41,6 +44,14 @@ enum Cmd {
     Next,
     /// Your daily "something new" and your progress through Vim's features.
     Learn,
+    /// Check everything Flow Buddy needs, and say how to fix what's missing.
+    Doctor,
+    /// A few questions about how you'd like to be coached, saved to the
+    /// config file.
+    Setup,
+    /// Show tips here as they come, with what their commands do: keep it
+    /// open in a terminal beside your work. Ctrl-C to stop.
+    Watch,
     /// Your recent tips, newest first; with words, only those that match:
     /// `flowbuddy tips undo`.
     Tips {
@@ -162,6 +173,10 @@ enum RecordCmd {
     Stop,
     /// Whether a recording is going.
     Status,
+    /// Replay your recordings (all of them, or these files) with each
+    /// rule's threshold lower and higher: how many tips each would give,
+    /// and how many of them you marked dismissed or not helpful.
+    Tune { files: Vec<std::path::PathBuf> },
     /// Run a recording through the rules and count what they find. With
     /// --expect, compare with the counts you checked by hand.
     Check {
@@ -211,6 +226,8 @@ enum CtxCmd {
         #[arg(long, action = clap::ArgAction::Set, default_value_t = false)]
         vi_mode: bool,
     },
+    /// The vi-mode switched: normal, insert or visual.
+    Mode { mode: String },
 }
 
 fn main() {
@@ -222,6 +239,20 @@ fn main() {
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),
         Cmd::Learn => learn(),
+        Cmd::Watch => watch(),
+        Cmd::Setup => run_setup(),
+        Cmd::Doctor => {
+            let status = Client::connect(ClientKind::Cli)
+                .and_then(|mut c| c.query(Command::Status))
+                .map_err(|e| format!("{e:#}"))
+                .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()));
+            let checks = doctor::checks(&doctor::Env::gather(status));
+            print!("{}", doctor::report(&checks));
+            if checks.iter().any(|c| !c.ok) {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Cmd::Tips {
             search,
             limit,
@@ -279,6 +310,31 @@ fn record(action: RecordCmd) -> anyhow::Result<()> {
         RecordCmd::Start => Some(true),
         RecordCmd::Stop => Some(false),
         RecordCmd::Status => None,
+        RecordCmd::Tune { files } => {
+            let files = if files.is_empty() {
+                let dir = flowbuddy_core::paths::recordings_dir();
+                let mut all: Vec<_> = std::fs::read_dir(&dir)
+                    .map(|d| d.flatten().map(|e| e.path()).collect())
+                    .unwrap_or_default();
+                all.retain(|p: &std::path::PathBuf| p.extension().is_some_and(|x| x == "jsonl"));
+                all.sort();
+                all
+            } else {
+                files
+            };
+            if files.is_empty() {
+                println!(
+                    "No recordings yet: set [record] keep_days = 7, or run flowbuddy record start."
+                );
+                return Ok(());
+            }
+            let sessions: Vec<_> = files
+                .iter()
+                .filter_map(|f| session::parse(&std::fs::read_to_string(f).ok()?).ok())
+                .collect();
+            print!("{}", tune_text(&session::tune(&sessions), sessions.len()));
+            return Ok(());
+        }
         RecordCmd::Check { file, expect } => {
             let text = std::fs::read_to_string(&file)?;
             let entries = session::parse(&text).map_err(anyhow::Error::msg)?;
@@ -325,6 +381,38 @@ fn record(action: RecordCmd) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn tune_text(
+    rows: &[(String, u32, Vec<flowbuddy_core::session::TuneRow>)],
+    sessions: usize,
+) -> String {
+    let mut out = format!(
+        "Over {sessions} recording(s): tips each threshold would give, and how many you marked dismissed or not helpful.\n"
+    );
+    for (rule, now, values) in rows {
+        out.push_str(&format!("\n{rule}\n"));
+        for r in values {
+            let mark = if r.threshold == *now { "  (now)" } else { "" };
+            out.push_str(&format!(
+                "  {:>4}  {:>4} tips, {:>3} unwanted{mark}\n",
+                r.threshold, r.tips, r.unwanted
+            ));
+        }
+        let current = values.iter().find(|r| r.threshold == *now);
+        // Most tips unwanted, and a higher threshold drops them: say so.
+        if let Some(c) = current.filter(|c| c.unwanted * 2 > c.tips && c.tips >= 3)
+            && let Some(better) = values
+                .iter()
+                .find(|r| r.threshold > *now && r.unwanted * 2 <= r.tips.max(1))
+        {
+            out.push_str(&format!(
+                "  → {} of {} tips were unwanted; try [rules.\"{rule}\"] threshold = {} in config.toml\n",
+                c.unwanted, c.tips, better.threshold
+            ));
+        }
+    }
+    out
+}
+
 fn status(watch: bool) -> anyhow::Result<()> {
     let mut client = match Client::connect(ClientKind::Cli) {
         Ok(c) => c,
@@ -361,6 +449,9 @@ fn print_status(s: &Status) {
     println!("  context:   {}", context_line(s));
     if let Some(guess) = s.mode_guess.and_then(|g| g.describe()) {
         println!("  guessing:  {guess}");
+    }
+    if let Some(timing) = &s.timing {
+        println!("  handling:  {timing}");
     }
     println!("  keyboards: {}", s.keyboards);
     if let Some(filter) = &s.tip_filter {
@@ -789,7 +880,15 @@ fn ssh_config(host: &str, socket: &std::path::Path) -> String {
 
 fn learn() -> anyhow::Result<()> {
     match open_db()? {
-        Some(store) => print!("{}", report::learn(&store, now_ms())?),
+        Some(store) => {
+            let config =
+                flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
+                    .unwrap_or_default();
+            print!(
+                "{}",
+                report::learn(&store, now_ms(), config.learn.level.known_levels())?
+            )
+        }
         None => println!("Nothing recorded yet. Is flowbuddyd running? Try `flowbuddy status`."),
     }
     Ok(())
@@ -1005,6 +1104,21 @@ fn ctx(event: CtxCmd, shell_pid: Option<u32>, tty: Option<String>) -> anyhow::Re
             tty,
             // Only known shapes; anything else is dropped, never sent.
             shape: shape.and_then(|s| serde_json::from_value(serde_json::Value::String(s)).ok()),
+            mode: None,
+        },
+        CtxCmd::Mode { mode } => ClientMsg::Ctx {
+            event: CtxEvent::Mode,
+            command: None,
+            vi_mode: Some(true),
+            shell_pid,
+            tty,
+            shape: None,
+            mode: Some(match mode.as_str() {
+                "normal" => EditorMode::Normal,
+                "visual" => EditorMode::Visual,
+                "replace" => EditorMode::Replace,
+                _ => EditorMode::Insert,
+            }),
         },
         CtxCmd::Prompt { vi_mode } => ClientMsg::Ctx {
             event: CtxEvent::Prompt,
@@ -1013,6 +1127,7 @@ fn ctx(event: CtxCmd, shell_pid: Option<u32>, tty: Option<String>) -> anyhow::Re
             shell_pid,
             tty,
             shape: None,
+            mode: None,
         },
     };
     Client::connect(ClientKind::BashHook)?.send(&msg)
@@ -1022,7 +1137,87 @@ fn parent_pid() -> u32 {
     std::os::unix::process::parent_id()
 }
 
-/// Local HH:MM for a unix timestamp, via `date` to avoid a timezone dependency.
+fn run_setup() -> anyhow::Result<()> {
+    let path = flowbuddy_core::paths::config_file();
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    println!("A few questions; press Enter to keep the current choice (*).");
+    let answers = setup::ask(&text, &mut std::io::stdin().lock(), &mut std::io::stdout())?;
+    let written = setup::apply(&text, &answers);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, &written)?;
+    println!(
+        "\nSaved to {}; the daemon picks it up by itself.",
+        path.display()
+    );
+    if written.contains("provider = \"command\"") && !written.contains("command = [") {
+        println!(
+            "Add the program to run under [ai], e.g. command = [\"ollama\", \"run\", \"llama3.2:3b\"]."
+        );
+    }
+    println!("flowbuddy doctor checks the rest.");
+    Ok(())
+}
+
+fn watch() -> anyhow::Result<()> {
+    use flowbuddy_core::ipc::{RecentTip, ServerMsg};
+    let mut said_waiting = false;
+    loop {
+        let mut client = match Client::connect(ClientKind::Watch) {
+            Ok(c) => c,
+            Err(_) => {
+                if !said_waiting {
+                    println!("Waiting for flowbuddyd…");
+                    said_waiting = true;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                continue;
+            }
+        };
+        said_waiting = false;
+        let recent: Vec<RecentTip> = client
+            .query(Command::RecentTips { limit: Some(3) })
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        if !recent.is_empty() {
+            println!("Recent tips:\n");
+            for t in recent.iter().rev() {
+                print!("{}", watch_text(t.shown_at, &t.title, &t.text, &t.explain));
+            }
+        }
+        println!("Watching for tips (Ctrl-C to stop).\n");
+        loop {
+            match client.next() {
+                Ok(ServerMsg::Nudge(n)) => {
+                    print!(
+                        "{}",
+                        watch_text(now_ms() / 1000, &n.title, &n.text, &n.explain)
+                    );
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    println!("The daemon went away; waiting for it…");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// One tip for `flowbuddy watch`: time and title, the tip, what its
+/// commands do.
+fn watch_text(at_s: u64, title: &str, text: &str, explain: &[String]) -> String {
+    use flowbuddy_core::glossary::plain;
+    let mut out = format!("{}  {title}\n  {}\n", format_time(at_s), plain(text));
+    for line in explain {
+        out.push_str(&format!("    {}\n", plain(line)));
+    }
+    out.push('\n');
+    out
+}
+
 fn tips_history(search: &str, limit: usize, explain: bool) -> anyhow::Result<()> {
     let Some(store) = open_db()? else {
         println!("No tips yet.");
@@ -1075,6 +1270,7 @@ fn format_day_time(unix: u64) -> String {
         .unwrap_or_else(|| unix.to_string())
 }
 
+/// Local HH:MM for a unix timestamp, via `date` to avoid a timezone dependency.
 fn format_time(unix: u64) -> String {
     std::process::Command::new("date")
         .args(["-d", &format!("@{unix}"), "+%H:%M"])
@@ -1123,6 +1319,7 @@ mod status_tests {
             layout_note: None,
             tip_filter: None,
             mode_guess: None,
+            timing: None,
             keyboards: 1,
             clients: vec![],
         }
@@ -1197,6 +1394,41 @@ mod status_tests {
         assert_eq!(
             history_text(&[], "undo", false, &when),
             "No tips match \"undo\".\n"
+        );
+    }
+
+    #[test]
+    fn watch_lines() {
+        let text = watch_text(0, "Try a count", "Try `7j`.", &["`7j`: a count".into()]);
+        assert!(
+            text.ends_with("  Try a count\n  Try 7j.\n    7j: a count\n\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn tune_table_and_suggestion() {
+        use flowbuddy_core::session::TuneRow;
+        let row = |threshold, tips, unwanted| TuneRow {
+            threshold,
+            tips,
+            unwanted,
+        };
+        let text = tune_text(
+            &[(
+                "vim.repeat-jk".into(),
+                5,
+                vec![row(4, 12, 8), row(5, 8, 6), row(6, 4, 1), row(10, 1, 0)],
+            )],
+            3,
+        );
+        assert!(
+            text.contains("     5     8 tips,   6 unwanted  (now)\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("try [rules.\"vim.repeat-jk\"] threshold = 6"),
+            "{text}"
         );
     }
 }

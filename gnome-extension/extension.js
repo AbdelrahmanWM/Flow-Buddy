@@ -4,6 +4,9 @@
 // the top bar. Talks only to the daemon's Unix socket; nothing leaves the
 // machine.
 
+import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
+
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import {getInputSourceManager} from 'resource:///org/gnome/shell/ui/status/keyboard.js';
@@ -34,6 +37,17 @@ export default class FlowBuddyExtension extends Extension {
         this._indicator = new Indicator(this._link);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
         this._card = new Card();
+        // Shortcuts for the current tip, so it's never a trip to the menu.
+        this._settings = this.getSettings();
+        this._keys = {
+            'keep-tip': () => this._indicator.keepTip(),
+            'dismiss-tip': () => this._indicator.respond('dismiss'),
+            'tip-not-helpful': () => this._indicator.respond('false_positive'),
+        };
+        for (const [name, action] of Object.entries(this._keys)) {
+            Main.wm.addKeybinding(name, this._settings, Meta.KeyBindingFlags.NONE,
+                Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW, action);
+        }
         this._focus = new FocusReporter(this._link);
         this._focus.enable();
         // Follow keyboard layout switches, so keys are read right.
@@ -53,6 +67,10 @@ export default class FlowBuddyExtension extends Extension {
     }
 
     disable() {
+        for (const name of Object.keys(this._keys ?? {}))
+            Main.wm.removeKeybinding(name);
+        this._keys = null;
+        this._settings = null;
         if (this._sourceId)
             this._sources.disconnect(this._sourceId);
         this._sources = null;

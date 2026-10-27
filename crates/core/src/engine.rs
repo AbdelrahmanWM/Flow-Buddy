@@ -59,6 +59,12 @@ impl Engine {
         }
     }
 
+    /// A rule's place in the tie-break order: lower wins (see
+    /// `rules::PRECEDENCE`).
+    pub fn rank_of(&self, rule_id: &str) -> usize {
+        self.rank.get(rule_id).copied().unwrap_or(usize::MAX)
+    }
+
     pub fn known(&self) -> &Known {
         &self.known
     }
@@ -434,9 +440,9 @@ mod tests {
         assert_eq!(vscode, ["`u` 7 times. `7u` undoes that many at once."]);
         let vim = text(ContextKind::TerminalVim, "uuuuuuu<Esc>");
         assert!(vim[0].contains(":earlier"), "{vim:?}");
-        // Claude Code's Vim mode has no `s`: no tip rather than a wrong one.
-        assert!(text(ContextKind::ClaudeVim, "xihi<Esc>").is_empty());
-        assert_eq!(text(ContextKind::TerminalVim, "xihi<Esc>").len(), 1);
+        // Claude Code's Vim mode has no `gI`: no tip rather than a wrong one.
+        assert!(text(ContextKind::ClaudeVim, "0ihi<Esc>").is_empty());
+        assert_eq!(text(ContextKind::TerminalVim, "0ihi<Esc>").len(), 1);
     }
 
     #[test]

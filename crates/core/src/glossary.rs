@@ -181,6 +181,7 @@ fn whole(word: &str, insert: bool) -> Option<&'static str> {
             "Ctrl-u" => return Some("delete back to the start of the line"),
             "Ctrl-r" => return Some("search back through history as you type (bash)"),
             "Ctrl-o" => return Some("run one Normal-mode command, then keep typing"),
+            "Ctrl-l" => return Some("clear the screen, keeping what you've typed (shell)"),
             "Ctrl-a" => return Some("insert the text you typed last time"),
             "Esc" => return Some("leave Insert mode"),
             _ => {}

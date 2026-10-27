@@ -678,6 +678,7 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("shell.cd-up", &[]),
     ("shell.reused-arg", &[]),
     ("shell.one-word-changed", &[]),
+    ("shell.keys", &[]),
     ("vscode.quick-open", &[]),
     ("vscode.terminal-toggle", &[]),
     ("vscode.tab-switch", &[]),

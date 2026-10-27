@@ -62,6 +62,10 @@ pub enum CommandShape {
     ReusedArg,
     /// The previous command with one word changed.
     OneWordChanged,
+    /// `clear`, from the command's name (the hooks don't send these).
+    Clear,
+    /// `history`, usually piped to grep.
+    History,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

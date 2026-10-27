@@ -12,8 +12,8 @@ use flowbuddy_core::editor::{EditorKind, Motion};
 use flowbuddy_core::engine::Engine;
 use flowbuddy_core::glossary;
 use flowbuddy_core::ipc::{
-    ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, Nudge, NudgeAction, NudgeStyle,
-    RuleAction, RuleInfo, ServerMsg, Status,
+    ClientKind, ClientMsg, Command, CommandShape, CtxEvent, ErrorCode, Nudge, NudgeAction,
+    NudgeStyle, RuleAction, RuleInfo, ServerMsg, Status,
 };
 use flowbuddy_core::ipc::{ModeGuess, Panel, Recording, UiEvent};
 use flowbuddy_core::key::{Key, KeyStroke, Sym};
@@ -1212,7 +1212,13 @@ impl App {
                 shape,
                 tty,
             } => {
-                if let Some(shape) = shape.filter(|_| self.capturing(now_ms)) {
+                // Two habits are plain from the command's name alone.
+                let named = match (event, command.as_deref()) {
+                    (CtxEvent::Fg, Some("clear")) => Some(CommandShape::Clear),
+                    (CtxEvent::Fg, Some("history")) => Some(CommandShape::History),
+                    _ => None,
+                };
+                if let Some(shape) = shape.or(named).filter(|_| self.capturing(now_ms)) {
                     let ev = flowbuddy_core::rules::shell::ShellEvent {
                         shape,
                         at_ms: now_ms,

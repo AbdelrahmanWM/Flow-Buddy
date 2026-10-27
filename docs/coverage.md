@@ -14,9 +14,10 @@ Flow Buddy coaches in five places. Each one supports a different part of Vim, so
 | Counts for operators (`3dw`), `>>`, `J`, `p` | ✓ | ✓ | `3dw` | | |
 | Undo runs, searches again, `:s` again | ✓ (no `:earlier`, no `g&`) | ✓ | | | |
 | Text objects (`ciw`, `di(`) and shorter operator motions | ✓ with the companion | ✓ with the plugin | | | |
-| Scrolling, marks, `g;`, `Ctrl-o` | ✓ | ✓ with the plugin | | | |
+| Scrolling, marks, `g;`, `Ctrl-o`, `42G` | ✓ | ✓ with the plugin | | | |
+| The same selection again (`gv`) | ✓ with the companion | ✓ with the plugin | | | |
 | Windows and buffers | ✓ (editor groups) | ✓ | | | |
-| Editor UI: files by click, terminal by click, tabs by click | ✓ | | | | |
+| Editor UI: files, terminal, tabs and splits by click | ✓ | | | | |
 | `cd ..` twice, last argument again, one word changed, `clear`, `history` | | | | | ✓ |
 
 ## What each one can't do
@@ -29,7 +30,6 @@ Flow Buddy coaches in five places. Each one supports a different part of Vim, so
 
 - Folding (`zc`, `zo`), the quickfix list, `:make`, and spelling.
 - Insert-mode completion (`Ctrl-n`, `Ctrl-x Ctrl-f`), because what was completed can't be seen without text.
-- Jumping to a line number you read off an error (`:42`, `42G`).
-- Re-selecting the same text by hand where `gv` does it.
-- In VS Code: the command palette and sidebar by mouse, split editors, and multi-cursor.
+- `42G` when absolute line numbers aren't shown (the number would have to be sent).
+- In VS Code: the command palette and sidebar by mouse (VS Code doesn't tell extensions), and multi-cursor.
 - KDE on Wayland, browsers (Vimium) and JetBrains (IdeaVim): #123–#125.

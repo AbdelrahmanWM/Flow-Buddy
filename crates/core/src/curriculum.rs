@@ -68,6 +68,15 @@ fn op_motion(step: &Step, ops: &str, motions: &str) -> bool {
     })
 }
 
+fn uncounted(step: &Step, spellings: &[&str]) -> bool {
+    cmd(step).is_some_and(|c| c.count.is_none() && spellings.iter().any(|s| c.is(s)))
+}
+
+/// A `:` command whose text `test` accepts.
+fn cmdline_is(step: &Step, test: impl Fn(&str) -> bool) -> bool {
+    matches!(&step.event, Some(VimEvent::Cmdline { kind: ':', text: Some(t) }) if test(t.trim()))
+}
+
 fn counted(step: &Step, heads: &str) -> bool {
     cmd(step).is_some_and(|c| c.count.is_some() && c.head().is_some_and(|h| heads.contains(h)))
 }
@@ -135,7 +144,8 @@ pub static CURRICULUM: &[Item] = &[
         "`gg` and `G`",
         "the first or last line of the file",
         "Jump to the top to check the imports.",
-        |s| is(s, &["gg", "G"])
+        // `5G` is going to line 5, not the end.
+        |s| uncounted(s, &["gg", "G"])
     ),
     item!(
         "append",
@@ -159,7 +169,8 @@ pub static CURRICULUM: &[Item] = &[
         "`u` and `Ctrl-r`",
         "undo, and redo what you undid",
         "Step back and forward through your changes.",
-        |s| is(s, &["u"]) || ctrl(s, "r")
+        // In Visual mode `u` makes text lower case.
+        |s| (is(s, &["u"]) && !s.before.is_visual()) || ctrl(s, "r")
     ),
     item!(
         "count",
@@ -216,7 +227,10 @@ pub static CURRICULUM: &[Item] = &[
         "`42G` and `:42`",
         "jump straight to a line by its number",
         "Go to the line an error message names.",
-        |s| counted(s, "G") || cmdline(s, &["1", "2", "3", "4", "5", "6", "7", "8", "9"])
+        // `:42` alone: `:1,5d` is a range.
+        |s| counted(s, "G")
+            || cmdline_is(s, |t| !t.is_empty()
+                && t.chars().all(|c| c.is_ascii_digit()))
     ),
     item!(
         "half-page",
@@ -345,7 +359,14 @@ pub static CURRICULUM: &[Item] = &[
         "`ma` and `'a`",
         "set a mark, and jump back to its line",
         "Bookmark a spot you keep returning to.",
-        |s| head(s, "m'`") && cmd(s).is_some_and(|c| c.keys.len() == 2)
+        // A letter after it: `''` and `` `` `` jump back, `'.` is the last change.
+        |s| head(s, "m'`")
+            && cmd(s).is_some_and(|c| {
+                c.keys.len() == 2
+                    && c.keys[1]
+                        .plain_char()
+                        .is_some_and(|k| k.is_ascii_alphabetic())
+            })
     ),
     item!(
         "last-change",
@@ -425,7 +446,8 @@ pub static CURRICULUM: &[Item] = &[
         "`\"0p`",
         "paste the last yank, even after deleting something since",
         "Yank a word, delete the old one, and still paste the yanked word.",
-        |s| cmd(s).is_some_and(|c| c.register.is_some())
+        // Not `"_`: that's the black hole, for throwing text away.
+        |s| cmd(s).is_some_and(|c| c.register.is_some_and(|r| r != '_'))
     ),
     item!(
         "windows",
@@ -941,6 +963,12 @@ mod tests {
         }
         // An argument isn't a motion: `fw` is find, not word.
         assert!(!used("fw").contains(&"word"));
+        // Near misses.
+        assert!(!used(":1,5d<CR>").contains(&"goto-line"));
+        assert!(!used("5G").contains(&"file-ends") && used("5G").contains(&"goto-line"));
+        assert!(!used("\"_dd").contains(&"registers") && used("\"ayy").contains(&"registers"));
+        assert!(!used("''").contains(&"marks") && !used("'.").contains(&"marks"));
+        assert!(!used("vu").contains(&"undo-redo") && used("u").contains(&"undo-redo"));
     }
 
     #[test]

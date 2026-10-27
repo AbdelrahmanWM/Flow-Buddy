@@ -16,8 +16,10 @@ flowbuddy-core.workspace = true
 flowbuddy-store.workspace = true
 clap.workspace = true
 anyhow = "1.0.104"
+serde.workspace = true
 serde_json.workspace = true
 chrono = "0.4.45"
+ureq = { version = "3", features = ["json"] }
 
 [lints]
 workspace = true

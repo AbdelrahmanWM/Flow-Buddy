@@ -248,6 +248,16 @@ pub fn memory_show(store: &Store, now_ms: u64) -> anyhow::Result<String> {
             "  last week  {} times, better way {} times",
             w.hits, w.adoptions
         )?;
+        if let Some(e) = w.estimate() {
+            let pct = |x: f64| (x * 100.0).round() as u32;
+            writeln!(
+                out,
+                "  progress   the better way {}% of the time (likely {}–{}%)",
+                pct(e.ratio),
+                pct(e.low),
+                pct(e.high)
+            )?;
+        }
         writeln!(
             out,
             "  nudges     {} shown, {} dismissed, {} not helpful",
@@ -332,6 +342,71 @@ pub fn next(store: &Store, now_ms: u64, skip: &BTreeSet<String>) -> anyhow::Resu
             describe(&second.rule_id),
             times(w2.hits)
         )?;
+    }
+    Ok(out)
+}
+
+/// `flowbuddy learn`: the latest "something new", progress through the
+/// curriculum, and what's next.
+pub fn learn(store: &Store, now_ms: u64) -> anyhow::Result<String> {
+    use flowbuddy_core::curriculum::{self, CURRICULUM, KNOWN_USES, Progress};
+    use flowbuddy_core::glossary::plain;
+    let uses = store.command_uses("0000-00-00")?;
+    let rows: BTreeMap<String, flowbuddy_store::LearnRow> = store
+        .learn_items()?
+        .into_iter()
+        .map(|r| (r.item_id.clone(), r))
+        .collect();
+    let progress = |id: &str| {
+        let row = rows.get(id);
+        Progress {
+            uses: uses.get(id).copied().unwrap_or(0),
+            times_shown: row.map_or(0, |r| r.times_shown),
+            last_shown: row.map(|r| r.last_shown),
+            learned: row.is_some_and(|r| r.learned_at.is_some()),
+        }
+    };
+    let known = |id: &str| {
+        let p = progress(id);
+        p.learned || p.uses >= KNOWN_USES
+    };
+    let mut out = String::new();
+    if let Some(row) = rows.values().max_by_key(|r| r.last_shown)
+        && let Some(item) = curriculum::find(&row.item_id)
+    {
+        let status = if row.learned_at.is_some() {
+            "learned"
+        } else {
+            "not used yet"
+        };
+        writeln!(
+            out,
+            "Latest: {} ({status})",
+            plain(&curriculum::tip_text(item))
+        )?;
+    }
+    writeln!(out, "\nProgress, from basic to advanced:")?;
+    for level in 1..=4 {
+        let items: Vec<_> = CURRICULUM.iter().filter(|i| i.level == level).collect();
+        let done = items.iter().filter(|i| known(i.id)).count();
+        let bar: String = items
+            .iter()
+            .map(|i| if known(i.id) { '█' } else { '·' })
+            .collect();
+        writeln!(out, "  level {level}  {bar}  {done} of {}", items.len())?;
+    }
+    let learned: Vec<String> = rows
+        .values()
+        .filter(|r| r.learned_at.is_some())
+        .filter_map(|r| curriculum::find(&r.item_id))
+        .map(|i| plain(i.keys))
+        .collect();
+    if !learned.is_empty() {
+        writeln!(out, "\nLearned from daily tips: {}", learned.join("; "))?;
+    }
+    match curriculum::pick(&progress, now_ms / 1000) {
+        Some(next) => writeln!(out, "\nUp next: {}", plain(&curriculum::tip_text(next)))?,
+        None => writeln!(out, "\nNothing new left for now.")?,
     }
     Ok(out)
 }
@@ -467,5 +542,22 @@ mod tests {
                 .unwrap()
                 .starts_with("Nothing to work on")
         );
+    }
+
+    #[test]
+    fn learn_progress() {
+        let s = Store::open_in_memory().unwrap();
+        let day = days::day(at(24, 12));
+        s.add_command_use(&day, "word", 9).unwrap();
+        s.learn_shown("word-end", at(24, 12) / 1000).unwrap();
+        s.learn_learned("word-end", at(24, 13) / 1000).unwrap();
+        let out = learn(&s, at(24, 18)).unwrap();
+        assert!(
+            out.starts_with("Latest: e: jump to the end of the word"),
+            "{out}"
+        );
+        assert!(out.contains("(learned)"), "{out}");
+        assert!(out.contains("level 1  ██··········  2 of 12"), "{out}");
+        assert!(out.contains("Up next: 0, ^ and $"), "{out}");
     }
 }

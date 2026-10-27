@@ -11,6 +11,10 @@ Tells the local `flowbuddyd` what Vim knows and keystrokes don't: the real mode,
 
 It does nothing when the daemon isn't running, and retries every few seconds. To turn it off: `let g:flowbuddy_enabled = 0`.
 
+## Over ssh
+
+Run `flowbuddy ssh-config <host>` on your machine and add what it prints to `~/.ssh/config`. It forwards Flow Buddy's socket to the remote host as `/tmp/flowbuddy-<you>.sock` (readable only by you), where the plugin looks for it whenever `$SSH_CONNECTION` is set. Install the plugin on the remote host too. Vim there then counts while its terminal has focus, if your terminal and ssh pass focus events through.
+
 ## What it sends
 
 Over the daemon's Unix socket (`$FLOWBUDDY_SOCKET`, or `$XDG_RUNTIME_DIR/flowbuddy.sock`), as described in [docs/architecture.md](../docs/architecture.md#editor-clients):

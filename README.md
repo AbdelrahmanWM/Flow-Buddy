@@ -57,20 +57,26 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh
 
 `flowbuddy rules` lists all of them. Motion coaching (the first three rows) compares each movement with the cheapest motion that lands in the same place. It needs the editor plugins, which tell Flow Buddy where a movement ended without sending any text: [vim-plugin/](vim-plugin/README.md) and [vscode-extension/](vscode-extension/README.md). Without them, the simpler rules that count repeated keys take over.
 
-`flowbuddy coach` asks a model running on your machine for advice based on the mistake memory. It's off until you set it up, and `--prompt` shows exactly what the model sees:
+`flowbuddy coach` asks an AI of your choice (your Claude subscription, an API key, or a local model) for advice based on the mistake memory. It's off until you set it up, and `--prompt` shows exactly what would be sent:
 
 ```toml
+[learn]
+daily = true                                  # one small Vim feature you don't use yet, once a day
+
 [typing]
 accuracy = false                              # true: count corrections (counts only) for `flowbuddy summary`
 
 [ai]
-command = ["ollama", "run", "llama3.2:3b"]   # any local program: prompt on stdin, answer on stdout
-weekly = false                                # true: the model writes the weekly progress note
+provider = "claude-code"     # your Claude subscription via `claude -p`; or "anthropic" / "openai" with a key
+# command = ["ollama", "run", "llama3.2:3b"]  # or any local program: prompt on stdin, answer on stdout
+weekly = false               # true: the model writes the weekly progress note and reviews the tips
+tips = false                 # true: once a day the model writes a personal sentence for each recent habit
+filter = true                # the learned tip filter (no LLM); skips tips you tend to dismiss
 ```
 
 ## Platform
 
-Linux, initially Ubuntu with GNOME on Wayland.
+Linux: GNOME on Wayland (with the top-bar indicator), or any X11 desktop such as KDE, Xfce or i3 (tips as notifications). KDE on Wayland is #123.
 
 ## Install
 
@@ -104,10 +110,12 @@ flowbuddy mode balanced           # off | passive | balanced | active
 flowbuddy pause 1h                # or 30m, until-tomorrow; `flowbuddy resume`
 flowbuddy summary [--week]        # how you're doing vs. before
 flowbuddy next                    # the one habit worth working on now
+flowbuddy learn                   # today's "something new" and your progress through Vim
 flowbuddy explain 'ci"'            # what keys do, piece by piece
-flowbuddy coach [question]        # advice from a local model ([ai] command; --prompt shows what it sees)
+flowbuddy coach [question]        # advice from your AI ([ai]; --prompt shows what it's sent)
+flowbuddy review [--apply 1 2]    # your AI proposes tuning the tips; apply what you agree with
 flowbuddy rules                   # list; `rules mute|disable|enable|reset <id>`
-flowbuddy memory show             # the mistake memory; `memory export`, `memory forget`
+flowbuddy memory show             # the mistake memory; `memory export`, `memory forget`, `memory fix-adoptions`
 flowbuddy report-fp               # the last nudge was wrong
 ```
 

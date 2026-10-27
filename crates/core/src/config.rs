@@ -26,6 +26,21 @@ pub struct Config {
     pub learning: LearningConfig,
     pub ai: AiConfig,
     pub typing: TypingConfig,
+    pub learn: LearnConfig,
+}
+
+/// The daily "something new".
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LearnConfig {
+    /// One small unused Vim feature a day, in every mode but off.
+    pub daily: bool,
+}
+
+impl Default for LearnConfig {
+    fn default() -> Self {
+        LearnConfig { daily: true }
+    }
 }
 
 /// Opt-in typing statistics.
@@ -37,10 +52,40 @@ pub struct TypingConfig {
     pub accuracy: bool,
 }
 
-/// `flowbuddy coach`: a local model, off until `command` is set.
+/// Where the LLM features get their model.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiProvider {
+    /// Off, unless `command` is set (then it means `command`).
+    #[default]
+    None,
+    /// `command`: any program that reads the prompt on stdin.
+    Command,
+    /// Claude Code's own CLI (`claude -p`): your Claude subscription, no key.
+    ClaudeCode,
+    /// The Anthropic API with your key.
+    Anthropic,
+    /// Any OpenAI-compatible chat API (OpenAI, or a local server) with
+    /// your key.
+    Openai,
+}
+
+/// `flowbuddy coach` and the other LLM features: your own AI, off until
+/// you choose one.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AiConfig {
+    pub provider: AiProvider,
+    /// For the API providers; a sensible default otherwise.
+    pub model: Option<String>,
+    /// For `openai`: the API's base URL (default OpenAI's).
+    pub base_url: Option<String>,
+    /// The environment variable holding the API key (default
+    /// `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`).
+    pub api_key_env: Option<String>,
+    /// Or a command that prints it, e.g. `["secret-tool", "lookup",
+    /// "service", "flowbuddy"]`. Keys never go in this file.
+    pub api_key_command: Option<Vec<String>>,
     /// A program that reads a prompt on stdin and writes an answer to
     /// stdout, e.g. `["ollama", "run", "llama3.2:3b"]`. Run directly, not
     /// through a shell.
@@ -50,14 +95,27 @@ pub struct AiConfig {
     /// Let the model write the weekly progress note. Off by default: the
     /// model then runs once a week without being asked.
     pub weekly: bool,
+    /// The learned tip filter (no LLM involved): skip tips your history says
+    /// you'd dismiss. On by default; it does nothing until it has learned.
+    pub filter: bool,
+    /// Once a day, the model writes a personal sentence for each recent
+    /// habit, added to its tips.
+    pub tips: bool,
 }
 
 impl Default for AiConfig {
     fn default() -> Self {
         AiConfig {
+            provider: AiProvider::None,
+            model: None,
+            base_url: None,
+            api_key_env: None,
+            api_key_command: None,
             command: None,
             timeout_seconds: 120,
             weekly: false,
+            filter: true,
+            tips: false,
         }
     }
 }
@@ -109,6 +167,9 @@ pub struct KeyboardConfig {
     /// xkb layout used with the `xkb` feature (default "us"). Vim
     /// commands are typed on a Latin layout even if you also use others.
     pub xkb_layout: Option<String>,
+    /// Two-key Insert-mode mappings to Esc, e.g. `["jk"]`, for setups
+    /// without an editor plugin to report them.
+    pub insert_escapes: Vec<String>,
 }
 
 /// Replace the built-in app id / command lists.
@@ -198,6 +259,8 @@ pub struct RuleState {
     /// How far Flow Buddy raised the threshold after "not helpful" reports
     /// (`flowbuddy rules reset` clears it). Ignored when the config sets one.
     pub raised: u32,
+    /// A threshold accepted from `flowbuddy review`. The config's wins.
+    pub threshold: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -212,6 +275,8 @@ pub struct State {
     /// Local date of the last weekly progress note, or when the first
     /// week started.
     pub last_weekly_day: Option<String>,
+    /// Local date of the last "something new".
+    pub last_learn_day: Option<String>,
 }
 
 impl State {
@@ -256,7 +321,8 @@ pub fn rule_settings(config: &Config, state: &State) -> RuleSettings {
         if !enabled {
             settings.disabled.insert(id.clone());
         }
-        if let Some(n) = configured.and_then(|c| c.threshold) {
+        let reviewed = state.rules.get(id).and_then(|r| r.threshold);
+        if let Some(n) = configured.and_then(|c| c.threshold).or(reviewed) {
             settings.thresholds.insert(id.clone(), n);
         } else if let Some(r) = state.rules.get(id).map(|r| r.raised).filter(|r| *r > 0) {
             settings.raised.insert(id.clone(), r);
@@ -317,6 +383,7 @@ mod tests {
                 enabled: Some(true),
                 muted: false,
                 raised: 0,
+                threshold: None,
             },
         );
         assert!(rule_settings(&c, &st).disabled.is_empty());
@@ -366,6 +433,7 @@ mod tests {
                 enabled: None,
                 muted: true,
                 raised: 0,
+                threshold: None,
             },
         );
         st.save(&path).unwrap();

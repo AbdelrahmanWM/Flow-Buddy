@@ -80,7 +80,117 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (day, pair)
     );
 "#,
+    r#"
+    -- What happened after each tip, for the learned tip filter.
+    CREATE TABLE tip_outcomes (
+        id          INTEGER PRIMARY KEY,
+        shown_at    INTEGER NOT NULL,  -- unix seconds
+        rule_id     TEXT    NOT NULL,
+        context     TEXT    NOT NULL,
+        stage       TEXT    NOT NULL,
+        hour        INTEGER NOT NULL,  -- local hour of day
+        mode        TEXT    NOT NULL,  -- coaching mode
+        prior_today INTEGER NOT NULL,  -- tips shown earlier that day
+        outcome     TEXT               -- adopted, dismissed, not_helpful, ignored; NULL while open
+    );
+    CREATE INDEX tip_outcomes_shown ON tip_outcomes (shown_at);
+"#,
+    r#"
+    -- Which curriculum items you use, and the daily "something new" tips.
+    CREATE TABLE commands_used (
+        day     TEXT    NOT NULL,
+        item_id TEXT    NOT NULL,  -- a curriculum id such as ci-quote
+        count   INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day, item_id)
+    );
+    CREATE TABLE learn_items (
+        item_id     TEXT    PRIMARY KEY,
+        first_shown INTEGER NOT NULL,  -- unix seconds
+        last_shown  INTEGER NOT NULL,
+        times_shown INTEGER NOT NULL DEFAULT 1,
+        learned_at  INTEGER            -- when you started using it
+    );
+"#,
 ];
+
+/// Progress on one curriculum item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LearnRow {
+    pub item_id: String,
+    pub first_shown: u64,
+    pub last_shown: u64,
+    pub times_shown: u32,
+    pub learned_at: Option<u64>,
+}
+
+/// A day whose adoptions were counted per key (see
+/// [`Store::inflated_adoptions`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InflatedDay {
+    pub day: String,
+    pub context: String,
+    pub rule_id: String,
+    pub adoptions: u64,
+    /// What it would be capped at.
+    pub capped: u64,
+}
+
+/// A tip as shown, for the learned filter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TipShown<'a> {
+    pub shown_at: u64,
+    pub rule_id: &'a str,
+    pub context: &'a str,
+    pub stage: &'a str,
+    pub hour: u32,
+    pub mode: &'a str,
+    pub prior_today: u32,
+}
+
+/// What happened after a tip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Adopted,
+    Dismissed,
+    NotHelpful,
+    Ignored,
+}
+
+impl Outcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Outcome::Adopted => "adopted",
+            Outcome::Dismissed => "dismissed",
+            Outcome::NotHelpful => "not_helpful",
+            Outcome::Ignored => "ignored",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Outcome> {
+        [
+            Outcome::Adopted,
+            Outcome::Dismissed,
+            Outcome::NotHelpful,
+            Outcome::Ignored,
+        ]
+        .into_iter()
+        .find(|o| o.as_str() == s)
+    }
+}
+
+/// A tip and what came of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TipRow {
+    pub shown_at: u64,
+    pub rule_id: String,
+    pub context: String,
+    pub stage: String,
+    pub hour: u32,
+    pub mode: String,
+    pub prior_today: u32,
+    /// `None` while still open, or if the daemon stopped before it closed.
+    pub outcome: Option<Outcome>,
+}
 
 /// What happened, for [`Store::record`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,6 +278,52 @@ impl Store {
         let store = Store { conn };
         store.migrate()?;
         Ok(store)
+    }
+
+    /// Days before `before_day` whose adoptions are implausibly high next to
+    /// their hits (over 10 × hits + 20: counted per key before the fix in
+    /// #48); they'd be capped at 3 × hits + 3.
+    pub fn inflated_adoptions(&self, before_day: &str) -> Result<Vec<InflatedDay>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT day, context, rule_id, adoptions, hits * 3 + 3 FROM daily_stats
+             WHERE day < ?1 AND adoptions > hits * 10 + 20 ORDER BY day, rule_id",
+        )?;
+        let rows = stmt.query_map(params![before_day], |r| {
+            Ok(InflatedDay {
+                day: r.get(0)?,
+                context: r.get(1)?,
+                rule_id: r.get(2)?,
+                adoptions: r.get(3)?,
+                capped: r.get(4)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Cap those days' adoptions, and recompute each pattern's total.
+    pub fn fix_adoptions(&self, before_day: &str) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let changed = tx.execute(
+            "UPDATE daily_stats SET adoptions = hits * 3 + 3
+             WHERE day < ?1 AND adoptions > hits * 10 + 20",
+            params![before_day],
+        )?;
+        tx.execute(
+            "UPDATE patterns SET adoptions = (
+                 SELECT COALESCE(SUM(d.adoptions), 0) FROM daily_stats d
+                 WHERE d.rule_id = patterns.rule_id AND d.context = patterns.context)",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    /// Whether the database has every table this version knows. A database
+    /// opened read-only by the CLI is only migrated by the daemon.
+    pub fn is_current(&self) -> bool {
+        self.conn
+            .pragma_query_value(None, "user_version", |r| r.get::<_, usize>(0))
+            .is_ok_and(|v| v >= MIGRATIONS.len())
     }
 
     fn migrate(&self) -> Result<()> {
@@ -398,11 +554,124 @@ impl Store {
     pub fn forget_all(&self) -> Result<()> {
         self.conn.execute_batch(
             "DELETE FROM daily_stats; DELETE FROM activity; DELETE FROM patterns;
-             DELETE FROM episodes; DELETE FROM typing; DELETE FROM typo_pairs;",
+             DELETE FROM episodes; DELETE FROM typing; DELETE FROM typo_pairs;
+             DELETE FROM tip_outcomes; DELETE FROM commands_used; DELETE FROM learn_items;",
         )?;
         self.conn.execute_batch("VACUUM")?;
         let _ = self.conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
         Ok(())
+    }
+
+    pub fn add_command_use(&self, day: &str, item_id: &str, count: u64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO commands_used (day, item_id, count) VALUES (?1, ?2, ?3)
+             ON CONFLICT (day, item_id) DO UPDATE SET count = count + excluded.count",
+            params![day, item_id, count],
+        )?;
+        Ok(())
+    }
+
+    /// Uses of each curriculum item from `from_day` on.
+    pub fn command_uses(&self, from_day: &str) -> Result<HashMap<String, u64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT item_id, SUM(count) FROM commands_used WHERE day >= ?1 GROUP BY item_id",
+        )?;
+        let rows = stmt.query_map(params![from_day], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    /// A curriculum item was shown as the day's "something new".
+    pub fn learn_shown(&self, item_id: &str, now_s: u64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO learn_items (item_id, first_shown, last_shown) VALUES (?1, ?2, ?2)
+             ON CONFLICT (item_id) DO UPDATE SET last_shown = ?2, times_shown = times_shown + 1",
+            params![item_id, now_s],
+        )?;
+        Ok(())
+    }
+
+    pub fn learn_learned(&self, item_id: &str, now_s: u64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE learn_items SET learned_at = ?2 WHERE item_id = ?1 AND learned_at IS NULL",
+            params![item_id, now_s],
+        )?;
+        Ok(())
+    }
+
+    pub fn learn_items(&self) -> Result<Vec<LearnRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT item_id, first_shown, last_shown, times_shown, learned_at FROM learn_items
+             ORDER BY first_shown",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(LearnRow {
+                item_id: r.get(0)?,
+                first_shown: r.get(1)?,
+                last_shown: r.get(2)?,
+                times_shown: r.get(3)?,
+                learned_at: r.get(4)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// A tip was shown; returns its row, for [`Store::close_tip`].
+    pub fn tip_shown(&self, tip: &TipShown<'_>) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO tip_outcomes (shown_at, rule_id, context, stage, hour, mode, prior_today)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                tip.shown_at,
+                tip.rule_id,
+                tip.context,
+                tip.stage,
+                tip.hour,
+                tip.mode,
+                tip.prior_today
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// What came of a tip; only the first outcome counts.
+    pub fn close_tip(&self, id: i64, outcome: Outcome) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tip_outcomes SET outcome = ?2 WHERE id = ?1 AND outcome IS NULL",
+            params![id, outcome.as_str()],
+        )?;
+        Ok(())
+    }
+
+    /// Tips shown since `since_s`, oldest first.
+    pub fn tips(&self, since_s: u64) -> Result<Vec<TipRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT shown_at, rule_id, context, stage, hour, mode, prior_today, outcome
+             FROM tip_outcomes WHERE shown_at >= ?1 ORDER BY shown_at, id",
+        )?;
+        let rows = stmt.query_map(params![since_s], |r| {
+            Ok(TipRow {
+                shown_at: r.get(0)?,
+                rule_id: r.get(1)?,
+                context: r.get(2)?,
+                stage: r.get(3)?,
+                hour: r.get(4)?,
+                mode: r.get(5)?,
+                prior_today: r.get(6)?,
+                outcome: r
+                    .get::<_, Option<String>>(7)?
+                    .as_deref()
+                    .and_then(Outcome::parse),
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Drop tip rows older than `before_s`.
+    pub fn prune_tips(&self, before_s: u64) -> Result<usize> {
+        self.conn.execute(
+            "DELETE FROM tip_outcomes WHERE shown_at < ?1",
+            params![before_s],
+        )
     }
 
     /// Add typing counts for `day` in `context` (opt-in).
@@ -470,6 +739,9 @@ impl Store {
             ("episodes", "rule_id, context, mode, shape"),
             ("typing", "day, context"),
             ("typo_pairs", "day, pair"),
+            ("tip_outcomes", "rule_id, context, stage, mode"),
+            ("commands_used", "day, item_id"),
+            ("learn_items", "item_id"),
         ] {
             let mut stmt = self.conn.prepare(&format!("SELECT {cols} FROM {table}"))?;
             let n = stmt.column_count();
@@ -730,5 +1002,88 @@ mod tests {
         );
         s.forget_all().unwrap();
         assert_eq!(s.typing("2026-10-24", "2026-10-25").unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn tip_outcomes() {
+        let s = Store::open_in_memory().unwrap();
+        let tip = |at| TipShown {
+            shown_at: at,
+            rule_id: "vim.repeat-jk",
+            context: "vscode-vim",
+            stage: "nudged",
+            hour: 14,
+            mode: "active",
+            prior_today: 2,
+        };
+        let a = s.tip_shown(&tip(100)).unwrap();
+        s.tip_shown(&tip(200)).unwrap();
+        s.close_tip(a, Outcome::Adopted).unwrap();
+        s.close_tip(a, Outcome::Dismissed).unwrap();
+        let rows = s.tips(0).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].outcome,
+            Some(Outcome::Adopted),
+            "the first outcome sticks"
+        );
+        assert_eq!(rows[1].outcome, None);
+        assert_eq!(s.prune_tips(150).unwrap(), 1);
+        assert_eq!(s.tips(0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn command_uses_and_learning() {
+        let s = Store::open_in_memory().unwrap();
+        s.add_command_use("2026-10-24", "ciw", 2).unwrap();
+        s.add_command_use("2026-10-25", "ciw", 1).unwrap();
+        s.add_command_use("2026-10-25", "star", 4).unwrap();
+        let uses = s.command_uses("2026-10-25").unwrap();
+        assert_eq!((uses["ciw"], uses["star"]), (1, 4));
+        s.learn_shown("ciw", 100).unwrap();
+        s.learn_shown("ciw", 200).unwrap();
+        s.learn_learned("ciw", 300).unwrap();
+        s.learn_learned("ciw", 400).unwrap();
+        let rows = s.learn_items().unwrap();
+        assert_eq!(
+            (rows[0].times_shown, rows[0].first_shown, rows[0].last_shown),
+            (2, 100, 200)
+        );
+        assert_eq!(rows[0].learned_at, Some(300));
+    }
+
+    #[test]
+    fn inflated_adoptions_are_capped() {
+        let s = Store::open_in_memory().unwrap();
+        s.record("2026-10-24", "vscode-vim", "vim.arrows-normal", HIT, 0)
+            .unwrap();
+        for _ in 0..600 {
+            s.record(
+                "2026-10-24",
+                "vscode-vim",
+                "vim.arrows-normal",
+                Event::Adoption,
+                0,
+            )
+            .unwrap();
+        }
+        // After the fix: left alone.
+        for _ in 0..50 {
+            s.record(
+                "2026-10-27",
+                "vscode-vim",
+                "vim.arrows-normal",
+                Event::Adoption,
+                0,
+            )
+            .unwrap();
+        }
+        let found = s.inflated_adoptions("2026-10-26").unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].adoptions, found[0].capped), (600, 6));
+        assert_eq!(s.fix_adoptions("2026-10-26").unwrap(), 1);
+        let p = &s.patterns().unwrap()[0];
+        assert_eq!(p.adoptions, 56);
+        assert!(s.inflated_adoptions("2026-10-26").unwrap().is_empty());
     }
 }

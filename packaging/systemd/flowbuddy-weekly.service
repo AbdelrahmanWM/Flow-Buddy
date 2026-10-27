@@ -9,5 +9,7 @@ Documentation=https://github.com/AbdelrahmanWM/Flow-Buddy/blob/main/docs/privacy
 [Service]
 Type=oneshot
 ExecStart=%h/.local/bin/flowbuddy coach --weekly-note
+# Where `claude`, `ollama` and friends usually live.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 NoNewPrivileges=true
 TimeoutStartSec=300

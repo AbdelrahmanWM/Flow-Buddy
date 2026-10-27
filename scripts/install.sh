@@ -10,6 +10,7 @@
 #   ~/.local/bin/flowbuddyd, ~/.local/bin/flowbuddy
 #   ~/.config/systemd/user/flowbuddyd.service (enabled and started)
 #   ~/.config/systemd/user/flowbuddy-weekly.service (only runs with [ai] weekly)
+#   ~/.config/systemd/user/flowbuddy-tips.{service,timer} (only acts with [ai] tips)
 #   ~/.local/share/gnome-shell/extensions/flowbuddy@abdelrahmanwm.github.io/
 #   ~/.local/share/flowbuddy/flowbuddy.{bash,zsh,fish}, sourced from ~/.bashrc,
 #   ~/.zshrc and fish's conf.d (for the shells you have)
@@ -207,8 +208,12 @@ fi
 say "Installing the systemd user service"
 run install -Dm644 "$repo/packaging/systemd/flowbuddyd.service" "$unit_dir/flowbuddyd.service"
 run install -Dm644 "$repo/packaging/systemd/flowbuddy-weekly.service" "$unit_dir/flowbuddy-weekly.service"
+run install -Dm644 "$repo/packaging/systemd/flowbuddy-tips.service" "$unit_dir/flowbuddy-tips.service"
+run install -Dm644 "$repo/packaging/systemd/flowbuddy-tips.timer" "$unit_dir/flowbuddy-tips.timer"
 run systemctl --user daemon-reload
 run systemctl --user enable --now flowbuddyd.service
+# Does nothing until you set [ai] tips = true.
+run systemctl --user enable --now flowbuddy-tips.timer
 
 if ((with_udev)); then
     say "Installing the keyboard access rule (needs sudo)"

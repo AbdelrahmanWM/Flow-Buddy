@@ -14,6 +14,7 @@ const {ModeTracker} = require('./mode');
 const {MotionTracker} = require('./motion');
 const {OperatorTracker} = require('./operator');
 const {UiReporter} = require('./ui');
+const {MappingReporter} = require('./mappings');
 const {version} = require('./package.json');
 
 let link = null;
@@ -23,11 +24,13 @@ function activate(context) {
     let modes = null;
     let motions = null;
     let operators = null;
+    let mappings = null;
     link = new DaemonLink({
         version,
         onConnected: () => {
             focus?.resend();
             modes?.resend();
+            mappings?.resend();
         },
     });
     focus = new FocusReporter(link);
@@ -42,6 +45,8 @@ function activate(context) {
     motions.enable(context.subscriptions);
     operators.enable(context.subscriptions);
     new UiReporter(link).enable(context.subscriptions);
+    mappings = new MappingReporter(link);
+    mappings.enable(context.subscriptions);
     link.start();
 }
 

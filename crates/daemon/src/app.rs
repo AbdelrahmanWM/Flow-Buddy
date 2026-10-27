@@ -21,7 +21,7 @@ use flowbuddy_core::motion::{self, MotionEvent, OperatorEvent};
 use flowbuddy_core::policy::{Coach, CoachingMode, Gate, PolicyConfig, RuleFacts};
 use flowbuddy_core::rule::{Finding, RuleEvent};
 use flowbuddy_core::rules::vscode::{How, UiAction, UiWhat};
-use flowbuddy_core::vim::{Flavor, InsertKey, Tracker, VimEvent};
+use flowbuddy_core::vim::{Flavor, InsertKey, Mappings, Tracker, VimEvent};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -68,6 +68,16 @@ pub struct App {
     /// shortcut (Ctrl-P, Ctrl-`) as its letter and time.
     last_click_ms: Option<u64>,
     last_shortcut: Option<(char, u64)>,
+    /// When the last tip was shown.
+    last_nudge_ms: Option<u64>,
+    /// Each editor's key mappings, as it reported them.
+    editor_mappings: HashMap<ConnId, Mappings>,
+    /// VS Code findings waiting for editor activity after their keys.
+    held_findings: Vec<(Finding, ContextKind)>,
+    /// Personal sentences your AI wrote for each rule (`[ai] tips`).
+    personal_tips: HashMap<String, String>,
+    /// Curriculum items used since the last write, by id.
+    usage: HashMap<&'static str, u64>,
     /// Opt-in typing accuracy, written once a minute.
     typing: crate::typing::Typing,
     typing_flushed_ms: u64,
@@ -105,6 +115,13 @@ const UI_SHORTCUT_MS: u64 = 15_000;
 /// A click this recent did.
 const UI_CLICK_MS: u64 = 1500;
 
+/// A VS Code finding waits this long for editor activity after its keys;
+/// in the editor a heartbeat follows within about half a second.
+const HELD_MS: u64 = 1000;
+
+/// The daily "something new" waits this long after any other tip.
+const LEARN_GAP_MS: u64 = 5 * 60_000;
+
 /// How often to look at Claude Code's settings for its Vim mode.
 const CLAUDE_CHECK_MS: u64 = 5000;
 
@@ -129,6 +146,14 @@ pub fn app_ids(config: &Config) -> AppIds {
         vims: config.apps.vims.clone().unwrap_or(d.vims),
         claudes: config.apps.claudes.clone().unwrap_or(d.claudes),
     }
+}
+
+fn local_hour(now_ms: u64) -> u32 {
+    use chrono::{TimeZone, Timelike};
+    chrono::Local
+        .timestamp_millis_opt(now_ms as i64)
+        .single()
+        .map_or(12, |t| t.hour())
 }
 
 fn flavor(kind: ContextKind) -> Flavor {
@@ -187,6 +212,11 @@ impl App {
             claude_probe: crate::claude::vim_mode_on,
             last_click_ms: None,
             last_shortcut: None,
+            last_nudge_ms: None,
+            held_findings: Vec::new(),
+            editor_mappings: HashMap::new(),
+            personal_tips: HashMap::new(),
+            usage: HashMap::new(),
             typing: crate::typing::Typing::default(),
             typing_flushed_ms: 0,
             layout: None,
@@ -287,7 +317,9 @@ impl App {
         // The model writes it, outside this sandbox; the fixed note if
         // that can't start.
         let ai = &self.config.ai;
-        if ai.weekly && ai.command.is_some() && self.notifier.start_weekly_note() {
+        let has_ai =
+            ai.command.is_some() || ai.provider != flowbuddy_core::config::AiProvider::None;
+        if ai.weekly && has_ai && self.notifier.start_weekly_note() {
             return;
         }
         let describe = |id: &str| self.describe(id).to_lowercase();
@@ -306,18 +338,65 @@ impl App {
     /// Show a nudge: in the top bar if the extension is there, otherwise
     /// as a desktop notification.
     fn deliver(&mut self, f: &Finding, now_ms: u64) {
+        let hour = local_hour(now_ms);
+        if self.config.ai.filter
+            && !self
+                .memory
+                .filter_allows(f.rule_id, self.mode.as_str(), hour, now_ms)
+        {
+            return;
+        }
+        let text = match self.personal_tips.get(f.rule_id) {
+            Some(personal) => format!("{} {personal}", f.text),
+            None => f.text.clone(),
+        };
+        self.show(f.rule_id, f.title, &text, f.mode == VimMode::Insert, now_ms);
+        self.memory.nudged(f.rule_id, now_ms);
+        self.memory
+            .tip_shown(f.rule_id, self.mode.as_str(), hour, now_ms);
+    }
+
+    /// Today's sentences from `tips.json`, written by `flowbuddy coach
+    /// --write-tips`; older than three days, they're not used.
+    fn load_personal_tips(&mut self, now_ms: u64) {
+        #[derive(serde::Deserialize)]
+        struct Cache {
+            generated_at: u64,
+            tips: HashMap<String, String>,
+        }
+        self.personal_tips.clear();
+        if !self.config.ai.tips {
+            return;
+        }
+        let path = match &self.state_path {
+            Some(p) => p.with_file_name("tips.json"),
+            None => return,
+        };
+        let Some(cache) = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Cache>(&t).ok())
+        else {
+            return;
+        };
+        if (now_ms / 1000).saturating_sub(cache.generated_at) <= 3 * 86_400 {
+            self.personal_tips = cache.tips;
+        }
+    }
+
+    /// Put a tip on screen: through the extension, or as a notification.
+    fn show(&mut self, rule_id: &'static str, title: &str, text: &str, insert: bool, now_ms: u64) {
         self.nudge_seq += 1;
         let nudge = Nudge {
             nudge_id: format!("n-{now_ms}-{}", self.nudge_seq),
-            rule_id: f.rule_id.into(),
-            title: f.title.into(),
-            text: f.text.clone(),
+            rule_id: rule_id.into(),
+            title: title.into(),
+            text: text.into(),
             ttl_ms: u64::from(self.config.coaching.nudge_seconds) * 1000,
             style: self.config.coaching.nudge_style.unwrap_or(match self.mode {
                 CoachingMode::Active => NudgeStyle::Card,
                 _ => NudgeStyle::Bar,
             }),
-            explain: glossary::explain(&f.text, f.mode == VimMode::Insert),
+            explain: glossary::explain(text, insert),
         };
         if self.extension_connected() {
             self.broadcast(ServerMsg::Nudge(nudge.clone()));
@@ -334,8 +413,47 @@ impl App {
         if self.nudges.len() == NUDGE_HISTORY {
             self.nudges.pop_front();
         }
-        self.nudges.push_back((nudge.nudge_id, f.rule_id));
-        self.memory.nudged(f.rule_id, now_ms);
+        self.nudges.push_back((nudge.nudge_id, rule_id));
+        self.last_nudge_ms = Some(now_ms);
+    }
+
+    /// Once a day, in every mode but off: one thing from the curriculum you
+    /// don't use yet, while you're in Vim and nothing else was just shown.
+    fn something_new(&mut self, now_ms: u64) {
+        const RULE: &str = "learn.daily";
+        let today = memory::day(now_ms);
+        let quiet = self
+            .config
+            .coaching
+            .quiet_hours
+            .as_deref()
+            .and_then(config::parse_range)
+            .is_some_and(|q| q.contains(self.gate(now_ms).local_minute));
+        let editing = matches!(
+            self.resolved.kind,
+            ContextKind::VsCodeVim | ContextKind::TerminalVim
+        );
+        if !self.config.learn.daily
+            || self.mode == CoachingMode::Off
+            || !self.capturing(now_ms)
+            || quiet
+            || !editing
+            || self.state.last_learn_day.as_deref() == Some(today.as_str())
+            || self.state.muted().contains(RULE)
+            || self
+                .last_nudge_ms
+                .is_some_and(|t| now_ms.saturating_sub(t) < LEARN_GAP_MS)
+        {
+            return;
+        }
+        let Some(item) = self.memory.pick_something_new(now_ms) else {
+            return;
+        };
+        self.state.last_learn_day = Some(today);
+        self.save_state();
+        let text = flowbuddy_core::curriculum::tip_text(item);
+        self.show(RULE, "Something new", &text, false, now_ms);
+        self.memory.learn_shown(item.id, now_ms);
     }
 
     fn nudge_rule(&self, nudge_id: &str) -> Option<&'static str> {
@@ -432,6 +550,17 @@ impl App {
         let muted = self.state.muted();
         for ev in events {
             match ev {
+                // VS Code: wait for editor activity after the keys (#110).
+                RuleEvent::Finding(f) if keyed && self.vscode_editor().is_some() => {
+                    let seen_after = self
+                        .vscode_editor()
+                        .is_some_and(|e| e.focused == Some(true) && e.focused_ms + 50 >= f.at_ms);
+                    if seen_after {
+                        self.on_rule_events_in(ctx, std::slice::from_ref(ev), now_ms, false);
+                    } else {
+                        self.held_findings.push((f.clone(), ctx));
+                    }
+                }
                 RuleEvent::Finding(f) if keyed && !self.editor_saw(f.at_ms) => {
                     tracing::debug!(
                         rule = f.rule_id,
@@ -530,6 +659,47 @@ impl App {
         keys
     }
 
+    /// The mappings for the current context: its editor's, else the config's.
+    fn mappings_now(&self) -> Mappings {
+        self.resolved
+            .editor
+            .and_then(|id| self.editor_mappings.get(&id).cloned())
+            .unwrap_or_else(|| Mappings::from_names(&self.config.keyboard.insert_escapes, &[]))
+    }
+
+    /// The context's VS Code companion, if that's where the keys go.
+    fn vscode_editor(&self) -> Option<&crate::resolver::Editor> {
+        self.resolved
+            .editor
+            .and_then(|id| self.resolver.editor(id))
+            .filter(|e| e.kind == EditorKind::Vscode)
+    }
+
+    /// Editor activity came in: show the held findings whose keys it
+    /// followed; drop the ones that waited too long.
+    fn release_held(&mut self, now_ms: u64) {
+        if self.held_findings.is_empty() {
+            return;
+        }
+        let beat = self
+            .vscode_editor()
+            .filter(|e| e.focused == Some(true))
+            .map(|e| e.focused_ms);
+        let held = std::mem::take(&mut self.held_findings);
+        for (f, ctx) in held {
+            if beat.is_some_and(|b| b + 50 >= f.at_ms && b <= f.at_ms + HELD_MS) {
+                self.on_rule_events_in(ctx, &[RuleEvent::Finding(f)], now_ms, false);
+            } else if now_ms.saturating_sub(f.at_ms) > HELD_MS {
+                tracing::debug!(
+                    rule = f.rule_id,
+                    "finding dropped: no editor activity after its keys"
+                );
+            } else {
+                self.held_findings.push((f, ctx));
+            }
+        }
+    }
+
     /// Whether keys up to `at_ms` plausibly went to the editor. The VS Code
     /// companion reports editor activity as a heartbeat; keys typed into the
     /// terminal or a chat panel come with none.
@@ -567,10 +737,15 @@ impl App {
     /// another key.
     pub fn tick(&mut self, now_ms: u64) {
         self.check_claude(now_ms);
+        self.release_held(now_ms);
+        self.memory.expire_tips(now_ms);
         if now_ms.saturating_sub(self.typing_flushed_ms) >= 60_000 {
             self.typing_flushed_ms = now_ms;
             let counts = self.typing.take();
             self.memory.typing(counts, now_ms);
+            let usage = std::mem::take(&mut self.usage);
+            self.memory.command_uses(usage, now_ms);
+            self.load_personal_tips(now_ms);
         }
         // Switching tmux panes tells no one; look again.
         if self.resolver.via_tmux() {
@@ -581,6 +756,7 @@ impl App {
             self.mode_changed();
             self.save_state();
         }
+        self.something_new(now_ms);
         let events = self.engine.tick(self.resolved.kind, now_ms);
         self.on_rule_events(&events, now_ms);
         let gate = self.gate(now_ms);
@@ -615,6 +791,18 @@ impl App {
         }
         self.memory.active(kind, now_ms);
         let step = self.tracker.feed(stroke);
+        if step.confident
+            && matches!(
+                kind,
+                ContextKind::VsCodeVim | ContextKind::TerminalVim | ContextKind::ClaudeVim
+            )
+        {
+            for item in flowbuddy_core::curriculum::CURRICULUM {
+                if item.used_in(&step) {
+                    *self.usage.entry(item.id).or_default() += 1;
+                }
+            }
+        }
         if self.config.typing.accuracy {
             match (&step.event, stroke.key.sym) {
                 (Some(VimEvent::Insert(InsertKey::Text)), Sym::Char(c)) => {
@@ -683,6 +871,7 @@ impl App {
             self.on_rule_events(&events, now_ms);
             self.resolved = new;
             self.tracker = Tracker::new(flavor(new.kind));
+            self.tracker.set_mappings(self.mappings_now());
             self.commands.clear();
             self.typing.other();
             self.engine.set_editor_motions(new.editor.is_some());
@@ -718,6 +907,13 @@ impl App {
     pub fn set_keymap_layout(&mut self, layout: String, note: Option<String>) {
         self.keymap_layout = (layout, note);
         self.tracker.invalidate();
+    }
+
+    /// The focused window changed (from the GNOME extension, or X11).
+    pub fn set_focus(&mut self, app_id: Option<String>, pid: Option<u32>, now_ms: u64) {
+        self.resolver.set_focus(app_id, pid);
+        self.resolver.prune();
+        self.update_context(None, now_ms);
     }
 
     pub fn set_keyboards(&mut self, n: usize) {
@@ -778,11 +974,7 @@ impl App {
                     self.update_context(None, now_ms);
                 }
             }
-            ClientMsg::Focus { app_id, pid, .. } => {
-                self.resolver.set_focus(app_id, pid);
-                self.resolver.prune();
-                self.update_context(None, now_ms);
-            }
+            ClientMsg::Focus { app_id, pid, .. } => self.set_focus(app_id, pid, now_ms),
             ClientMsg::Ctx {
                 event,
                 command,
@@ -828,6 +1020,16 @@ impl App {
                 event: UiEvent::FileOpened,
             } if self.is_vscode(conn) => self.on_ui(UiWhat::FileOpened, 'p', now_ms),
             ClientMsg::EditorEvent { .. } => {}
+            ClientMsg::EditorMappings {
+                insert_escapes,
+                normal,
+            } => {
+                self.editor_mappings
+                    .insert(conn, Mappings::from_names(&insert_escapes, &normal));
+                if self.resolved.editor == Some(conn) {
+                    self.tracker.set_mappings(self.mappings_now());
+                }
+            }
             ClientMsg::InputSource { layout, variant } => {
                 // xkb names only: anything else is ignored.
                 let name = |s: Option<String>| {
@@ -849,6 +1051,7 @@ impl App {
                 }
                 self.resolver.editor_focus(conn, focused, panel, now_ms);
                 self.update_context(None, now_ms);
+                self.release_held(now_ms);
             }
             ClientMsg::EditorMode { mode } => {
                 self.resolver.editor_mode(conn, mode.vim_mode(), now_ms);
@@ -921,6 +1124,23 @@ impl App {
                 data: json!(self.rule_infos()),
             },
             Command::Rule { rule_id, action } => self.rule_command(id, &rule_id, action),
+            Command::RuleThreshold { rule_id, threshold } => {
+                match self.engine.default_threshold(&rule_id) {
+                    None => ServerMsg::Error {
+                        id,
+                        code: ErrorCode::UnknownRule,
+                        message: format!("{rule_id} has no threshold"),
+                    },
+                    Some(_) => {
+                        self.state.rules.entry(rule_id).or_default().threshold =
+                            threshold.filter(|n| *n > 0);
+                        self.engine
+                            .apply(&config::rule_settings(&self.config, &self.state));
+                        self.save_state();
+                        ServerMsg::Ack { id }
+                    }
+                }
+            }
             Command::ReportFalsePositive => match self.nudges.back() {
                 Some((nudge_id, _)) => {
                     let nudge_id = nudge_id.clone();
@@ -997,6 +1217,11 @@ impl App {
             app: self.resolver.focused_app().map(Into::into),
             layout: Some(self.keymap_layout.0.clone()),
             layout_note: self.keymap_layout.1.clone(),
+            tip_filter: Some(if self.config.ai.filter {
+                self.memory.filter_status(now_s * 1000)
+            } else {
+                "off".into()
+            }),
             mode_from_editor: self
                 .resolved
                 .editor
@@ -1577,6 +1802,8 @@ pub(crate) mod tests {
         use chrono::TimeZone;
         let (mut app, recorder) = app_with_store(CoachingMode::Passive);
         app.config.coaching.summary_time = "18:00".into();
+        // Only the summary here; the daily tip has its own test.
+        app.config.learn.daily = false;
         let at = |h, m| {
             chrono::Local
                 .with_ymd_and_hms(2026, 10, 24, h, m, 0)
@@ -1803,20 +2030,27 @@ pub(crate) mod tests {
         let mut ext = ext_hello(&mut app, 1);
         let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
         focus(&mut app, "code_code", 500);
-        // Typing in the terminal panel or a chat: no editor heartbeat.
-        keys(&mut app, "<Esc>xxxxx<Esc>");
+        let beat = |app: &mut App, at| {
+            send(
+                app,
+                2,
+                ClientMsg::EditorFocus {
+                    focused: true,
+                    panel: None,
+                },
+                at,
+            )
+        };
+        // Editing, then typing in a chat panel: nothing follows the keys.
+        beat(&mut app, 900);
+        type_at(&mut app, "<Esc>xxxxx<Esc>", 1_000);
+        app.tick(3_000);
+        // A beat long after (back in the editor) doesn't vouch for them.
+        beat(&mut app, 3_500);
         assert!(nudges(&mut ext).is_empty());
-        // Back in the editor.
-        send(
-            &mut app,
-            2,
-            ClientMsg::EditorFocus {
-                focused: true,
-                panel: None,
-            },
-            0,
-        );
-        keys(&mut app, "<Esc>xxxxx<Esc>");
+        // In the editor: a heartbeat follows the keys.
+        type_at(&mut app, "<Esc>xxxxx<Esc>", 10_000);
+        beat(&mut app, 10_700);
         assert_eq!(nudges(&mut ext).len(), 1);
     }
 
@@ -2116,5 +2350,206 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tip_outcomes_are_recorded() {
+        use flowbuddy_store::Outcome;
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let _ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        // A tip, then the better way: adopted.
+        type_at(&mut app, "<Esc>xxxxxw", 1_000);
+        type_at(&mut app, "dw", 60_000);
+        // Another rule's tip, marked not helpful.
+        type_at(&mut app, "jjjjjjjw", 120_000);
+        send(
+            &mut app,
+            1,
+            ClientMsg::Command {
+                id: None,
+                command: Command::ReportFalsePositive,
+            },
+            125_000,
+        );
+        // A third, left alone for over half an hour: ignored.
+        type_at(&mut app, "<Down><Down><Down><Esc>", 200_000);
+        app.tick(200_000 + 31 * 60_000);
+        let rows = app.memory.store().unwrap().tips(0).unwrap();
+        let got: Vec<_> = rows
+            .iter()
+            .map(|r| (r.rule_id.as_str(), r.outcome))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("vim.repeat-x", Some(Outcome::Adopted)),
+                ("vim.repeat-jk", Some(Outcome::NotHelpful)),
+                ("vim.arrows-normal", Some(Outcome::Ignored)),
+            ]
+        );
+        assert_eq!(rows[1].prior_today, 1);
+        assert_eq!(rows[0].mode, "active");
+    }
+
+    #[test]
+    fn the_learned_filter_skips_tips_you_dismiss() {
+        use flowbuddy_store::{Outcome, TipShown};
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let now = 1_800_000_000_000u64;
+        {
+            let store = app.memory.store().unwrap();
+            for i in 0..40 {
+                for (rule, outcome) in [
+                    ("vim.repeat-x", Outcome::Dismissed),
+                    ("vim.repeat-jk", Outcome::Adopted),
+                ] {
+                    let id = store
+                        .tip_shown(&TipShown {
+                            shown_at: now / 1000 - 86_400 + i * 60,
+                            rule_id: rule,
+                            context: "vscode-vim",
+                            stage: "nudged",
+                            hour: 14,
+                            mode: "active",
+                            prior_today: (i % 3) as u32,
+                        })
+                        .unwrap();
+                    store.close_tip(id, outcome).unwrap();
+                }
+            }
+        }
+        app.memory.maintain(now);
+        assert!(
+            app.status(now / 1000)
+                .tip_filter
+                .unwrap()
+                .starts_with("on, learned from 80 tips")
+        );
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>xxxxxw", now);
+        type_at(&mut app, "jjjjjjjw", now + 20 * 60_000);
+        let shown: Vec<_> = nudges(&mut ext).into_iter().map(|n| n.rule_id).collect();
+        assert_eq!(shown, ["vim.repeat-jk"]);
+        assert!(
+            app.status(now / 1000)
+                .tip_filter
+                .unwrap()
+                .ends_with("1 skipped today")
+        );
+    }
+
+    #[test]
+    fn something_new_once_a_day() {
+        use chrono::TimeZone;
+        let (mut app, _) = app_with_store(CoachingMode::Balanced);
+        let mut ext = ext_hello(&mut app, 1);
+        let at = |d, h| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 10, d, h, 0, 0)
+                .unwrap()
+                .timestamp_millis() as u64
+        };
+        // Not while you're elsewhere.
+        focus(&mut app, "firefox", 900);
+        app.tick(at(20, 10));
+        assert!(nudges(&mut ext).is_empty());
+        focus(&mut app, "code_code", 500);
+        // You already move by words: that's not new to you.
+        type_at(&mut app, "<Esc>wwwbbb", at(20, 10));
+        app.tick(at(20, 10) + 61_000);
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].rule_id, "learn.daily");
+        assert!(
+            n[0].text.starts_with("`e`: jump to the end of the word"),
+            "{}",
+            n[0].text
+        );
+        assert!(!n[0].explain.is_empty());
+        // Once a day.
+        app.tick(at(20, 15));
+        assert!(nudges(&mut ext).is_empty());
+        // You start using it: learned.
+        type_at(&mut app, "<Esc>eee", at(20, 16));
+        app.tick(at(20, 16) + 120_000);
+        let learned = app.memory.store().unwrap().learn_items().unwrap();
+        assert!(learned[0].learned_at.is_some(), "{learned:?}");
+        // The next day, the next thing.
+        app.tick(at(21, 10));
+        let n = nudges(&mut ext);
+        assert!(n[0].text.starts_with("`0`, `^` and `$`"), "{}", n[0].text);
+    }
+
+    #[test]
+    fn reviewed_thresholds_apply_and_restore() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut rx = connect(&mut app, 1);
+        let set = |app: &mut App, threshold| {
+            send(
+                app,
+                1,
+                ClientMsg::Command {
+                    id: Some(1),
+                    command: Command::RuleThreshold {
+                        rule_id: "vim.repeat-x".into(),
+                        threshold,
+                    },
+                },
+                0,
+            )
+        };
+        set(&mut app, Some(7));
+        assert_eq!(rx.try_recv().unwrap(), ServerMsg::Ack { id: Some(1) });
+        assert_eq!(threshold(&app, "vim.repeat-x"), Some(7));
+        set(&mut app, None);
+        assert_eq!(threshold(&app, "vim.repeat-x"), Some(4));
+        send(
+            &mut app,
+            1,
+            ClientMsg::Command {
+                id: Some(2),
+                command: Command::RuleThreshold {
+                    rule_id: "vim.w-then-q".into(),
+                    threshold: Some(3),
+                },
+            },
+            0,
+        );
+        rx.try_recv().unwrap();
+        assert!(matches!(rx.try_recv().unwrap(), ServerMsg::Error { .. }));
+    }
+
+    #[test]
+    fn personal_tips_are_added_when_fresh() {
+        let dir = std::env::temp_dir().join(format!("flowbuddy-tips-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = test_app(CoachingMode::Active).with_state_path(dir.join("state.json"));
+        app.config.ai.tips = true;
+        let now = 1_800_000_000_000u64;
+        std::fs::write(
+            dir.join("tips.json"),
+            format!(
+                r#"{{"generated_at": {}, "tips": {{"vim.repeat-x": "You did this 30 times; `dw` is your friend."}}}}"#,
+                now / 1000 - 3600
+            ),
+        )
+        .unwrap();
+        app.tick(now);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>xxxxxw", now);
+        let n = nudges(&mut ext);
+        assert!(
+            n[0].text
+                .ends_with("You did this 30 times; `dw` is your friend."),
+            "{}",
+            n[0].text
+        );
+        // Stale: not used.
+        app.tick(now + 4 * 86_400_000);
+        assert!(app.personal_tips.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

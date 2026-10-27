@@ -85,6 +85,10 @@ pub fn repeat_jk() -> RepeatRule {
         },
     })
     .replaced_by_editor()
+    .when_held(|unit, secs| {
+        let (page, para) = if unit == "j" { ("Ctrl-d", "}") } else { ("Ctrl-u", "{") };
+        format!("You held {unit} for {secs:.1} s. `{page}` moves half a page per press, `{para}` jumps to the next blank line.")
+    })
 }
 
 pub fn repeat_hl() -> RepeatRule {
@@ -115,6 +119,10 @@ pub fn repeat_hl() -> RepeatRule {
         },
     })
     .replaced_by_editor()
+    .when_held(|unit, secs| {
+        let (word, find) = if unit == "l" { ("w", "f<char>") } else { ("b", "F<char>") };
+        format!("You held {unit} for {secs:.1} s. `{word}` moves a word per press; `{find}` jumps straight to a character.")
+    })
 }
 
 pub fn repeat_x() -> RepeatRule {
@@ -136,6 +144,9 @@ pub fn repeat_x() -> RepeatRule {
             })
         },
         message: |_, n| format!("You pressed x {n} times. Try `dw`, `de` or `D`."),
+    })
+    .when_held(|_, secs| {
+        format!("You held x for {secs:.1} s. `dw` deletes the word, `D` the rest of the line.")
     })
 }
 
@@ -234,6 +245,9 @@ pub fn backspace_insert() -> RepeatRule {
         message: |_, n| {
             format!("{n} Backspaces in a row. Try `Ctrl-w` to delete a word, or `Esc` then `ciw`.")
         },
+    })
+    .when_held(|_, secs| {
+        format!("You held Backspace for {secs:.1} s. `Ctrl-w` deletes a word at a time, `Ctrl-u` back to the line start.")
     })
 }
 

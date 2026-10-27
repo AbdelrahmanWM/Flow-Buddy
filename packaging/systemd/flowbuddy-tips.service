@@ -1,0 +1,13 @@
+[Unit]
+Description=Flow Buddy: today's personal tips, written by your AI
+Documentation=https://github.com/AbdelrahmanWM/Flow-Buddy/blob/main/docs/privacy.md
+
+# Run daily by flowbuddy-tips.timer. Does nothing unless [ai] tips = true.
+# Like flowbuddy-weekly.service, it may use the network stack to reach your
+# AI; the daemon never does. See docs/privacy.md.
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/flowbuddy coach --write-tips
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+NoNewPrivileges=true
+TimeoutStartSec=300

@@ -39,7 +39,8 @@ run() {
 
 say "Stopping the service"
 run systemctl --user disable --now flowbuddyd.service 2>/dev/null || true
-run rm -f "${unit%/*}/flowbuddy-weekly.service"
+run systemctl --user disable --now flowbuddy-tips.timer 2>/dev/null || true
+run rm -f "${unit%/*}/flowbuddy-weekly.service" "${unit%/*}/flowbuddy-tips.service" "${unit%/*}/flowbuddy-tips.timer"
 run rm -f "$unit"
 run systemctl --user daemon-reload
 

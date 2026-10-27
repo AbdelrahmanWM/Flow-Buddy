@@ -139,6 +139,12 @@ fn phrase(keys: &str) -> Option<&'static str> {
         "^old^new" => "rerun the last command with old replaced by new",
         "Up" => "bring back the previous command to edit",
         "Ctrl-P" => "open a file by typing part of its name (VS Code)",
+        ":s/old/new/" => "replace old with new on this line",
+        ":%s/old/new/g" => "replace old with new everywhere in the file",
+        ":g/pattern/d" => "delete every line that matches the pattern",
+        ":norm" => "run Normal-mode keys on each selected line",
+        ":.,+5d" => "delete this line and the five after it",
+        ":sort" => "sort the selected lines",
         "Ctrl-`" => "jump to the terminal and back (VS Code)",
         _ => return None,
     })
@@ -168,6 +174,8 @@ fn whole(word: &str, insert: bool) -> Option<&'static str> {
         "Ctrl-r" => "search back through history as you type (bash)",
         "Ctrl-w" => "delete the word before the cursor",
         "Ctrl-v" => "select a block (columns)",
+        "Ctrl-a" => "add one to the number under the cursor",
+        "Ctrl-x" => "subtract one from the number under the cursor",
         "Esc" => "back to Normal mode",
         ":wq" | ":x" => "save and quit",
         ":w" => "save",
@@ -274,6 +282,8 @@ fn single(c: char) -> Option<&'static str> {
         'J' => "join the next line onto this one",
         'u' => "undo",
         '.' => "repeat the last change",
+        '~' => "switch the case of the character",
+        'R' => "type over the existing text (Replace mode)",
         'v' => "select characters",
         'V' => "select whole lines",
         _ => return None,
@@ -322,6 +332,11 @@ fn parse(word: &str, out: &mut Vec<(String, &'static str)>) {
                 ('g', 'e') => Some("back to the end of the previous word"),
                 ('g', '_') => Some("to the last non-blank character"),
                 ('z', 't') => Some("scroll so this line is at the top"),
+                ('g', 'U') => Some("make upper case over a motion"),
+                ('g', 'u') => Some("make lower case over a motion"),
+                ('g', 'v') => Some("select the last selection again"),
+                ('g', 'i') => Some("start typing where you last stopped typing"),
+                ('`' | '\'', '.') => Some("jump to where you last changed something"),
                 ('z', 'b') => Some("scroll so this line is at the bottom"),
                 ('m', _) if n.is_ascii_lowercase() => Some("set mark here (any letter names it)"),
                 ('\'', _) if n.is_ascii_lowercase() => Some("jump to the mark's line"),
@@ -360,6 +375,17 @@ fn parse(word: &str, out: &mut Vec<(String, &'static str)>) {
             out.push((piece(&chars[i..i + 1]), m));
         }
         i += 1;
+        // Visual mode, then a text object to select (`vi(`).
+        if matches!(c, 'v' | 'V')
+            && let (Some(&k @ ('i' | 'a')), Some(&o)) = (chars.get(i), chars.get(i + 1))
+            && let Some(what) = object(o)
+        {
+            out.push((
+                piece(&chars[i..i + 2]),
+                if k == 'i' { inside(what) } else { around(what) },
+            ));
+            i += 2;
+        }
     }
 }
 

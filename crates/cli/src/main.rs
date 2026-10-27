@@ -1,6 +1,8 @@
 mod client;
 mod coach;
 mod report;
+mod review;
+mod tips;
 
 use clap::{Parser, Subcommand};
 use flowbuddy_core::ipc::{ClientKind, ClientMsg, Command, CtxEvent, RuleAction, RuleInfo, Status};
@@ -37,6 +39,8 @@ enum Cmd {
     ReportFp,
     /// The one habit worth working on now.
     Next,
+    /// Your daily "something new" and your progress through Vim's features.
+    Learn,
     /// Ask a local model about your habits (set `[ai] command` first).
     Coach {
         /// A question, e.g. "how do I move faster in big files?"
@@ -48,6 +52,24 @@ enum Cmd {
         /// `[ai] weekly` is on (run by flowbuddy-weekly.service).
         #[arg(long, hide = true)]
         weekly_note: bool,
+        /// Have the model write today's personal tips, if `[ai] tips` is on
+        /// (run daily by flowbuddy-tips.timer).
+        #[arg(long, hide = true)]
+        write_tips: bool,
+    },
+    /// Ask your AI how to tune the tips; apply what you agree with.
+    Review {
+        /// Apply these proposals from the last review, by number.
+        #[arg(long, num_args = 1..)]
+        apply: Vec<usize>,
+        /// Print what would be sent, and stop.
+        #[arg(long)]
+        prompt: bool,
+    },
+    /// Print the ssh config that lets Vim on a remote machine report here.
+    SshConfig {
+        /// The host, as you `ssh` to it.
+        host: String,
     },
     /// What Vim keys do, piece by piece: `flowbuddy explain 'ci"'`.
     Explain {
@@ -97,6 +119,15 @@ enum MemoryCmd {
         #[arg(long, conflicts_with = "rule")]
         all: bool,
         /// Don't ask for confirmation.
+        #[arg(long, short)]
+        yes: bool,
+    },
+    /// Cap the "better way" counts recorded before they were fixed
+    /// (they counted every key instead of every run).
+    FixAdoptions {
+        /// Only days before this one (YYYY-MM-DD), when the fix arrived.
+        #[arg(long, default_value = "2026-10-26")]
+        before: String,
         #[arg(long, short)]
         yes: bool,
     },
@@ -151,9 +182,24 @@ fn main() {
         Cmd::Mode { mode } => set_mode(mode),
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),
+        Cmd::Learn => learn(),
+        Cmd::SshConfig { host } => {
+            print!("{}", ssh_config(&host, &flowbuddy_core::paths::socket()));
+            Ok(())
+        }
+        Cmd::Review { apply, prompt } => {
+            if apply.is_empty() {
+                review(prompt)
+            } else {
+                review_apply(&apply)
+            }
+        }
         Cmd::Coach {
             weekly_note: true, ..
         } => weekly_note(),
+        Cmd::Coach {
+            write_tips: true, ..
+        } => write_tips(),
         Cmd::Coach {
             question, prompt, ..
         } => coach(&question.join(" "), prompt),
@@ -215,6 +261,9 @@ fn print_status(s: &Status) {
     println!("  focused:   {}", s.app.as_deref().unwrap_or("nothing"));
     println!("  context:   {}", context_line(s));
     println!("  keyboards: {}", s.keyboards);
+    if let Some(filter) = &s.tip_filter {
+        println!("  filter:    {filter}");
+    }
     if let Some(layout) = &s.layout {
         match &s.layout_note {
             Some(note) => println!("  layout:    {layout} ({note})"),
@@ -270,7 +319,14 @@ fn open_db() -> anyhow::Result<Option<flowbuddy_store::Store>> {
     if !path.exists() {
         return Ok(None);
     }
-    Ok(Some(flowbuddy_store::Store::open_read_only(&path)?))
+    let store = flowbuddy_store::Store::open_read_only(&path)?;
+    if !store.is_current() {
+        anyhow::bail!(
+            "the daemon hasn't updated the database yet: restart it after updating \
+             (systemctl --user restart flowbuddyd)"
+        );
+    }
+    Ok(Some(store))
 }
 
 fn summary(week: bool) -> anyhow::Result<()> {
@@ -303,18 +359,13 @@ fn coach(question: &str, show_prompt: bool) -> anyhow::Result<()> {
     }
     let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
         .map_err(anyhow::Error::msg)?;
-    let Some(command) = config.ai.command.filter(|c| !c.is_empty()) else {
-        print!("{}", coach::SETUP);
-        return Ok(());
-    };
-    coach::run(
-        &command,
-        &prompt,
-        config.ai.timeout_seconds,
-        &mut std::io::stdout(),
-    )
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!();
+    match coach::ask(&config.ai, &prompt, &mut std::io::stdout()) {
+        None => print!("{}", coach::SETUP),
+        Some(result) => {
+            result.map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!();
+        }
+    }
     Ok(())
 }
 
@@ -337,25 +388,37 @@ fn weekly_note() -> anyhow::Result<()> {
         return Ok(());
     };
     let mut text = fixed.clone();
-    if let (true, Some(command)) = (config.ai.weekly, config.ai.command.as_ref()) {
+    if config.ai.weekly {
         let week = flowbuddy_store::days::range(now, 7, 0);
         let full = |id: &str| Some(report::describe(id));
         let export = flowbuddy_store::Export::build(&store, &full, (&week.0, &week.1), now / 1000)?;
         let mut answer = Vec::new();
-        match coach::run(
-            command,
+        match coach::ask(
+            &config.ai,
             &coach::weekly_prompt(&export, &fixed),
-            config.ai.timeout_seconds,
             &mut answer,
         ) {
-            Ok(()) => {
+            Some(Ok(())) => {
                 if let Some(t) = coach::notification_text(&String::from_utf8_lossy(&answer)) {
                     text = t;
                 }
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 eprintln!("flowbuddy: the model didn't write the note ({e}); sending the usual one")
             }
+            None => {}
+        }
+        // And a review of the tips, ready for `flowbuddy review`.
+        match review_prompt(&store, &config, now).and_then(|p| run_review(&config.ai, &p)) {
+            Ok(Some(parsed)) if !parsed.proposals.is_empty() => {
+                let n = parsed.proposals.len();
+                text.push_str(&format!(
+                    " Your AI also suggests {n} change{} to your tips: run `flowbuddy review`.",
+                    if n == 1 { "" } else { "s" }
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("flowbuddy: no review this week ({e})"),
         }
     }
     std::process::Command::new("notify-send")
@@ -382,6 +445,194 @@ fn explain(keys: &str, insert: bool) {
     for (piece, meaning) in pieces {
         println!("{piece:<width$}  {meaning}");
     }
+}
+
+/// Where today's model-written tips are kept for the daemon.
+fn tips_file() -> std::path::PathBuf {
+    flowbuddy_core::paths::state_file().with_file_name("tips.json")
+}
+
+fn write_tips() -> anyhow::Result<()> {
+    let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
+        .unwrap_or_default();
+    if !config.ai.tips {
+        return Ok(());
+    }
+    let Some(store) = open_db()? else {
+        return Ok(());
+    };
+    let now = now_ms();
+    let week = flowbuddy_store::days::range(now, 14, 0);
+    let describe = |id: &str| Some(report::describe(id));
+    let export = flowbuddy_store::Export::build(&store, &describe, (&week.0, &week.1), now / 1000)?;
+    let mut rules: Vec<(String, String)> = export
+        .patterns
+        .iter()
+        .filter(|p| p.last_7_days.hits > 0)
+        .map(|p| (p.rule.clone(), p.description.clone()))
+        .collect();
+    rules.dedup_by(|a, b| a.0 == b.0);
+    rules.truncate(8);
+    if rules.is_empty() {
+        return Ok(());
+    }
+    let prompt = tips::prompt(&coach::facts(&export), &rules);
+    let mut answer = Vec::new();
+    match coach::ask(&config.ai, &prompt, &mut answer) {
+        None => return Ok(()),
+        Some(r) => r.map_err(|e| anyhow::anyhow!("{e}"))?,
+    }
+    let (cache, dropped) =
+        tips::parse(&String::from_utf8_lossy(&answer), now / 1000).map_err(anyhow::Error::msg)?;
+    for why in dropped {
+        eprintln!("flowbuddy: left out a tip ({why})");
+    }
+    let path = tips_file();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&cache)?)?;
+    println!("{} personal tips written", cache.tips.len());
+    Ok(())
+}
+
+/// Where the last review's proposals are kept until applied.
+fn review_file() -> std::path::PathBuf {
+    flowbuddy_core::paths::state_file().with_file_name("review.json")
+}
+
+fn review(show_prompt: bool) -> anyhow::Result<()> {
+    let Some(store) = open_db()? else {
+        println!("Nothing recorded yet. Is flowbuddyd running? Try `flowbuddy status`.");
+        return Ok(());
+    };
+    let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
+        .unwrap_or_default();
+    let prompt = review_prompt(&store, &config, now_ms())?;
+    if show_prompt {
+        print!("{prompt}");
+        return Ok(());
+    }
+    let Some(parsed) = run_review(&config.ai, &prompt)? else {
+        print!("{}", coach::SETUP);
+        return Ok(());
+    };
+    if parsed.proposals.is_empty() {
+        println!("No changes proposed: the tips look right as they are.");
+    } else {
+        println!("Proposed changes:");
+        for (i, p) in parsed.proposals.iter().enumerate() {
+            println!("  {}. {}", i + 1, p.describe());
+        }
+        println!("\nApply some with: flowbuddy review --apply 1 2 ...");
+    }
+    for why in &parsed.dropped {
+        println!("  (left out: {why})");
+    }
+    Ok(())
+}
+
+/// The review prompt from the store and the current settings.
+fn review_prompt(
+    store: &flowbuddy_store::Store,
+    config: &flowbuddy_core::config::Config,
+    now: u64,
+) -> anyhow::Result<String> {
+    use std::collections::BTreeMap;
+    let week = flowbuddy_store::days::range(now, 7, 0);
+    let describe = |id: &str| Some(report::describe(id));
+    let export = flowbuddy_store::Export::build(store, &describe, (&week.0, &week.1), now / 1000)?;
+    let tips = store.tips((now / 1000).saturating_sub(30 * 86_400))?;
+    let stats = review::tip_stats(&tips);
+    let state = flowbuddy_core::config::State::load(&flowbuddy_core::paths::state_file());
+    let mut engine = flowbuddy_core::engine::Engine::standard();
+    engine.apply(&flowbuddy_core::config::rule_settings(config, &state));
+    let muted = state.muted();
+    let settings: BTreeMap<String, review::RuleSetting> = engine
+        .rules()
+        .map(|r| {
+            (
+                r.id().to_string(),
+                review::RuleSetting {
+                    threshold: r.threshold(),
+                    default: engine.default_threshold(r.id()),
+                    muted: muted.contains(r.id()),
+                },
+            )
+        })
+        .collect();
+    Ok(review::prompt(&coach::facts(&export), &stats, &settings))
+}
+
+/// Ask the AI for a review and keep its valid proposals for `--apply`.
+/// `None` if no AI is set up.
+fn run_review(
+    ai: &flowbuddy_core::config::AiConfig,
+    prompt: &str,
+) -> anyhow::Result<Option<review::Parsed>> {
+    let mut answer = Vec::new();
+    match coach::ask(ai, prompt, &mut answer) {
+        None => return Ok(None),
+        Some(r) => r.map_err(|e| anyhow::anyhow!("{e}"))?,
+    }
+    let parsed = review::parse(&String::from_utf8_lossy(&answer)).map_err(anyhow::Error::msg)?;
+    let path = review_file();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&parsed.proposals)?)?;
+    Ok(Some(parsed))
+}
+
+fn review_apply(numbers: &[usize]) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(review_file())
+        .map_err(|_| anyhow::anyhow!("no review yet: run `flowbuddy review` first"))?;
+    let proposals: Vec<review::Proposal> = serde_json::from_str(&text)?;
+    let mut client = Client::connect(ClientKind::Cli)?;
+    for &n in numbers {
+        let Some(p) = n.checked_sub(1).and_then(|i| proposals.get(i)) else {
+            println!("{n}: no such proposal");
+            continue;
+        };
+        let command = match p {
+            review::Proposal::Threshold { rule, value, .. } => Command::RuleThreshold {
+                rule_id: rule.clone(),
+                threshold: Some(*value),
+            },
+            review::Proposal::Mute { rule, .. } => Command::Rule {
+                rule_id: rule.clone(),
+                action: RuleAction::Mute,
+            },
+            review::Proposal::Unmute { rule, .. } => Command::Rule {
+                rule_id: rule.clone(),
+                action: RuleAction::Unmute,
+            },
+        };
+        client.command(command)?;
+        println!("{n}: done ({})", p.describe());
+    }
+    Ok(())
+}
+
+/// An ssh config block forwarding the daemon's socket to `host`, where
+/// the Vim plugin looks for it (`/tmp/flowbuddy-$USER.sock`). sshd creates
+/// the remote socket readable only by you (its StreamLocalBindMask 0177).
+fn ssh_config(host: &str, socket: &std::path::Path) -> String {
+    format!(
+        "# Add to ~/.ssh/config, and install the Vim plugin on {host}:\n\
+         Host {host}\n    \
+         RemoteForward /tmp/flowbuddy-%r.sock {}\n    \
+         StreamLocalBindUnlink yes\n",
+        socket.display()
+    )
+}
+
+fn learn() -> anyhow::Result<()> {
+    match open_db()? {
+        Some(store) => print!("{}", report::learn(&store, now_ms())?),
+        None => println!("Nothing recorded yet. Is flowbuddyd running? Try `flowbuddy status`."),
+    }
+    Ok(())
 }
 
 fn next() -> anyhow::Result<()> {
@@ -439,6 +690,36 @@ fn memory(cmd: MemoryCmd) -> anyhow::Result<()> {
                 None => store.forget_all()?,
             }
             println!("Deleted {what}.");
+        }
+        MemoryCmd::FixAdoptions { before, yes } => {
+            let path = flowbuddy_core::paths::database();
+            if !path.exists() {
+                println!("Nothing recorded.");
+                return Ok(());
+            }
+            let store = flowbuddy_store::Store::open(&path)?;
+            let found = store.inflated_adoptions(&before)?;
+            if found.is_empty() {
+                println!("Nothing to fix.");
+                return Ok(());
+            }
+            for d in &found {
+                println!(
+                    "  {} {} ({}): better way {} → {}",
+                    d.day, d.rule_id, d.context, d.adoptions, d.capped
+                );
+            }
+            let days = if found.len() == 1 {
+                "this day".to_string()
+            } else {
+                format!("these {} days", found.len())
+            };
+            if !yes && !confirm(&format!("Fix {days}? [y/N] "))? {
+                println!("Kept.");
+                return Ok(());
+            }
+            store.fix_adoptions(&before)?;
+            println!("Fixed.");
         }
     }
     Ok(())
@@ -628,6 +909,7 @@ mod status_tests {
             mode_from_editor: false,
             layout: None,
             layout_note: None,
+            tip_filter: None,
             keyboards: 1,
             clients: vec![],
         }
@@ -653,5 +935,19 @@ mod status_tests {
             "context":"unsupported","confident":false,"keyboards":0,"clients":[]}"#;
         let s: Status = serde_json::from_str(json).unwrap();
         assert_eq!(s.app, None);
+    }
+
+    #[test]
+    fn ssh_config_forwards_the_socket() {
+        let out = super::ssh_config(
+            "devbox",
+            std::path::Path::new("/run/user/1000/flowbuddy.sock"),
+        );
+        assert!(out.contains("Host devbox\n"), "{out}");
+        assert!(
+            out.contains("RemoteForward /tmp/flowbuddy-%r.sock /run/user/1000/flowbuddy.sock"),
+            "{out}"
+        );
+        assert!(out.contains("StreamLocalBindUnlink yes"), "{out}");
     }
 }

@@ -29,6 +29,10 @@ function! s:socket_path() abort
   if !empty($FLOWBUDDY_SOCKET)
     return $FLOWBUDDY_SOCKET
   endif
+  " Over ssh: the daemon's socket, forwarded (see `flowbuddy ssh-config`).
+  if !empty($SSH_CONNECTION)
+    return '/tmp/flowbuddy-' . $USER . '.sock'
+  endif
   let dir = $XDG_RUNTIME_DIR
   if empty(dir)
     let dir = '/run/user/' . trim(system('id -u'))
@@ -61,10 +65,34 @@ function! s:open() abort
     let s:ch = v:null
     return 0
   endif
+  " Over ssh this pid is on another machine: it would only confuse.
   call s:send({'type': 'hello', 'client': 'editor', 'client_version': s:VERSION,
-        \ 'editor': has('nvim') ? 'nvim' : 'vim', 'pid': getpid()})
+        \ 'editor': has('nvim') ? 'nvim' : 'vim',
+        \ 'pid': empty($SSH_CONNECTION) ? getpid() : v:null})
   call s:send({'type': 'editor_mode', 'mode': s:mode_name(mode(1))})
+  call s:send(extend({'type': 'editor_mappings'}, flowbuddy#mappings(execute('imap'), execute('nmap'))))
   return 1
+endfunction
+
+" Your mappings that matter for following the mode, from :imap and :nmap
+" output: two-key Insert mappings to Esc (`jk`), and single Normal keys
+" mapped to something else. Only the keys are sent.
+function! flowbuddy#mappings(imap, nmap) abort
+  let escapes = []
+  for line in split(a:imap, "\n")
+    let m = matchlist(line, '^\S*\s\+\(\S\+\)\s\+[*&@ ]*\(.*\)$')
+    if !empty(m) && m[1] =~# '^[^<]\{2}$' && m[2] =~? '<Esc>\|<C-\[>'
+      call add(escapes, m[1])
+    endif
+  endfor
+  let normal = []
+  for line in split(a:nmap, "\n")
+    let m = matchlist(line, '^\S*\s\+\(\S\+\)\s')
+    if !empty(m) && m[1] =~# '^[^<]$'
+      call add(normal, m[1])
+    endif
+  endfor
+  return {'insert_escapes': escapes[:15], 'normal': uniq(sort(normal))[:63]}
 endfunction
 
 function! s:connected() abort

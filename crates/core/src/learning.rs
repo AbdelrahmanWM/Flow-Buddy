@@ -71,6 +71,33 @@ impl Window {
     fn ratio_or(&self, default: f64) -> f64 {
         self.adoption_ratio().unwrap_or(default)
     }
+
+    /// How often the better way was used, with an honest range: an 80%
+    /// Wilson interval, wide with little data and narrow with a lot.
+    pub fn estimate(&self) -> Option<Estimate> {
+        let n = (self.hits + self.adoptions) as f64;
+        if n == 0.0 {
+            return None;
+        }
+        let p = self.adoptions as f64 / n;
+        let z: f64 = 1.28;
+        let z2 = z * z;
+        let centre = (p + z2 / (2.0 * n)) / (1.0 + z2 / n);
+        let half = z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / (1.0 + z2 / n);
+        Some(Estimate {
+            ratio: p,
+            low: (centre - half).max(0.0),
+            high: (centre + half).min(1.0),
+        })
+    }
+}
+
+/// The share of times the better way was used, with a likely range.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Estimate {
+    pub ratio: f64,
+    pub low: f64,
+    pub high: f64,
 }
 
 /// Thresholds for moving between stages. `[learning]` in config.toml.
@@ -110,12 +137,17 @@ pub fn next_stage(
     fortnight: Window,
     cfg: &LearningConfig,
 ) -> Stage {
+    // Strong evidence moves a stage sooner than the fixed counts would:
+    // when even the low end of the likely range clears the bar.
+    let surely = |w: &Window, bar: f64| w.estimate().is_some_and(|e| e.low >= bar);
     let mastered = (fortnight.hits + fortnight.adoptions >= cfg.mastered_min_events
         && fortnight.ratio_or(0.0) >= cfg.mastered_ratio)
+        || surely(&fortnight, cfg.mastered_ratio - 0.1)
         || (current == Stage::Improving
             && fortnight.hits == 0
             && fortnight.active_minutes >= cfg.mastered_clean_minutes);
-    let improving = week.hits + week.adoptions >= 4 && week.ratio_or(0.0) >= cfg.improving_ratio;
+    let improving = (week.hits + week.adoptions >= 4 && week.ratio_or(0.0) >= cfg.improving_ratio)
+        || surely(&week, cfg.improving_ratio - 0.15);
     let slipping = week.hits >= cfg.regress_hits;
 
     match current {
@@ -192,6 +224,34 @@ mod tests {
     fn little_data_changes_nothing() {
         assert_eq!(next(Stage::Nudged, w(1, 1), w(1, 1)), Stage::Nudged);
         assert_eq!(next(Stage::Mastered, w(1, 0), w(1, 20)), Stage::Mastered);
+    }
+
+    #[test]
+    fn estimates_narrow_with_evidence() {
+        let few = w(1, 2).estimate().unwrap();
+        let many = w(10, 20).estimate().unwrap();
+        assert!((few.ratio - many.ratio).abs() < 1e-9);
+        assert!(few.high - few.low > many.high - many.low);
+        assert!(w(0, 0).estimate().is_none());
+    }
+
+    #[test]
+    fn strong_evidence_moves_stages_sooner() {
+        let cfg = LearningConfig::default();
+        // Eight better-way uses, no slips: fewer than ten events, but clear.
+        assert_eq!(
+            next_stage(Stage::Nudged, true, w(0, 8), w(0, 8), &cfg),
+            Stage::Mastered
+        );
+        // Two and two: not clear either way.
+        assert_eq!(
+            next_stage(Stage::Nudged, true, w(2, 2), w(2, 2), &cfg),
+            Stage::Improving
+        );
+        assert_eq!(
+            next_stage(Stage::Nudged, true, w(1, 2), w(1, 2), &cfg),
+            Stage::Nudged
+        );
     }
 }
 

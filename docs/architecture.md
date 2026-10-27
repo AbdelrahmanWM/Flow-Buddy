@@ -98,6 +98,8 @@ The app ids are defaults and can be overridden in the config. The values seen on
 - A Vim plugin that isn't a child of the terminal (inside tmux) counts when it has said it has focus.
 - An editor's reported mode replaces the guess, and stays known after clicks.
 
+**Other desktops.** On an X11 session (KDE, Xfce, i3, GNOME on Xorg) the daemon reads the focused window itself: `_NET_ACTIVE_WINDOW`, the window's class (as the app id) and its pid, twice a second, never its title. It talks to the X server over its Unix socket, which the sandbox allows. The service needs `DISPLAY` in its environment, which most desktops pass to user services. There is no top-bar indicator there, so tips arrive as desktop notifications. KDE on Wayland needs a KWin script (#123).
+
 **Keyboard layout.** The extension reports the current input source (`input_source`, xkb names such as `de` and `nodeadkeys`) and every switch. Built with libxkbcommon (`scripts/install.sh` does when `libxkbcommon-dev` is installed), the daemon rebuilds its keymap for it. For non-Latin layouts it uses US, since that's where Vim commands are typed. `[keyboard] xkb_layout` in the config overrides it. Without libxkbcommon, keys are read as US and `flowbuddy status` says so.
 
 **tmux.** Inside tmux, the terminal's shell reports `tmux` as its foreground command, and the panes' shells aren't its children. The daemon then asks tmux which pane the client on that terminal's tty shows, and what runs in it (`tmux list-clients -F '#{client_tty} #{pane_pid} #{pane_current_command}'`): Vim there is `TerminalVim`, a pane shell whose hook reported a vi-mode prompt is `BashVi`. Switching panes sends no event, so this is checked again every second while tmux is involved. tmux is reached over its Unix socket, which the daemon's sandbox allows.
@@ -107,7 +109,7 @@ The app ids are defaults and can be overridden in the config. The values seen on
 ### Mode inference and confidence
 
 - With an editor plugin connected, the editor's own mode is used. Otherwise:
-- Mode is inferred from keys by a state machine for each context (#14, #15).
+- Mode is inferred from keys by a state machine for each context (#14, #15). It knows vim-surround (`ys`, `cs`, `ds`) and commentary (`gc`) so they don't throw it off; none of those is a built-in sequence.
 - **Esc** (or `Ctrl-[`) always resyncs to Normal and sets `confident = true`.
 - Anything the daemon can't see sets `confident = false` until the next Esc. Examples: a mouse click, opening the VS Code command palette, a focus change, or an unrecognized key sequence (#16).
 - Rules never fire while `confident` is false. This avoids false nudges, at the cost of missing some real ones.
@@ -120,6 +122,10 @@ The app ids are defaults and can be overridden in the config. The values seen on
 | `passive` | Yes | No | On demand + one end-of-day notification |
 | `balanced` (default) | Yes | Batched: up to 1–2 tips every N minutes (default 30) | On demand |
 | `active` | Yes | Real time, with a cooldown per rule and a cap per hour | On demand |
+
+**The learned tip filter** (`[ai] filter`, on by default) is a small logistic regression trained hourly on what happened after your tips: adopted, dismissed, not helpful, or ignored. It uses the rule, context, learning stage, time of day, mode, and how many tips came before that day. Before a tip is shown, it predicts the chance you'll act on it, and skips it below 12%. It does nothing until it has 30 outcomes, never hides a rule's first three tips, and lets every fifth skipped tip through so it keeps learning. `flowbuddy status` shows what it's doing. No LLM is involved, and nothing leaves the machine.
+
+**Something new every day** (`[learn] daily`, on by default, every mode but off): once a day, while you're in Vim and no tip came in the last five minutes, one feature you don't use yet from a curriculum of about 50, ordered from basic to advanced (`crates/core/src/curriculum.rs`). Each item recognises itself in the key tracker's steps, so Flow Buddy counts which ones you use (per day, by id only) and skips what you know. An item you start using three times is learned. One you don't is shown again after a week, at most three times. `flowbuddy learn` shows the latest item and your progress.
 
 Rules learn from "not helpful" reports: every two in two weeks raise that rule's threshold by one, at most three above its default. A threshold set in `config.toml` is never changed, and `flowbuddy rules reset <id>` undoes the raises.
 
@@ -134,7 +140,7 @@ These apply in every mode:
 
 Nudges come back once a pattern `regressed`.
 
-**Learning stages** (#31): `new → nudged → improving → mastered`, and `mastered → regressed → improving`. Moving between stages depends on how often the mistake happens and how often you adopt the better command, measured over sliding windows.
+**Learning stages** (#31): `new → nudged → improving → mastered`, and `mastered → regressed → improving`. Moving between stages depends on how often the mistake happens and how often you adopt the better command, measured over sliding windows. Strong evidence moves a stage sooner: when even the low end of an 80% Wilson interval on the adoption ratio clears the bar (a little below the fixed ratios), so eight better-way uses with no slips count as mastered without waiting for ten events. `flowbuddy memory show` shows each habit's ratio and its likely range.
 
 ## IPC protocol v0
 
@@ -243,6 +249,11 @@ Keystrokes alone can't show which pane of an editor has focus, what mode it's re
 {"v":0,"type":"editor_focus","focused":false,"panel":"terminal"}
 ```
 `panel` (optional, when not focused) is `terminal` or `other`. With Claude Code running in VS Code's terminal and its Vim mode on, the terminal panel is coached as `claude-vim`.
+
+**`editor_mappings`**: your key mappings that matter for following the mode: two-key Insert-mode mappings to Esc (`jk`), and Normal-mode keys mapped to something else (their keys only, no right-hand sides). The tracker reads `jk` as Esc and treats a remapped key as unknown instead of as the built-in command. Without a plugin, `[keyboard] insert_escapes = ["jk"]` does the same.
+```json
+{"v":0,"type":"editor_mappings","insert_escapes":["jk"],"normal":["H"]}
+```
 
 **`editor_mode`**: the editor's real mode, one of `normal`, `insert`, `replace`, `visual`, `visual_line`, `visual_block`, `cmdline`, `op_pending`, `other`. It replaces the daemon's guess.
 ```json

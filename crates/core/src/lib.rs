@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod context;
+pub mod curriculum;
 pub mod editor;
 pub mod engine;
 pub mod glossary;
@@ -13,6 +14,7 @@ pub mod paths;
 pub mod policy;
 pub mod rule;
 pub mod rules;
+pub mod tipfilter;
 pub mod vim;
 
 /// Crate version, shared by the daemon and CLI.

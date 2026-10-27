@@ -87,7 +87,48 @@ pub enum VimEvent {
     },
     /// Esc (or an equivalent) was pressed.
     Escape,
+    /// A key you mapped to something else: it isn't the built-in command.
+    Mapped,
 }
+
+/// Your key mappings, as far as they matter for following the mode.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Mappings {
+    /// Two keys typed quickly in Insert mode that act as Esc (`jk`).
+    pub insert_escapes: Vec<[char; 2]>,
+    /// Normal-mode keys mapped to something else.
+    pub normal: Vec<char>,
+}
+
+impl Mappings {
+    /// From key names as editors and the config give them; anything that
+    /// isn't two plain characters (or one, for Normal mode) is ignored.
+    pub fn from_names(insert_escapes: &[String], normal: &[String]) -> Mappings {
+        let chars = |s: &String| s.chars().collect::<Vec<_>>();
+        Mappings {
+            insert_escapes: insert_escapes
+                .iter()
+                .take(16)
+                .filter_map(|s| match chars(s)[..] {
+                    [a, b] if !a.is_control() && !b.is_control() => Some([a, b]),
+                    _ => None,
+                })
+                .collect(),
+            normal: normal
+                .iter()
+                .take(64)
+                .filter_map(|s| match chars(s)[..] {
+                    [c] if !c.is_control() => Some(c),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Two keys of an Insert-mode mapping must come within this long (Vim's
+/// default 'timeoutlen').
+const MAPPING_TIMEOUT_MS: u64 = 1000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Step {
@@ -122,6 +163,11 @@ pub struct Tracker {
     /// Ctrl-r in Insert mode: the next key is a register name (Vim) or
     /// search text follows until Enter/Esc (readline).
     after_ctrl_r: bool,
+    mappings: Mappings,
+    /// The last character typed in Insert mode, for two-key mappings.
+    last_text: Option<(char, u64)>,
+    /// The time of the key being handled.
+    now_ms: u64,
 }
 
 impl Tracker {
@@ -140,7 +186,14 @@ impl Tracker {
             cmdline_return: VimMode::Normal,
             insert_once: false,
             after_ctrl_r: false,
+            mappings: Mappings::default(),
+            last_text: None,
+            now_ms: 0,
         }
+    }
+
+    pub fn set_mappings(&mut self, mappings: Mappings) {
+        self.mappings = mappings;
     }
 
     pub fn mode(&self) -> VimMode {
@@ -173,6 +226,7 @@ impl Tracker {
     }
 
     pub fn feed(&mut self, stroke: KeyStroke) -> Step {
+        self.now_ms = stroke.at_ms;
         let before = self.mode;
         let confident = self.confident;
         let event = self.advance(stroke.key);
@@ -240,12 +294,27 @@ impl Tracker {
             match key.sym {
                 Sym::Backspace if key.mods.is_empty() => InsertKey::Backspace,
                 Sym::Enter => InsertKey::Enter,
-                Sym::Char(_) if !key.mods.ctrl && !key.mods.alt && !key.mods.logo => {
+                Sym::Char(c) if !key.mods.ctrl && !key.mods.alt && !key.mods.logo => {
+                    // A two-key mapping to Esc, such as `jk`.
+                    let previous = self.last_text.take();
+                    if let Some((prev, at)) = previous
+                        && self.now_ms.saturating_sub(at) <= MAPPING_TIMEOUT_MS
+                        && self.mappings.insert_escapes.contains(&[prev, c])
+                    {
+                        self.clear_pending();
+                        self.mode = VimMode::Normal;
+                        self.confident = true;
+                        return Some(VimEvent::Escape);
+                    }
+                    self.last_text = Some((c, self.now_ms));
                     InsertKey::Text
                 }
                 _ => InsertKey::Other,
             }
         };
+        if ik != InsertKey::Text {
+            self.last_text = None;
+        }
         Some(VimEvent::Insert(ik))
     }
 
@@ -302,6 +371,15 @@ impl Tracker {
     }
 
     fn normal_key(&mut self, key: Key) -> Option<VimEvent> {
+        // A key you mapped: not the built-in command it looks like.
+        if self.pending.is_empty()
+            && key
+                .plain_char()
+                .is_some_and(|c| self.mappings.normal.contains(&c))
+        {
+            self.mode = VimMode::Normal;
+            return Some(VimEvent::Mapped);
+        }
         self.pending.push(key);
         match parse_normal(&self.pending) {
             Parse::Incomplete { op_pending } => {
@@ -443,11 +521,21 @@ fn parse_normal(keys: &[Key]) -> Parse {
         'g' => match rest.first().map(|k| k.plain_char()) {
             None => Parse::Incomplete { op_pending: false },
             Some(Some('~' | 'u' | 'U' | '?' | 'q' | 'w')) => operator('g', &rest[1..]),
+            // vim-commentary: `gcc` a line, `gc` + a motion.
+            Some(Some('c')) if rest.get(1).and_then(|k| k.plain_char()) == Some('c') => {
+                complete(None)
+            }
+            Some(Some('c')) => operator('g', &rest[1..]),
             Some(Some('i' | 'I')) => complete(Some(VimMode::Insert)),
             Some(Some('v')) => complete(Some(VimMode::Visual)),
             Some(_) => complete(None),
         },
         'z' | 'Z' | '[' | ']' => need_one(rest, None),
+        // vim-surround: none of these is a built-in command, so it's safe
+        // to read them as surround even without the plugin.
+        'y' if rest.first().and_then(|k| k.plain_char()) == Some('s') => surround_add(&rest[1..]),
+        'c' if rest.first().and_then(|k| k.plain_char()) == Some('s') => need_n(rest, 3),
+        'd' if rest.first().and_then(|k| k.plain_char()) == Some('s') => need_n(rest, 2),
         'd' | 'c' | 'y' | '<' | '>' | '=' | '!' => operator(c, rest),
         'i' | 'a' | 'I' | 'A' | 'o' | 'O' | 's' | 'S' | 'C' | 'R' => {
             complete(Some(VimMode::Insert))
@@ -457,6 +545,29 @@ fn parse_normal(keys: &[Key]) -> Parse {
         ':' | '/' | '?' => complete(Some(VimMode::Cmdline)),
         _ => complete(None),
     }
+}
+
+/// `n` keys after the command's first (`cs` plus two characters).
+fn need_n(rest: &[Key], n: usize) -> Parse {
+    if rest.len() >= n {
+        Parse::Complete { enters: None }
+    } else {
+        Parse::Incomplete { op_pending: true }
+    }
+}
+
+/// vim-surround's `ys`: a motion or text object, then the character to
+/// surround it with (`ysiw)`); `yss` surrounds the line.
+fn surround_add(rest: &[Key]) -> Parse {
+    if rest.first().and_then(|k| k.plain_char()) == Some('s') {
+        return need_n(rest, 2);
+    }
+    for k in 1..rest.len() {
+        if matches!(operator('y', &rest[..k]), Parse::Complete { .. }) {
+            return need_n(&rest[k..], 1);
+        }
+    }
+    Parse::Incomplete { op_pending: true }
 }
 
 /// After an operator such as `d`: wait for a motion or text object.
@@ -750,5 +861,81 @@ mod tests {
         let mut t = vim();
         run(&mut t, "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"");
         assert!(t.pending.len() <= MAX_PENDING);
+    }
+
+    #[test]
+    fn insert_mappings_to_escape() {
+        let mut t = Tracker::new(Flavor::Vim);
+        t.reset_known(VimMode::Normal);
+        t.set_mappings(Mappings {
+            insert_escapes: vec![['j', 'k']],
+            ..Default::default()
+        });
+        let steps: Vec<_> = strokes("ihijkx", 0)
+            .into_iter()
+            .map(|k| t.feed(k))
+            .collect();
+        assert_eq!(steps[4].event, Some(VimEvent::Escape));
+        assert_eq!(steps[4].after, VimMode::Normal);
+        // Then x is a Normal-mode delete.
+        assert!(matches!(&steps[5].event, Some(VimEvent::Command(c)) if c.is("x")));
+        // Too slow, or other keys: just text.
+        let mut t = Tracker::new(Flavor::Vim);
+        t.reset_known(VimMode::Insert);
+        t.set_mappings(Mappings {
+            insert_escapes: vec![['j', 'k']],
+            ..Default::default()
+        });
+        let j = t.feed(KeyStroke {
+            key: Key::ch('j'),
+            repeat: false,
+            at_ms: 0,
+        });
+        let k = t.feed(KeyStroke {
+            key: Key::ch('k'),
+            repeat: false,
+            at_ms: 5000,
+        });
+        assert_eq!((j.after, k.after), (VimMode::Insert, VimMode::Insert));
+    }
+
+    #[test]
+    fn mapped_normal_keys_are_opaque() {
+        let mut t = Tracker::new(Flavor::Vim);
+        t.reset_known(VimMode::Normal);
+        t.set_mappings(Mappings {
+            normal: vec!['H'],
+            ..Default::default()
+        });
+        let steps: Vec<_> = strokes("Hj", 0).into_iter().map(|k| t.feed(k)).collect();
+        assert_eq!(steps[0].event, Some(VimEvent::Mapped));
+        assert!(matches!(&steps[1].event, Some(VimEvent::Command(c)) if c.is("j")));
+    }
+
+    #[test]
+    fn surround_and_commentary_stay_in_step() {
+        for (keys, mode_after) in [
+            ("ysiw)", VimMode::Normal),
+            ("yss]", VimMode::Normal),
+            ("cs\"'", VimMode::Normal),
+            ("ds(", VimMode::Normal),
+            ("gcc", VimMode::Normal),
+            ("gcip", VimMode::Normal),
+        ] {
+            let mut t = Tracker::new(Flavor::Vim);
+            t.reset_known(VimMode::Normal);
+            let steps: Vec<_> = strokes(keys, 0).into_iter().map(|k| t.feed(k)).collect();
+            let last = steps.last().unwrap();
+            assert!(
+                matches!(last.event, Some(VimEvent::Command(_))),
+                "{keys}: {:?}",
+                last.event
+            );
+            assert_eq!(last.after, mode_after, "{keys}");
+            assert!(
+                steps[..steps.len() - 1].iter().all(|s| s.event.is_none()),
+                "{keys} split up"
+            );
+        }
     }
 }

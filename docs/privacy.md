@@ -18,6 +18,10 @@ Flow Buddy reads your keyboard. That is a lot of trust to ask for, so this docum
 | Terminal foreground command **name** (e.g. `vim`, never its arguments) | Shell hooks (bash, zsh, fish) | Memory only | Replaced on every command |
 | Which tmux pane is active and the *name* of what runs in it (e.g. `vim`) | tmux | Memory only | Checked every second while tmux is in use |
 | **Opt-in** (`[typing] accuracy = true`): characters typed and deleted again, and which pair of characters came right before each correction (`er`). The last two typed characters are held in memory to name the pair, and dropped on any other key | Daemon | Counts in `~/.local/share/flowbuddy/` | Until you `flowbuddy memory forget` |
+| What happened after each tip: rule, context, learning stage, hour, mode, how many tips came before it that day, and whether you used the better way, dismissed it, marked it not helpful, or did nothing | Daemon | `~/.local/share/flowbuddy/`, 90 days | For the learned tip filter; `memory forget` clears it |
+| Which curriculum features you use (ids such as `ciw`, counts per day), and which daily tips were shown and learned | Daemon | `~/.local/share/flowbuddy/` | Until `memory forget` |
+| Over ssh (opt-in, with `flowbuddy ssh-config`): the same editor reports, from a remote Vim through a forwarded socket that only your remote user can open | Vim plugin on the remote host | Memory only | As above |
+| On X11 desktops: the focused window's class and pid (not its title), read from the X server | Daemon | Memory only | Replaced on every focus change |
 | Whether Claude Code's Vim mode is on: only `editorMode` is read from `~/.claude/settings.json` | Daemon | Memory only | Checked every few seconds |
 | The command's **shape** from a fixed list: exactly `cd ..`, `cd ../..`, the previous command's long last argument again, the previous command with one word changed. The hook compares the lines inside the shell; neither line is sent | Shell hooks | Counts in the stats, like any habit | Like any habit |
 | That a click happened (no position, no target) | GNOME Shell extension | Not kept: it only marks the Vim mode as unknown | Immediately |
@@ -70,11 +74,18 @@ The comparison, and what was found on a real machine, is in [spikes/evdev.md](sp
 
 Details of the memory and its export format are in [memory.md](memory.md).
 
-## AI coaching (`flowbuddy coach`)
+## AI features (`flowbuddy coach`, the weekly note, the review)
 
-Off until you set `[ai] command` in `config.toml` to a program on this machine, such as `["ollama", "run", "llama3.2:3b"]`. Flow Buddy never talks to a network itself: it runs that program, writes the prompt to its stdin and shows what it writes back.
+Off until you choose an AI in `config.toml`. The daemon never talks to it: it has no network access at all. Only the `flowbuddy` command and its one-shot services do.
 
-- **What the model sees:** the mistake memory export only. That means habit descriptions, contexts, learning stages, counts, and abstract shapes such as `j×12`. It never sees keys, typed text, file names, window titles or positions.
-- **Check it first:** `flowbuddy coach --prompt` prints exactly what would be sent, without running anything.
-- **Only when you ask:** nothing runs unprompted, unless you also set `[ai] weekly = true`. Then, once a week, the daemon starts `flowbuddy-weekly.service`, which asks the model to write the weekly progress note from the same export. If the model fails, you get the usual note. The daemon itself still has no network access; that one-shot service has it so it can reach local model servers such as Ollama on localhost.
-- **Your choice of program:** the command is yours to pick. If you point it at a tool that sends data to a server, the prompt goes there, so pick one that runs locally.
+| `[ai] provider` | What it uses | Where the prompt goes |
+|---|---|---|
+| `command` (or just `command = [...]`) | Any program that reads a prompt on stdin, e.g. `ollama run llama3.2:3b` | Wherever that program sends it; a local model keeps it on this machine |
+| `claude-code` | Claude Code's CLI, `claude -p`: your Claude subscription, no key | Anthropic, under your Claude account |
+| `anthropic` | The Anthropic API with your key | Anthropic, under your API account |
+| `openai` | Any OpenAI-compatible API with your key (`base_url` for others) | That service |
+
+- **What's sent:** the prompt built from the mistake memory export: habit descriptions, contexts, learning stages, counts, abstract shapes such as `j×12`, and tip outcomes. Never keys, typed text, file names, window titles or positions.
+- **Check first:** `flowbuddy coach --prompt` prints exactly what would be sent, without sending anything.
+- **Keys:** read from an environment variable (`api_key_env`, default `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) or a command such as your keyring (`api_key_command`), never from `config.toml`, and never logged. The one-shot services don't see your shell's environment, so for them use `api_key_command`.
+- **When it runs:** only when you run `flowbuddy coach` or `flowbuddy review`, unless you also turn on `[ai] weekly`, in which case it writes the weekly note and runs the review once a week too. A review only proposes: nothing changes until you `flowbuddy review --apply`. With `[ai] tips = true`, a daily timer has it write one sentence per recent habit from the same export. Each sentence is checked (short, plain, only commands Flow Buddy knows) before the daemon adds it to tips.

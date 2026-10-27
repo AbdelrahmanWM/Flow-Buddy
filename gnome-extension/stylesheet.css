@@ -16,6 +16,17 @@
     font-size: 0.95em;
 }
 
+.flowbuddy-card-kept {
+    max-width: 380px;
+    background-color: rgba(30, 30, 30, 0.85);
+}
+
+.flowbuddy-card-explain {
+    font-size: 0.85em;
+    color: #c8c8c8;
+    padding-top: 6px;
+}
+
 .flowbuddy-unread {
     background-color: #3584e4;
     border-radius: 4px;

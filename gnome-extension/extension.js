@@ -13,6 +13,9 @@ import {FocusReporter} from './focus.js';
 import {Card} from './card.js';
 import {Indicator} from './indicator.js';
 
+// Our request for recent tips; its answer comes back with this id.
+const RECENT_ID = 1;
+
 export default class FlowBuddyExtension extends Extension {
     enable() {
         this._link = new DaemonLink({
@@ -23,6 +26,8 @@ export default class FlowBuddyExtension extends Extension {
                 // Resend the current focus whenever the daemon (re)connects.
                 this._focus.report();
                 this._reportSource();
+                // The menu's recent tips, from before this session too.
+                this._link.send({type: 'command', id: RECENT_ID, name: 'recent_tips', args: {limit: 8}});
             },
             onDisconnected: () => this._indicator.setConnected(false),
         });
@@ -66,6 +71,10 @@ export default class FlowBuddyExtension extends Extension {
         switch (msg.type) {
         case 'welcome':
             this._indicator.setMode(msg.mode, null);
+            break;
+        case 'result':
+            if (msg.id === RECENT_ID && Array.isArray(msg.data))
+                this._indicator.setRecent(msg.data);
             break;
         case 'mode_changed':
             this._indicator.setMode(msg.mode, msg.paused_until);

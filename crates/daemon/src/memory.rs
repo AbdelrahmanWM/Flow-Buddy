@@ -103,6 +103,20 @@ impl Memory {
         self.retention_days = config.memory.episode_retention_days;
     }
 
+    /// A tip as it was shown, for `flowbuddy tips` and the menu.
+    pub fn add_history(&self, tip: &flowbuddy_store::HistoryTip) {
+        if let Some(store) = &self.store {
+            let _ = store.add_history(tip);
+        }
+    }
+
+    pub fn history(&self, limit: usize) -> Vec<flowbuddy_store::HistoryTip> {
+        self.store
+            .as_ref()
+            .and_then(|s| s.history("", limit).ok())
+            .unwrap_or_default()
+    }
+
     #[cfg(test)]
     pub fn store(&self) -> Option<&Store> {
         self.store.as_ref()

@@ -592,6 +592,13 @@ impl App {
             }
             self.notifier.notify(&nudge.title, &body, nudge.ttl_ms);
         }
+        self.memory.add_history(&flowbuddy_store::HistoryTip {
+            shown_at: now_ms / 1000,
+            rule_id: rule_id.into(),
+            title: title.into(),
+            text: text.into(),
+            insert,
+        });
         if self.nudges.len() == NUDGE_HISTORY {
             self.nudges.pop_front();
         }
@@ -1410,6 +1417,25 @@ impl App {
                 id,
                 data: json!([]),
             },
+            Command::RecentTips { limit } => {
+                let limit = limit.unwrap_or(10).clamp(1, 50) as usize;
+                let tips: Vec<flowbuddy_core::ipc::RecentTip> = self
+                    .memory
+                    .history(limit)
+                    .into_iter()
+                    .map(|t| flowbuddy_core::ipc::RecentTip {
+                        explain: glossary::explain(&t.text, t.insert),
+                        shown_at: t.shown_at,
+                        rule_id: t.rule_id,
+                        title: t.title,
+                        text: t.text,
+                    })
+                    .collect();
+                ServerMsg::Result {
+                    id,
+                    data: serde_json::to_value(tips).unwrap_or_default(),
+                }
+            }
             Command::LastSlow => ServerMsg::Result {
                 id,
                 data: serde_json::to_value(&self.last_slow).unwrap_or_default(),
@@ -2984,5 +3010,42 @@ pub(crate) mod tests {
             panic!()
         };
         assert_eq!(data, json!([]));
+    }
+
+    #[test]
+    fn recent_tips_from_the_history() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let mut cli = connect(&mut app, 1);
+        app.show(
+            "vim.undo-run",
+            "Undo further at once",
+            "`7u` undoes that many.",
+            false,
+            1_000_000,
+        );
+        app.show(
+            "vim.repeat-jk",
+            "Try a count",
+            "Try `7j`.",
+            false,
+            2_000_000,
+        );
+        while cli.try_recv().is_ok() {}
+        send(
+            &mut app,
+            1,
+            ClientMsg::Command {
+                id: Some(4),
+                command: Command::RecentTips { limit: Some(5) },
+            },
+            3_000_000,
+        );
+        let ServerMsg::Result { data, .. } = cli.try_recv().unwrap() else {
+            panic!()
+        };
+        let tips: Vec<flowbuddy_core::ipc::RecentTip> = serde_json::from_value(data).unwrap();
+        assert_eq!(tips.len(), 2);
+        assert_eq!(tips[0].title, "Try a count");
+        assert!(!tips[1].explain.is_empty());
     }
 }

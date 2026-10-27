@@ -3,7 +3,8 @@
 // A nudge appears as a short label next to the icon (or as a card, see
 // card.js) and fades after its ttl. A dot stays on the icon until the menu
 // is opened. The menu holds the full tip and lets you dismiss it, mute
-// that rule, mark it as not helpful, switch mode or pause.
+// that rule, mark it as not helpful, keep it on screen while you practise,
+// look back at recent tips, switch mode or pause.
 
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
@@ -14,6 +15,16 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {toMarkup} from './markup.js';
+import {Card} from './card.js';
+
+// Recent tips listed in the menu.
+const RECENT = 8;
+
+// One line of a tip for the recent list: no markers, cut short.
+function short(text, max = 70) {
+    const plain = text.replace(/`+ ?([^`]*?) ?`+/g, '$1');
+    return plain.length > max ? `${plain.slice(0, max - 1)}…` : plain;
+}
 
 const MODES = [
     ['off', 'Off'],
@@ -28,6 +39,12 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         super._init(0.0, 'Flow Buddy');
         this._link = link;
         this._nudge = null;
+        // The tip shown in the menu: the latest nudge, or one picked from
+        // the recent list.
+        this._shownTip = null;
+        this._recent = [];
+        this._kept = new Card({kept: true});
+        this._keptTip = null;
         this._hideId = 0;
 
         const box = new St.BoxLayout({style_class: 'panel-status-menu-box'});
@@ -63,10 +80,19 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._explain.visible = false;
         this.menu.addMenuItem(this._explain);
 
+        this._keep = new PopupMenu.PopupMenuItem('Keep on screen');
+        this._keep.connect('activate', () => this._toggleKeep());
+        this._keep.visible = false;
+        this.menu.addMenuItem(this._keep);
+
         this._gotIt = this._action('Got it', 'dismiss');
         this._mute = this._action('Stop this tip', 'mute_rule');
         this._notHelpful = this._action('Not helpful', 'false_positive');
         this._setNudgeActions(false);
+
+        this._recentMenu = new PopupMenu.PopupSubMenuMenuItem('Recent tips');
+        this._recentMenu.visible = false;
+        this.menu.addMenuItem(this._recentMenu);
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._modeItems = new Map();
@@ -88,6 +114,54 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this.menu.addMenuItem(this._pause);
 
         this.setConnected(false);
+    }
+
+    // Tips the daemon remembers, newest first (on connect).
+    setRecent(tips) {
+        this._recent = tips.slice(0, RECENT);
+        this._fillRecent();
+    }
+
+    _fillRecent() {
+        this._recentMenu.menu.removeAll();
+        for (const tip of this._recent) {
+            const item = new PopupMenu.PopupMenuItem(`${tip.title}: ${short(tip.text)}`);
+            item.connect('activate', () => this._showTip(tip));
+            this._recentMenu.menu.addMenuItem(item);
+        }
+        this._recentMenu.visible = this._recent.length > 0;
+    }
+
+    // Put a tip in the menu (and in the kept card, if one is kept).
+    _showTip(tip) {
+        this._shownTip = tip;
+        this._tip.label.clutter_text.set_markup(toMarkup(tip.text));
+        this._setExplanation(tip.explain ?? []);
+        this._setNudgeActions(this._nudge !== null && tip === this._nudge);
+        this._updateKeep();
+    }
+
+    // Keep the tip in the menu on screen, swap the kept one for it, or
+    // stop keeping it.
+    _toggleKeep() {
+        if (this._kept.shown && this._keptTip === this._shownTip) {
+            this._kept.hide();
+            this._keptTip = null;
+        } else if (this._shownTip) {
+            this._kept.show(this._shownTip);
+            this._keptTip = this._shownTip;
+        }
+        this._updateKeep();
+    }
+
+    _updateKeep() {
+        this._keep.visible = this._shownTip !== null || this._kept.shown;
+        if (!this._kept.shown)
+            this._keep.label.text = 'Keep on screen';
+        else if (this._keptTip === this._shownTip || !this._shownTip)
+            this._keep.label.text = 'Stop keeping it on screen';
+        else
+            this._keep.label.text = 'Keep this one on screen instead';
     }
 
     _setExplanation(lines) {
@@ -151,9 +225,14 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         if (this._nudge)
             this._link.send({type: 'nudge_response', nudge_id: this._nudge.nudge_id, action: 'seen'});
         this._nudge = nudge;
+        // A kept tip stays as it is: you're still practising it.
+        this._shownTip = nudge;
         this._tip.label.clutter_text.set_markup(toMarkup(nudge.text));
         this._setExplanation(nudge.explain ?? []);
         this._setNudgeActions(true);
+        this._updateKeep();
+        this._recent = [nudge, ...this._recent.filter(t => t.text !== nudge.text)].slice(0, RECENT);
+        this._fillRecent();
         this._dot.visible = !this.menu.isOpen;
         if (!inBar)
             return;
@@ -178,6 +257,8 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._label.visible = false;
         this._dot.visible = false;
         this._setNudgeActions(false);
+        this._shownTip = null;
+        this._updateKeep();
         this._tip.label.text = 'No tips right now';
         this._setExplanation([]);
     }
@@ -186,6 +267,7 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         if (this._hideId)
             GLib.source_remove(this._hideId);
         this._hideId = 0;
+        this._kept.destroy();
         super.destroy();
     }
 });

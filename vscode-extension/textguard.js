@@ -37,5 +37,47 @@ function textAllowed(config, scheme, path, snippets) {
     return true;
 }
 
+const SNIPPETS = 20;
+const SNIPPET_MS = 30 * 60 * 1000;
+
+// With [text] ai_snippets on: lines around recent moves and edits, for
+// `flowbuddy coach`. In memory only, and only handed over when the daemon
+// asks for the moments of recent tips.
+class SnippetRing {
+    constructor() {
+        this._kept = [];
+    }
+
+    // Up to five lines around `line` of `lines`, each cut to 200 characters.
+    add(atMs, filetype, lines, line) {
+        // By index: `lines` may be a lazy view of the document.
+        const kept = [];
+        for (let i = Math.max(0, line - 2); i <= line + 2 && i < lines.length; i++)
+            kept.push([...lines[i]].slice(0, 200).join(''));
+        this._kept.push({at_ms: atMs, filetype, lines: kept});
+        this._kept = this._kept.filter(s => atMs - s.at_ms <= SNIPPET_MS).slice(-SNIPPETS);
+    }
+
+    clear() {
+        this._kept = [];
+    }
+
+    // The kept snippet closest to each of `times`, within 3 s.
+    pick(times) {
+        const out = [];
+        for (const t of times) {
+            let best = null;
+            for (const s of this._kept) {
+                const d = Math.abs(s.at_ms - t);
+                if (d <= 3000 && (!best || d < Math.abs(best.at_ms - t)))
+                    best = s;
+            }
+            if (best && !out.includes(best))
+                out.push(best);
+        }
+        return out;
+    }
+}
+
 if (typeof module !== 'undefined')
-    module.exports = {globMatch, textAllowed, OFF};
+    module.exports = {globMatch, textAllowed, OFF, SnippetRing};

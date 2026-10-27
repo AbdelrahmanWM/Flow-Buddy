@@ -77,6 +77,13 @@ provider = "claude-code"     # your Claude subscription via `claude -p`; or "ant
 weekly = false               # true: the model writes the weekly progress note and reviews the tips
 tips = false                 # true: once a day the model writes a personal sentence for each recent habit
 filter = true                # the learned tip filter (no LLM); skips tips you tend to dismiss
+
+[text]                       # opt-in, off by default; secret files are never looked at (docs/privacy.md)
+shapes = false               # true: plugins work out which motions an edit could have used (counts only)
+ai_snippets = false          # true: `coach` shows your AI a few redacted lines around recent tips
+projects = []                # folders snippets may come from, e.g. ["~/code/myapp"]
+cloud = false                # true: snippets may go to a cloud provider, not only a local one
+exclude = []                 # more files never to look at, e.g. ["*.sql"]
 ```
 
 ## Platform

@@ -26,6 +26,12 @@ let s:simulating = 0
 " it says otherwise. See flowbuddy#text_allowed.
 let s:text = {'shapes': v:false, 'snippets': v:false, 'exclude': [], 'projects': []}
 let s:partial = ''
+" With [text] ai_snippets on: lines around recent moves and edits, as
+" {at_ms, filetype, lines}, for `flowbuddy coach`. In memory only, and
+" only sent when the daemon asks for the moments of recent tips.
+let s:snippets = []
+let s:SNIPPETS = 20
+let s:SNIPPET_MS = 1800000
 
 " Connection ----------------------------------------------------------------
 
@@ -151,10 +157,20 @@ function! flowbuddy#on_daemon(line) abort
   catch
     return
   endtry
-  if type(msg) == v:t_dict && get(msg, 'type', '') ==# 'editor_config'
+  if type(msg) != v:t_dict
+    return
+  endif
+  let type = get(msg, 'type', '')
+  if type ==# 'editor_config'
     let s:text = {'shapes': get(msg, 'shapes', v:false) is v:true,
           \ 'snippets': get(msg, 'snippets', v:false) is v:true,
           \ 'exclude': get(msg, 'exclude', []), 'projects': get(msg, 'projects', [])}
+    if !s:text.snippets
+      let s:snippets = []
+    endif
+  elseif type ==# 'snippet_request'
+    let found = s:text.snippets ? flowbuddy#snippets_for(get(msg, 'times', [])) : []
+    call s:send({'type': 'snippets', 'id': get(msg, 'id', 0), 'snippets': found})
   endif
 endfunction
 
@@ -194,6 +210,44 @@ function! flowbuddy#text_allowed(snippets) abort
     return !empty(filter(copy(s:text.projects), {_, p -> !empty(p) && stridx(path, p . '/') == 0}))
   endif
   return 1
+endfunction
+
+" Keep the lines around `line` of this buffer, if it may be looked at.
+function! s:keep_snippet(line, at_ms) abort
+  if !flowbuddy#text_allowed(1)
+    return
+  endif
+  let lines = map(getline(max([1, a:line - 2]), min([line('$'), a:line + 2])),
+        \ {_, l -> strcharpart(l, 0, 200)})
+  call add(s:snippets, {'at_ms': a:at_ms, 'filetype': &filetype, 'lines': lines})
+  let now = s:now_ms()
+  call filter(s:snippets, {_, s -> now - s.at_ms <= s:SNIPPET_MS})
+  if len(s:snippets) > s:SNIPPETS
+    call remove(s:snippets, 0, len(s:snippets) - s:SNIPPETS - 1)
+  endif
+endfunction
+
+" The kept snippet closest to each of `times`, within 3 s.
+function! flowbuddy#snippets_for(times) abort
+  let out = []
+  for t in a:times
+    let best = {}
+    for s in s:snippets
+      let d = abs(s.at_ms - t)
+      if d <= 3000 && (empty(best) || d < abs(best.at_ms - t))
+        let best = s
+      endif
+    endfor
+    if !empty(best) && index(out, best) < 0
+      call add(out, best)
+    endif
+  endfor
+  return out
+endfunction
+
+" For tests.
+function! flowbuddy#keep_snippet(line, at_ms) abort
+  call s:keep_snippet(a:line, a:at_ms)
 endfunction
 
 " For tests.
@@ -331,6 +385,7 @@ function! s:finish() abort
   if visits
     let facts.revisits = visits
   endif
+  call s:keep_snippet(end[0], seg.end_ms)
   call s:send({'type': 'motion', 'start_ms': seg.start_ms, 'end_ms': seg.end_ms,
         \ 'moves': seg.moves, 'mode': seg.mode, 'lines': end[0] - seg.start[0],
         \ 'cols': end[1] - seg.start[1], 'facts': facts})
@@ -374,6 +429,7 @@ function! flowbuddy#on_operator(event) abort
     let objects = flowbuddy#char_objects(join(a:event.regcontents, "\n"), before, after)
   endif
   let msg = {'type': 'operator', 'op': op, 'at_ms': s:now_ms(), 'objects': objects}
+  call s:keep_snippet(l1, msg.at_ms)
   " With [text] shapes on: which motions would have covered it exactly.
   if a:event.regtype ==# 'v' && l1 == l2 && flowbuddy#text_allowed(0)
     let range = flowbuddy#range_facts(getline(l1), c1, c2)

@@ -228,6 +228,25 @@ function! Test_text_guard() abort
   call flowbuddy#on_daemon('not json')
 endfunction
 
+function! Test_snippets() abort
+  enew!
+  call setline(1, ['a', 'b', 'c', 'd', 'e', 'f'])
+  execute 'file /home/me/app/x.py'
+  call flowbuddy#set_text({'shapes': v:false, 'snippets': v:true, 'exclude': ['.env'], 'projects': ['/home/me/app']})
+  call flowbuddy#keep_snippet(4, 1000)
+  call flowbuddy#keep_snippet(1, 9000)
+  let got = flowbuddy#snippets_for([1500, 50000])
+  call assert_equal(1, len(got))
+  call assert_equal(['b', 'c', 'd', 'e', 'f'], got[0].lines)
+  " Not in an excluded file, nor once snippets are off.
+  execute 'file /home/me/app/.env'
+  call flowbuddy#keep_snippet(2, 20000)
+  call assert_equal([], flowbuddy#snippets_for([20000]))
+  call flowbuddy#on_daemon('{"type":"editor_config","shapes":false,"snippets":false,"exclude":[],"projects":[]}')
+  call assert_equal([], flowbuddy#snippets_for([9000]))
+  bwipe!
+endfunction
+
 " Runner
 let s:failed = 0
 for s:name in sort(filter(map(split(execute('function /^Test_'), "\n"), {_, l -> matchstr(l, 'Test_\w\+')}), '!empty(v:val)'))

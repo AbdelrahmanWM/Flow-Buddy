@@ -115,6 +115,10 @@ pub enum Command {
     /// The last movement or edit that took more keys than it needed, with
     /// the best ways to do it. Answers with `Option<LastSlow>`.
     LastSlow,
+    /// Recent tips with the code around them, from editors that keep
+    /// snippets (`[text] ai_snippets`). Answers with `Vec<TipSnippet>`,
+    /// after a second at most.
+    Snippets,
 }
 
 /// Data returned by [`Command::LastSlow`]: keys only, never text.
@@ -211,6 +215,10 @@ pub enum ClientMsg {
         #[serde(default)]
         normal: Vec<String>,
     },
+    /// Editor clients, answering [`ServerMsg::SnippetRequest`]: lines
+    /// around those moments, from files `[text]` allows. Kept in memory
+    /// only, on their way to `flowbuddy coach`.
+    Snippets { id: u64, snippets: Vec<Snippet> },
     Command {
         #[serde(default)]
         id: Option<u64>,
@@ -219,8 +227,25 @@ pub enum ClientMsg {
     },
 }
 
+/// A few lines of code around a moment in the editor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snippet {
+    pub at_ms: u64,
+    #[serde(default)]
+    pub filetype: Option<String>,
+    pub lines: Vec<String>,
+}
+
+/// A recent tip with the code it was about: [`Command::Snippets`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TipSnippet {
+    pub rule_id: String,
+    pub tip: String,
+    pub snippet: Snippet,
+}
+
 impl ClientMsg {
-    pub const TYPES: [&'static str; 13] = [
+    pub const TYPES: [&'static str; 14] = [
         "hello",
         "focus",
         "ctx",
@@ -233,6 +258,7 @@ impl ClientMsg {
         "operator",
         "editor_event",
         "editor_mappings",
+        "snippets",
         "command",
     ];
 }
@@ -304,6 +330,12 @@ pub enum ServerMsg {
     /// To editor plugins, on hello and when the config changes: which
     /// opt-in text features are on, and the files never to look at.
     EditorConfig(EditorConfig),
+    /// To editor plugins with snippets on: the lines around these moments
+    /// (epoch ms), if you kept them. Answered with [`ClientMsg::Snippets`].
+    SnippetRequest {
+        id: u64,
+        times: Vec<u64>,
+    },
 }
 
 /// What editor plugins may do with your text; see `crate::text`.

@@ -9,6 +9,7 @@
 
 const vscode = require('vscode');
 const {computeFacts, rested} = require('./facts');
+const {textAllowed} = require('./textguard');
 
 const REST_MS = 1000;
 // Visual Block has a selection per line and no single cursor to follow.
@@ -178,6 +179,9 @@ class MotionTracker {
         const visits = rested(this._rests, seg.end.line, Date.now());
         if (visits)
             facts.revisits = visits;
+        const doc = editor.document;
+        if (textAllowed(this._link.editorConfig, doc.uri.scheme, doc.uri.fsPath, true))
+            this._link.snippets.add(seg.endMs, doc.languageId, linesOf(doc), seg.end.line);
         this._link.send({
             type: 'motion',
             start_ms: seg.startMs,

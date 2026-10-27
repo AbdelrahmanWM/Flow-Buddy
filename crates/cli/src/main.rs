@@ -299,6 +299,7 @@ fn record(action: RecordCmd) -> anyhow::Result<()> {
             );
             println!("stop with: flowbuddy record stop");
         }
+
         (Some(false), _, Some(p)) => {
             println!("saved {p}\ncheck it with: flowbuddy record check {p}")
         }
@@ -437,13 +438,32 @@ fn coach(question: &str, show_prompt: bool) -> anyhow::Result<()> {
     let week = flowbuddy_store::days::range(now, 7, 0);
     let describe = |id: &str| Some(report::describe(id));
     let export = flowbuddy_store::Export::build(&store, &describe, (&week.0, &week.1), now / 1000)?;
-    let prompt = coach::prompt(&export, Some(question).filter(|q| !q.trim().is_empty()));
+    let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
+        .map_err(anyhow::Error::msg)?;
+    // Code around recent tips, only if [text] allows it for this provider.
+    let snippets = if flowbuddy_core::text::snippets_may_go_to(&config.text, &config.ai) {
+        Client::connect(ClientKind::Cli)
+            .and_then(|mut c| c.query(Command::Snippets))
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default()
+    } else {
+        if config.text.ai_snippets && !show_prompt {
+            eprintln!(
+                "flowbuddy: not sending code snippets to a cloud provider; set [text] cloud = true to allow it"
+            );
+        }
+        Vec::new()
+    };
+    let prompt = coach::prompt_with(
+        &export,
+        Some(question).filter(|q| !q.trim().is_empty()),
+        &snippets,
+    );
     if show_prompt {
         print!("{prompt}");
         return Ok(());
     }
-    let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
-        .map_err(anyhow::Error::msg)?;
     match coach::ask(&config.ai, &prompt, &mut std::io::stdout()) {
         None => print!("{}", coach::SETUP),
         Some(result) => {

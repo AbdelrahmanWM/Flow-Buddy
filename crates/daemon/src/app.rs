@@ -37,6 +37,22 @@ struct Client {
     tx: mpsc::UnboundedSender<ServerMsg>,
 }
 
+/// A `flowbuddy coach` waiting for editors' snippets.
+struct SnippetWait {
+    cli: ConnId,
+    cli_id: Option<u64>,
+    /// The request id sent to editors.
+    id: u64,
+    waiting: std::collections::HashSet<ConnId>,
+    got: Vec<flowbuddy_core::ipc::Snippet>,
+    deadline_ms: u64,
+}
+
+/// Recent tips kept for snippets: this many, at most.
+const RECENT_TIPS: usize = 8;
+/// How long editors get to answer.
+const SNIPPET_WAIT_MS: u64 = 1000;
+
 pub struct App {
     clients: HashMap<ConnId, Client>,
     mode: CoachingMode,
@@ -69,6 +85,10 @@ pub struct App {
     /// shortcut (Ctrl-P, Ctrl-`) as its letter and time.
     last_click_ms: Option<u64>,
     last_shortcut: Option<(char, u64)>,
+    /// Recent tips in an editor: (rule, text, when), for snippets.
+    recent_tips: VecDeque<(&'static str, String, u64)>,
+    snippet_waits: Vec<SnippetWait>,
+    snippet_seq: u64,
     /// The last movement or edit that could have been shorter.
     last_slow: Option<flowbuddy_core::ipc::LastSlow>,
     /// How the mode guessed from keys compares with editors' reports.
@@ -222,6 +242,9 @@ impl App {
             last_shortcut: None,
             mode_guess: ModeGuess::default(),
             last_slow: None,
+            recent_tips: VecDeque::new(),
+            snippet_waits: Vec::new(),
+            snippet_seq: 0,
             recorder: None,
             recordings: flowbuddy_core::paths::recordings_dir(),
             last_nudge_ms: None,
@@ -282,6 +305,82 @@ impl App {
                 .as_ref()
                 .map(|r| r.path().display().to_string()),
         })
+    }
+
+    /// Ask every editor for the lines around recent tips; answer `cli` when
+    /// they all have, or after a second.
+    fn ask_for_snippets(&mut self, cli: ConnId, cli_id: Option<u64>, now_ms: u64) {
+        let editors: std::collections::HashSet<ConnId> = self
+            .clients
+            .iter()
+            .filter(|(_, c)| c.kind == Some(ClientKind::Editor))
+            .map(|(id, _)| *id)
+            .collect();
+        self.snippet_seq += 1;
+        let id = self.snippet_seq;
+        if self.config.text.ai_snippets && !self.recent_tips.is_empty() {
+            let times: Vec<u64> = self.recent_tips.iter().map(|(_, _, t)| *t).collect();
+            for e in &editors {
+                self.reply(
+                    *e,
+                    ServerMsg::SnippetRequest {
+                        id,
+                        times: times.clone(),
+                    },
+                );
+            }
+        } else {
+            return self.reply(
+                cli,
+                ServerMsg::Result {
+                    id: cli_id,
+                    data: json!([]),
+                },
+            );
+        }
+        self.snippet_waits.push(SnippetWait {
+            cli,
+            cli_id,
+            id,
+            waiting: editors,
+            got: Vec::new(),
+            deadline_ms: now_ms + SNIPPET_WAIT_MS,
+        });
+        self.answer_snippets(now_ms);
+    }
+
+    /// Answer the waits that are complete or out of time: each recent tip
+    /// with the snippet closest to it.
+    fn answer_snippets(&mut self, now_ms: u64) {
+        let (done, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.snippet_waits)
+            .into_iter()
+            .partition(|w| w.waiting.is_empty() || now_ms >= w.deadline_ms);
+        self.snippet_waits = waiting;
+        for w in done {
+            let tips: Vec<flowbuddy_core::ipc::TipSnippet> = self
+                .recent_tips
+                .iter()
+                .filter_map(|(rule, tip, at)| {
+                    let s = w
+                        .got
+                        .iter()
+                        .filter(|s| s.at_ms.abs_diff(*at) <= 3000)
+                        .min_by_key(|s| s.at_ms.abs_diff(*at))?;
+                    Some(flowbuddy_core::ipc::TipSnippet {
+                        rule_id: rule.to_string(),
+                        tip: tip.clone(),
+                        snippet: s.clone(),
+                    })
+                })
+                .collect();
+            self.reply(
+                w.cli,
+                ServerMsg::Result {
+                    id: w.cli_id,
+                    data: serde_json::to_value(tips).unwrap_or_default(),
+                },
+            );
+        }
     }
 
     /// Remember a movement or edit if the best way saves two keys or more.
@@ -659,6 +758,13 @@ impl App {
                 RuleEvent::Finding(f) => {
                     tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
                     self.memory.hit(f, ctx, now_ms);
+                    if self.resolved.editor.is_some() {
+                        if self.recent_tips.len() == RECENT_TIPS {
+                            self.recent_tips.pop_front();
+                        }
+                        self.recent_tips
+                            .push_back((f.rule_id, f.text.clone(), f.at_ms));
+                    }
                     let facts = RuleFacts {
                         muted: muted.contains(f.rule_id),
                         stage: self.memory.stage(f.rule_id, ctx),
@@ -851,6 +957,7 @@ impl App {
             self.save_state();
         }
         self.something_new(now_ms);
+        self.answer_snippets(now_ms);
         let events = self.engine.tick(self.resolved.kind, now_ms);
         self.on_rule_events(&events, now_ms);
         let gate = self.gate(now_ms);
@@ -1027,6 +1134,10 @@ impl App {
             }
             ConnEvent::Closed { id } => {
                 self.clients.remove(&id);
+                for w in &mut self.snippet_waits {
+                    w.waiting.remove(&id);
+                }
+                self.answer_snippets(now_ms);
                 if self.resolver.editor(id).is_some() {
                     self.resolver.editor_gone(id);
                     self.update_context(None, now_ms);
@@ -1213,9 +1324,20 @@ impl App {
                 self.on_rule_events(&events, now_ms);
             }
             ClientMsg::Operator(_) => {}
+            ClientMsg::Command {
+                id,
+                command: Command::Snippets,
+            } => self.ask_for_snippets(conn, id, now_ms),
             ClientMsg::Command { id, command } => {
                 let reply = self.on_command(id, command, now_ms);
                 self.reply(conn, reply);
+            }
+            ClientMsg::Snippets { id, snippets } => {
+                if let Some(w) = self.snippet_waits.iter_mut().find(|w| w.id == id) {
+                    w.waiting.remove(&conn);
+                    w.got.extend(snippets.into_iter().take(RECENT_TIPS));
+                }
+                self.answer_snippets(now_ms);
             }
         }
     }
@@ -1273,6 +1395,11 @@ impl App {
                     }
                 }
             }
+            // Answered once the editors have (ask_for_snippets).
+            Command::Snippets => ServerMsg::Result {
+                id,
+                data: json!([]),
+            },
             Command::LastSlow => ServerMsg::Result {
                 id,
                 data: serde_json::to_value(&self.last_slow).unwrap_or_default(),
@@ -2769,5 +2896,83 @@ pub(crate) mod tests {
         let last = app.last_slow.clone().unwrap();
         assert_eq!((last.kind.as_str(), last.keys_used), ("move", 7));
         assert_eq!(last.best[0], ("}".to_string(), 1));
+    }
+
+    #[test]
+    fn snippets_go_from_the_editor_to_coach() {
+        let mut app = test_app(CoachingMode::Active);
+        app.config.text.ai_snippets = true;
+        let mut cli = connect(&mut app, 1);
+        let mut vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        // A tip in the editor: a text object instead of moving in.
+        keys(&mut app, "llllldw");
+        use flowbuddy_core::editor::{Operator, OperatorReport, TextObject};
+        let report = OperatorReport {
+            op: Operator::Delete,
+            at_ms: 700,
+            objects: vec![TextObject::InnerWord],
+            range: None,
+        };
+        send(&mut app, 3, ClientMsg::Operator(report), 750);
+        assert_eq!(app.recent_tips.len(), 1, "{:?}", app.recent_tips);
+        while vim.try_recv().is_ok() {}
+        send(
+            &mut app,
+            1,
+            ClientMsg::Command {
+                id: Some(9),
+                command: Command::Snippets,
+            },
+            800,
+        );
+        let ServerMsg::SnippetRequest { id, times } = vim.try_recv().unwrap() else {
+            panic!()
+        };
+        assert_eq!(times, [700]);
+        while cli.try_recv().is_ok() {}
+        let lines = vec!["let x = foo(bar);".to_string()];
+        send(
+            &mut app,
+            3,
+            ClientMsg::Snippets {
+                id,
+                snippets: vec![flowbuddy_core::ipc::Snippet {
+                    at_ms: 690,
+                    filetype: Some("rust".into()),
+                    lines: lines.clone(),
+                }],
+            },
+            900,
+        );
+        let ServerMsg::Result { id: Some(9), data } = cli.try_recv().unwrap() else {
+            panic!()
+        };
+        let tips: Vec<flowbuddy_core::ipc::TipSnippet> = serde_json::from_value(data).unwrap();
+        assert_eq!(tips[0].snippet.lines, lines);
+        // Off: an empty answer straight away, and no editor is asked.
+        app.config.text.ai_snippets = false;
+        send(
+            &mut app,
+            1,
+            ClientMsg::Command {
+                id: Some(10),
+                command: Command::Snippets,
+            },
+            1000,
+        );
+        assert!(vim.try_recv().is_err());
+        let ServerMsg::Result { data, .. } = cli.try_recv().unwrap() else {
+            panic!()
+        };
+        assert_eq!(data, json!([]));
     }
 }

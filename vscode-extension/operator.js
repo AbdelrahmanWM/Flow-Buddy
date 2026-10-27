@@ -107,6 +107,9 @@ class OperatorTracker {
         if (!objects.length && !shape)
             return;
         const atMs = Date.now();
+        const doc = this._document;
+        if (doc && textAllowed(this._link.editorConfig, doc.uri.scheme, doc.uri.fsPath, true))
+            this._link.snippets.add(atMs, doc.languageId, lines, start.line);
         setTimeout(() => {
             const op = this._modes.mode === 'insert' ? 'change' : 'delete';
             const msg = {type: 'operator', op, at_ms: atMs, objects};

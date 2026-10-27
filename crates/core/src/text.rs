@@ -150,6 +150,29 @@ pub fn allowed(path: Option<&str>, config: &TextConfig, snippets: bool) -> bool 
     config.shapes
 }
 
+/// Whether the AI provider runs on this machine: a command (such as
+/// `ollama run`), or an OpenAI-compatible server on localhost. Snippets
+/// only go elsewhere with `[text] cloud = true`.
+pub fn local_provider(ai: &crate::config::AiConfig) -> bool {
+    use crate::config::AiProvider;
+    match ai.provider {
+        AiProvider::Command => true,
+        AiProvider::None => ai.command.is_some(),
+        AiProvider::Openai => ai.base_url.as_deref().is_some_and(|u| {
+            let host = u.split("://").nth(1).unwrap_or(u);
+            ["localhost", "127.0.0.1", "[::1]"]
+                .iter()
+                .any(|h| host.starts_with(h))
+        }),
+        AiProvider::Anthropic | AiProvider::ClaudeCode => false,
+    }
+}
+
+/// Whether `flowbuddy coach` may send snippets to this provider.
+pub fn snippets_may_go_to(text: &TextConfig, ai: &crate::config::AiConfig) -> bool {
+    text.ai_snippets && (text.cloud || local_provider(ai))
+}
+
 /// Words that name a secret when a value follows them.
 const SECRET_NAMES: &[&str] = &[
     "password",
@@ -482,6 +505,29 @@ mod tests {
             ),
             "a\n<private key>\n<private key>\n<private key>\nz"
         );
+    }
+
+    #[test]
+    fn snippets_stay_local_unless_allowed() {
+        use crate::config::{AiConfig, AiProvider};
+        let ai = |provider, base_url: Option<&str>| AiConfig {
+            provider,
+            base_url: base_url.map(Into::into),
+            ..Default::default()
+        };
+        let mut t = on();
+        assert!(snippets_may_go_to(&t, &ai(AiProvider::Command, None)));
+        assert!(snippets_may_go_to(
+            &t,
+            &ai(AiProvider::Openai, Some("http://localhost:11434/v1"))
+        ));
+        assert!(!snippets_may_go_to(&t, &ai(AiProvider::Openai, None)));
+        assert!(!snippets_may_go_to(&t, &ai(AiProvider::Anthropic, None)));
+        assert!(!snippets_may_go_to(&t, &ai(AiProvider::ClaudeCode, None)));
+        t.cloud = true;
+        assert!(snippets_may_go_to(&t, &ai(AiProvider::Anthropic, None)));
+        t.ai_snippets = false;
+        assert!(!snippets_may_go_to(&t, &ai(AiProvider::Command, None)));
     }
 
     #[test]

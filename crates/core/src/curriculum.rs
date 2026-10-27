@@ -743,6 +743,21 @@ impl Known {
             everything: false,
             ids: ids.into_iter().collect(),
         }
+        .closed()
+    }
+
+    /// Using something means knowing what it builds on, all the way down:
+    /// someone who uses `ci(` knows `ciw` and `cw` too.
+    fn closed(mut self) -> Self {
+        let mut todo: Vec<&'static str> = self.ids.iter().copied().collect();
+        while let Some(id) = todo.pop() {
+            for r in requires(id) {
+                if self.ids.insert(r) {
+                    todo.push(r);
+                }
+            }
+        }
+        self
     }
 
     /// Items used often enough, or learned, plus the skills of rules
@@ -766,6 +781,7 @@ impl Known {
             everything: false,
             ids,
         }
+        .closed()
     }
 
     /// Also everything up to curriculum level `up_to`, as `[learn] level`
@@ -773,7 +789,7 @@ impl Known {
     pub fn with_levels(mut self, up_to: u8) -> Self {
         self.ids
             .extend(CURRICULUM.iter().filter(|i| i.level <= up_to).map(|i| i.id));
-        self
+        self.closed()
     }
 
     pub fn knows(&self, id: &str) -> bool {
@@ -1003,6 +1019,18 @@ mod tests {
         assert!(k.knows("find") && k.ready("till"));
         assert!(!none.ready_for_rule("motion.text-object"));
         assert!(none.ready_for_rule("motion.count") && none.ready_for_rule("shell.cd-up"));
+    }
+
+    #[test]
+    fn using_something_means_knowing_what_it_builds_on() {
+        // ci( without ever typing ciw: ciw and cw are known, and what
+        // builds on ci( is ready.
+        let k = Known::of(["ci-paren"]);
+        assert!(k.knows("ciw") && k.knows("change-word"));
+        assert!(k.ready("tag-object") && k.ready("ci-quote"));
+        // All the way down: :sort means :s and ranges too.
+        let k = Known::of(["sort"]);
+        assert!(k.knows("range") && k.knows("substitute-cmd"));
     }
 
     #[test]

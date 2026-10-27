@@ -15,11 +15,13 @@ use flowbuddy_core::ipc::{
     ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, Nudge, NudgeAction, NudgeStyle,
     RuleAction, RuleInfo, ServerMsg, Status,
 };
+use flowbuddy_core::ipc::{Panel, UiEvent};
 use flowbuddy_core::key::{Key, KeyStroke, Sym};
 use flowbuddy_core::motion::{self, MotionEvent, OperatorEvent};
 use flowbuddy_core::policy::{Coach, CoachingMode, Gate, PolicyConfig, RuleFacts};
 use flowbuddy_core::rule::{Finding, RuleEvent};
-use flowbuddy_core::vim::{Flavor, Tracker, VimEvent};
+use flowbuddy_core::rules::vscode::{How, UiAction, UiWhat};
+use flowbuddy_core::vim::{Flavor, InsertKey, Tracker, VimEvent};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -58,6 +60,23 @@ pub struct App {
     /// Recent commands, just enough to count the keys behind a movement or
     /// an operator an editor reports. No keys are kept.
     commands: VecDeque<Cmd>,
+    claude_vim: bool,
+    claude_checked_ms: Option<u64>,
+    /// Reads Claude Code's settings; replaced in tests.
+    claude_probe: fn() -> bool,
+    /// For the VS Code pack: when the last click came, and the last VS Code
+    /// shortcut (Ctrl-P, Ctrl-`) as its letter and time.
+    last_click_ms: Option<u64>,
+    last_shortcut: Option<(char, u64)>,
+    /// Opt-in typing accuracy, written once a minute.
+    typing: crate::typing::Typing,
+    typing_flushed_ms: u64,
+    /// The layout the extension reports, and whether the keymap should
+    /// follow it (main rebuilds it).
+    layout: Option<(String, String)>,
+    layout_changed: bool,
+    /// What main settled on: the layout used, and a note if it differs.
+    keymap_layout: (String, Option<String>),
 }
 
 const NUDGE_HISTORY: usize = 20;
@@ -81,6 +100,14 @@ enum CmdKind {
 /// The most a threshold is raised after "not helpful" reports.
 const MAX_RAISE: u32 = 3;
 
+/// A shortcut this recent led to the UI event (Ctrl-P, then typing a name).
+const UI_SHORTCUT_MS: u64 = 15_000;
+/// A click this recent did.
+const UI_CLICK_MS: u64 = 1500;
+
+/// How often to look at Claude Code's settings for its Vim mode.
+const CLAUDE_CHECK_MS: u64 = 5000;
+
 /// Commands remembered for counting the keys behind a movement.
 const COMMAND_HISTORY: usize = 256;
 
@@ -100,12 +127,14 @@ pub fn app_ids(config: &Config) -> AppIds {
         vscode: config.apps.vscode.clone().unwrap_or(d.vscode),
         terminals: config.apps.terminals.clone().unwrap_or(d.terminals),
         vims: config.apps.vims.clone().unwrap_or(d.vims),
+        claudes: config.apps.claudes.clone().unwrap_or(d.claudes),
     }
 }
 
 fn flavor(kind: ContextKind) -> Flavor {
     match kind {
-        ContextKind::BashVi => Flavor::Readline,
+        // Like readline vi-mode: Insert to start with, a small Normal mode.
+        ContextKind::BashVi | ContextKind::ClaudeVim => Flavor::Readline,
         _ => Flavor::Vim,
     }
 }
@@ -153,6 +182,16 @@ impl App {
             nudge_seq: 0,
             memory: Memory::new(None, &Config::default()),
             commands: VecDeque::new(),
+            claude_vim: false,
+            claude_checked_ms: None,
+            claude_probe: crate::claude::vim_mode_on,
+            last_click_ms: None,
+            last_shortcut: None,
+            typing: crate::typing::Typing::default(),
+            typing_flushed_ms: 0,
+            layout: None,
+            layout_changed: false,
+            keymap_layout: ("us".into(), None),
         }
         .with_memory_config()
     }
@@ -376,18 +415,30 @@ impl App {
     /// Findings and adoptions go here: coaching policy and storage hook in
     /// at this point.
     fn on_rule_events(&mut self, events: &[RuleEvent], now_ms: u64) {
+        self.on_rule_events_in(self.resolved.kind, events, now_ms, true);
+    }
+
+    /// Rule events from `ctx`, which is the focused context except for
+    /// events that don't come from keys (the shell and VS Code packs).
+    /// `keyed`: they come from keys, so check the keys reached the editor.
+    fn on_rule_events_in(
+        &mut self,
+        ctx: ContextKind,
+        events: &[RuleEvent],
+        now_ms: u64,
+        keyed: bool,
+    ) {
         let gate = self.gate(now_ms);
         let muted = self.state.muted();
-        let ctx = self.resolved.kind;
         for ev in events {
             match ev {
-                RuleEvent::Finding(f) if !self.editor_saw(f.at_ms) => {
+                RuleEvent::Finding(f) if keyed && !self.editor_saw(f.at_ms) => {
                     tracing::debug!(
                         rule = f.rule_id,
                         "finding dropped: keys didn't reach the editor"
                     );
                 }
-                RuleEvent::Adoption { at_ms, .. } if !self.editor_saw(*at_ms) => {}
+                RuleEvent::Adoption { at_ms, .. } if keyed && !self.editor_saw(*at_ms) => {}
                 RuleEvent::Finding(f) => {
                     tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
                     self.memory.hit(f, ctx, now_ms);
@@ -404,6 +455,38 @@ impl App {
                 RuleEvent::Adoption { rule_id, .. } => self.memory.adoption(rule_id, ctx, now_ms),
             }
         }
+    }
+
+    fn is_vscode(&self, conn: ConnId) -> bool {
+        self.resolver
+            .editor(conn)
+            .is_some_and(|e| e.kind == EditorKind::Vscode)
+    }
+
+    /// A VS Code UI event for the VS Code pack: did the shortcut (`key`
+    /// with Ctrl) or a click lead to it?
+    fn on_ui(&mut self, what: UiWhat, key: char, now_ms: u64) {
+        if !self.capturing(now_ms) {
+            return;
+        }
+        let recent = |t: u64, ms: u64| now_ms.saturating_sub(t) <= ms;
+        let how = if self
+            .last_shortcut
+            .is_some_and(|(k, t)| k == key && recent(t, UI_SHORTCUT_MS))
+        {
+            How::Shortcut
+        } else if self.last_click_ms.is_some_and(|t| recent(t, UI_CLICK_MS)) {
+            How::Click
+        } else {
+            How::Other
+        };
+        let action = UiAction {
+            what,
+            how,
+            at_ms: now_ms,
+        };
+        let events = self.engine.on_ui(&action);
+        self.on_rule_events_in(ContextKind::VsCodeVim, &events, now_ms, false);
     }
 
     /// Keys pressed for a movement: the motion commands just before its end,
@@ -459,9 +542,40 @@ impl App {
         }
     }
 
+    fn ids_claude(&self, command: &str) -> bool {
+        app_ids(&self.config).claudes.iter().any(|c| c == command)
+    }
+
+    /// Claude Code's settings can change at any time; look every few seconds.
+    fn check_claude(&mut self, now_ms: u64) {
+        if self
+            .claude_checked_ms
+            .is_some_and(|t| now_ms.saturating_sub(t) < CLAUDE_CHECK_MS)
+        {
+            return;
+        }
+        self.claude_checked_ms = Some(now_ms);
+        let on = (self.claude_probe)();
+        if on != self.claude_vim {
+            self.claude_vim = on;
+            self.resolver.set_claude_vim(on);
+            self.update_context(None, now_ms);
+        }
+    }
+
     /// Called about once a second: ends streaks that stopped without
     /// another key.
     pub fn tick(&mut self, now_ms: u64) {
+        self.check_claude(now_ms);
+        if now_ms.saturating_sub(self.typing_flushed_ms) >= 60_000 {
+            self.typing_flushed_ms = now_ms;
+            let counts = self.typing.take();
+            self.memory.typing(counts, now_ms);
+        }
+        // Switching tmux panes tells no one; look again.
+        if self.resolver.via_tmux() {
+            self.update_context(None, now_ms);
+        }
         if self.paused_until.is_some_and(|t| t * 1000 <= now_ms) {
             self.paused_until = None;
             self.mode_changed();
@@ -492,12 +606,25 @@ impl App {
             return Vec::new();
         }
         if kind == ContextKind::VsCodeVim && is_vscode_ui_shortcut(&stroke.key) {
+            if let Sym::Char(c) = stroke.key.sym {
+                self.last_shortcut = Some((c.to_ascii_lowercase(), stroke.at_ms));
+            }
             self.tracker.invalidate();
             self.engine.reset();
             return Vec::new();
         }
         self.memory.active(kind, now_ms);
         let step = self.tracker.feed(stroke);
+        if self.config.typing.accuracy {
+            match (&step.event, stroke.key.sym) {
+                (Some(VimEvent::Insert(InsertKey::Text)), Sym::Char(c)) => {
+                    self.typing.typed(kind, c)
+                }
+                (Some(VimEvent::Insert(InsertKey::Backspace)), _) => self.typing.backspace(kind),
+                (None, _) => {}
+                _ => self.typing.other(),
+            }
+        }
         if step.confident
             && let Some(VimEvent::Command(c)) = &step.event
         {
@@ -523,7 +650,8 @@ impl App {
     }
 
     /// A mouse click may have changed the editor's mode or focus.
-    pub fn on_pointer_click(&mut self) {
+    pub fn on_pointer_click(&mut self, now_ms: u64) {
+        self.last_click_ms = Some(now_ms);
         self.tracker.invalidate();
         self.engine.reset();
         // An editor that reports its mode still knows it.
@@ -556,6 +684,7 @@ impl App {
             self.resolved = new;
             self.tracker = Tracker::new(flavor(new.kind));
             self.commands.clear();
+            self.typing.other();
             self.engine.set_editor_motions(new.editor.is_some());
         }
         if let Some(mode) = known {
@@ -575,6 +704,20 @@ impl App {
         if let Some(mode) = mode {
             self.tracker.reset_known(mode);
         }
+    }
+
+    /// The layout to build the keymap for, once each time it changes.
+    pub fn take_layout(&mut self) -> Option<(String, String)> {
+        std::mem::take(&mut self.layout_changed)
+            .then(|| self.layout.clone())
+            .flatten()
+    }
+
+    /// The layout main built the keymap for, and a note if it isn't the one
+    /// in use.
+    pub fn set_keymap_layout(&mut self, layout: String, note: Option<String>) {
+        self.keymap_layout = (layout, note);
+        self.tracker.invalidate();
     }
 
     pub fn set_keyboards(&mut self, n: usize) {
@@ -645,10 +788,28 @@ impl App {
                 command,
                 vi_mode,
                 shell_pid,
-                ..
+                shape,
+                tty,
             } => {
+                if let Some(shape) = shape.filter(|_| self.capturing(now_ms)) {
+                    let ev = flowbuddy_core::rules::shell::ShellEvent {
+                        shape,
+                        at_ms: now_ms,
+                    };
+                    let events = self.engine.on_shell(&ev);
+                    self.on_rule_events_in(ContextKind::Shell, &events, now_ms, false);
+                }
                 let (state, known) = match event {
-                    CtxEvent::Fg => (ShellState::Fg(command.unwrap_or_default()), VimMode::Normal),
+                    // Vim starts in Normal mode; Claude Code's prompt in Insert.
+                    CtxEvent::Fg => {
+                        let command = command.unwrap_or_default();
+                        let known = if self.ids_claude(&command) {
+                            VimMode::Insert
+                        } else {
+                            VimMode::Normal
+                        };
+                        (ShellState::Fg(command), known)
+                    }
                     CtxEvent::Prompt => (
                         ShellState::Prompt {
                             vi: vi_mode.unwrap_or(false),
@@ -656,15 +817,37 @@ impl App {
                         VimMode::Insert,
                     ),
                 };
-                self.resolver.shell_report(shell_pid, state, now_ms);
+                self.resolver.shell_report(shell_pid, state, tty, now_ms);
                 self.update_context(Some((shell_pid, known)), now_ms);
             }
             ClientMsg::NudgeResponse { nudge_id, action } => {
                 self.on_nudge_response(&nudge_id, action, now_ms);
             }
-            ClientMsg::PointerClick => self.on_pointer_click(),
-            ClientMsg::EditorFocus { focused } => {
-                self.resolver.editor_focus(conn, focused, now_ms);
+            ClientMsg::PointerClick => self.on_pointer_click(now_ms),
+            ClientMsg::EditorEvent {
+                event: UiEvent::FileOpened,
+            } if self.is_vscode(conn) => self.on_ui(UiWhat::FileOpened, 'p', now_ms),
+            ClientMsg::EditorEvent { .. } => {}
+            ClientMsg::InputSource { layout, variant } => {
+                // xkb names only: anything else is ignored.
+                let name = |s: Option<String>| {
+                    s.filter(|s| {
+                        s.len() <= 32
+                            && s.chars()
+                                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                    })
+                };
+                let new = name(layout).map(|l| (l, name(variant).unwrap_or_default()));
+                if new.is_some() && new != self.layout {
+                    self.layout = new;
+                    self.layout_changed = true;
+                }
+            }
+            ClientMsg::EditorFocus { focused, panel } => {
+                if !focused && panel == Some(Panel::Terminal) && self.is_vscode(conn) {
+                    self.on_ui(UiWhat::TerminalFocused, '`', now_ms);
+                }
+                self.resolver.editor_focus(conn, focused, panel, now_ms);
                 self.update_context(None, now_ms);
             }
             ClientMsg::EditorMode { mode } => {
@@ -812,6 +995,8 @@ impl App {
             paused_until: self.paused_until.filter(|&t| t > now_s),
             context: self.resolved.kind.as_str().into(),
             app: self.resolver.focused_app().map(Into::into),
+            layout: Some(self.keymap_layout.0.clone()),
+            layout_note: self.keymap_layout.1.clone(),
             mode_from_editor: self
                 .resolved
                 .editor
@@ -838,12 +1023,14 @@ pub(crate) mod tests {
             mode: Some(mode),
             ..Default::default()
         };
-        App::new(
+        let mut app = App::new(
             Config::default(),
             state,
             test_resolver(),
             Box::new(crate::notify::fake::Recorder::default()),
-        )
+        );
+        app.claude_probe = || false;
+        app
     }
 
     pub(crate) fn test_resolver() -> Resolver {
@@ -949,6 +1136,7 @@ pub(crate) mod tests {
                 vi_mode: Some(true),
                 shell_pid,
                 tty: None,
+                shape: None,
             },
             0,
         );
@@ -1019,7 +1207,7 @@ pub(crate) mod tests {
         assert!(app.on_key(palette, 0).is_empty());
         assert!(!app.mode_known().1);
         keys(&mut app, "<Esc>");
-        app.on_pointer_click();
+        app.on_pointer_click(0);
         assert!(!app.mode_known().1);
     }
 
@@ -1176,6 +1364,7 @@ pub(crate) mod tests {
             test_resolver(),
             Box::new(recorder.clone()),
         );
+        app.claude_probe = || false;
         let _cli = connect(&mut app, 1);
         focus(&mut app, "code_code", 500);
         keys(&mut app, "<Esc>xxxxxw");
@@ -1240,13 +1429,14 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let store = flowbuddy_store::Store::open_in_memory().unwrap();
-        let app = App::new(
+        let mut app = App::new(
             Config::default(),
             state,
             test_resolver(),
             Box::new(recorder.clone()),
         )
         .with_store(store);
+        app.claude_probe = || false;
         (app, recorder)
     }
 
@@ -1469,6 +1659,42 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn shell_shapes_are_coached_from_any_window() {
+        use flowbuddy_core::ipc::CommandShape;
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "firefox", 900);
+        let cd = |app: &mut App, at| {
+            send(
+                app,
+                1,
+                ClientMsg::Ctx {
+                    event: CtxEvent::Fg,
+                    command: Some("cd".into()),
+                    vi_mode: None,
+                    shell_pid: 200,
+                    tty: None,
+                    shape: Some(CommandShape::CdUp),
+                },
+                at,
+            )
+        };
+        cd(&mut app, 1_000);
+        cd(&mut app, 3_000);
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].rule_id, "shell.cd-up");
+        let store = app.memory.store().unwrap();
+        assert!(
+            store
+                .patterns()
+                .unwrap()
+                .iter()
+                .any(|p| p.context == "shell")
+        );
+    }
+
+    #[test]
     fn weekly_note_by_the_model_when_opted_in() {
         use chrono::TimeZone;
         let (mut app, recorder) = app_with_store(CoachingMode::Balanced);
@@ -1581,7 +1807,15 @@ pub(crate) mod tests {
         keys(&mut app, "<Esc>xxxxx<Esc>");
         assert!(nudges(&mut ext).is_empty());
         // Back in the editor.
-        send(&mut app, 2, ClientMsg::EditorFocus { focused: true }, 0);
+        send(
+            &mut app,
+            2,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            0,
+        );
         keys(&mut app, "<Esc>xxxxx<Esc>");
         assert_eq!(nudges(&mut ext).len(), 1);
     }
@@ -1592,7 +1826,15 @@ pub(crate) mod tests {
         let _rx = connect(&mut app, 1);
         let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
         focus(&mut app, "code_code", 500);
-        send(&mut app, 2, ClientMsg::EditorFocus { focused: false }, 0);
+        send(
+            &mut app,
+            2,
+            ClientMsg::EditorFocus {
+                focused: false,
+                panel: None,
+            },
+            0,
+        );
         assert_eq!(app.context().kind, ContextKind::Unsupported);
         assert!(keys(&mut app, "jjjjjjj").is_empty());
     }
@@ -1603,7 +1845,15 @@ pub(crate) mod tests {
         let _rx = connect(&mut app, 1);
         let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
         focus(&mut app, "code_code", 500);
-        send(&mut app, 2, ClientMsg::EditorFocus { focused: true }, 0);
+        send(
+            &mut app,
+            2,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            0,
+        );
         assert!(!app.mode_known().1);
         send(
             &mut app,
@@ -1615,7 +1865,7 @@ pub(crate) mod tests {
         );
         assert_eq!(app.mode_known(), (VimMode::Insert, true));
         // A click no longer loses the mode: the editor still knows it.
-        app.on_pointer_click();
+        app.on_pointer_click(0);
         assert_eq!(app.mode_known(), (VimMode::Insert, true));
     }
 
@@ -1736,5 +1986,135 @@ pub(crate) mod tests {
                 .iter()
                 .all(|n| !n.rule_id.starts_with("motion."))
         );
+    }
+
+    #[test]
+    fn claude_code_prompt_is_coached_with_vim_mode_on() {
+        let mut app = test_app(CoachingMode::Active);
+        app.claude_probe = || true;
+        let mut ext = ext_hello(&mut app, 1);
+        app.tick(0);
+        focus(&mut app, "org.gnome.Ptyxis", 100);
+        send(
+            &mut app,
+            1,
+            ClientMsg::Ctx {
+                event: CtxEvent::Fg,
+                command: Some("claude".into()),
+                vi_mode: None,
+                shell_pid: 200,
+                tty: None,
+                shape: None,
+            },
+            0,
+        );
+        assert_eq!(app.context().kind, ContextKind::ClaudeVim);
+        // The prompt starts in Insert mode: a run of Backspaces.
+        keys(
+            &mut app,
+            "hello<BS><BS><BS><BS><BS><BS><BS><BS><BS><BS><BS><Esc>",
+        );
+        let n = nudges(&mut ext);
+        assert!(n.iter().any(|n| n.rule_id == "vim.backspace-streak" || n.rule_id == "bash.backspace-clear"), "{n:?}");
+    }
+
+    #[test]
+    fn input_sources_are_followed_once_per_change() {
+        let mut app = test_app(CoachingMode::Active);
+        let _ext = ext_hello(&mut app, 1);
+        let source = |app: &mut App, layout: &str, variant: &str| {
+            send(
+                app,
+                1,
+                ClientMsg::InputSource {
+                    layout: Some(layout.into()),
+                    variant: Some(variant.into()),
+                },
+                0,
+            )
+        };
+        source(&mut app, "de", "nodeadkeys");
+        assert_eq!(app.take_layout(), Some(("de".into(), "nodeadkeys".into())));
+        assert_eq!(app.take_layout(), None, "once per change");
+        source(&mut app, "de", "nodeadkeys");
+        assert_eq!(app.take_layout(), None, "same layout again");
+        // Only xkb-style names.
+        source(&mut app, "de; rm -rf /", "");
+        assert_eq!(app.take_layout(), None);
+        app.set_keymap_layout("us".into(), Some("a note".into()));
+        let st = app.status(0);
+        assert_eq!(
+            (st.layout.as_deref(), st.layout_note.as_deref()),
+            (Some("us"), Some("a note"))
+        );
+    }
+
+    #[test]
+    fn clicking_files_open_suggests_quick_open() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
+        focus(&mut app, "code_code", 500);
+        let opened = |app: &mut App, at| {
+            send(
+                app,
+                2,
+                ClientMsg::EditorEvent {
+                    event: UiEvent::FileOpened,
+                },
+                at,
+            )
+        };
+        for at in [10_000, 20_000, 30_000] {
+            app.on_pointer_click(at - 200);
+            opened(&mut app, at);
+        }
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].rule_id, "vscode.quick-open");
+        // With Ctrl-P first it's the better way, even after a click.
+        app.on_pointer_click(39_000);
+        let ctrl_p = KeyStroke {
+            key: Key::ctrl('p'),
+            repeat: false,
+            at_ms: 39_500,
+        };
+        app.on_key(ctrl_p, 39_500);
+        for at in [40_000, 41_000, 42_000] {
+            opened(&mut app, at);
+        }
+        assert!(nudges(&mut ext).is_empty());
+    }
+
+    #[test]
+    fn typing_accuracy_is_opt_in_and_counts_only() {
+        for on in [false, true] {
+            let (mut app, _) = app_with_store(CoachingMode::Active);
+            app.config.typing.accuracy = on;
+            let _ext = ext_hello(&mut app, 1);
+            focus(&mut app, "code_code", 500);
+            type_at(
+                &mut app,
+                "<Esc>isecretpasswrod<BS><BS><BS>ord hunter2<Esc>",
+                1_000,
+            );
+            app.tick(120_000);
+            let store = app.memory.store().unwrap();
+            let (typed, corrections) = store.typing("1960-01-01", "2100-01-01").unwrap();
+            if !on {
+                assert_eq!((typed, corrections), (0, 0), "off by default");
+                continue;
+            }
+            assert_eq!((typed, corrections), (25, 3));
+            assert_eq!(
+                store.typo_pairs("1960-01-01", "2100-01-01", 5).unwrap(),
+                [("od".to_string(), 1)]
+            );
+            for t in store.all_text().unwrap() {
+                for secret in ["secret", "pass", "hunter"] {
+                    assert!(!t.contains(secret), "{t:?} leaks {secret:?}");
+                }
+            }
+        }
     }
 }

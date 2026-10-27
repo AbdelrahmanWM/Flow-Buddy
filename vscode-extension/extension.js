@@ -13,6 +13,7 @@ const {FocusReporter} = require('./focus');
 const {ModeTracker} = require('./mode');
 const {MotionTracker} = require('./motion');
 const {OperatorTracker} = require('./operator');
+const {UiReporter} = require('./ui');
 const {version} = require('./package.json');
 
 let link = null;
@@ -40,6 +41,7 @@ function activate(context) {
     modes.enable(context.subscriptions);
     motions.enable(context.subscriptions);
     operators.enable(context.subscriptions);
+    new UiReporter(link).enable(context.subscriptions);
     link.start();
 }
 

@@ -98,6 +98,10 @@ The app ids are defaults and can be overridden in the config. The values seen on
 - A Vim plugin that isn't a child of the terminal (inside tmux) counts when it has said it has focus.
 - An editor's reported mode replaces the guess, and stays known after clicks.
 
+**Keyboard layout.** The extension reports the current input source (`input_source`, xkb names such as `de` and `nodeadkeys`) and every switch. Built with libxkbcommon (`scripts/install.sh` does when `libxkbcommon-dev` is installed), the daemon rebuilds its keymap for it. For non-Latin layouts it uses US, since that's where Vim commands are typed. `[keyboard] xkb_layout` in the config overrides it. Without libxkbcommon, keys are read as US and `flowbuddy status` says so.
+
+**tmux.** Inside tmux, the terminal's shell reports `tmux` as its foreground command, and the panes' shells aren't its children. The daemon then asks tmux which pane the client on that terminal's tty shows, and what runs in it (`tmux list-clients -F '#{client_tty} #{pane_pid} #{pane_current_command}'`): Vim there is `TerminalVim`, a pane shell whose hook reported a vi-mode prompt is `BashVi`. Switching panes sends no event, so this is checked again every second while tmux is involved. tmux is reached over its Unix socket, which the daemon's sandbox allows.
+
 **One server for many windows.** GNOME Terminal and Ptyxis run one server process for all their windows, so several shells can match the same window. The daemon uses the shell that reported most recently; editor plugins that report focus settle it for Vim.
 
 ### Mode inference and confidence
@@ -161,8 +165,9 @@ When nothing is focused, `app_id` is `null`. The protocol accepts an optional `t
 ```json
 {"v":0,"type":"ctx","event":"fg","command":"vim","shell_pid":51002,"tty":"/dev/pts/3"}
 {"v":0,"type":"ctx","event":"prompt","vi_mode":true,"shell_pid":51002,"tty":"/dev/pts/3"}
+{"v":0,"type":"ctx","event":"fg","command":"cd","shell_pid":51002,"shape":"cd-up"}
 ```
-`command` is the basename of the command only, never its arguments. `vi_mode` comes from checking `$SHELLOPTS` for `vi`. If it's false, the daemon treats the prompt as `Unsupported`.
+`command` is the basename of the command only, never its arguments. `vi_mode` comes from the shell (`$SHELLOPTS` in bash, `bindkey` in zsh, `$fish_key_bindings` in fish). If it's false, the daemon treats the prompt as `Unsupported`. `shape` (optional) is one of `cd-up`, `cd-up-many`, `reused-arg` and `one-word-changed`, worked out by the hook from the command line and the one before it, which stay in the shell; it feeds the `shell` pack.
 
 **`nudge_response`**: the user acted on a nudge in the indicator.
 ```json
@@ -235,8 +240,9 @@ Keystrokes alone can't show which pane of an editor has focus, what mode it's re
 
 **`editor_focus`**: whether a text editor has keyboard focus. In VS Code, `false` means the terminal, a chat or another panel; in a terminal Vim, it follows the terminal's focus events.
 ```json
-{"v":0,"type":"editor_focus","focused":false}
+{"v":0,"type":"editor_focus","focused":false,"panel":"terminal"}
 ```
+`panel` (optional, when not focused) is `terminal` or `other`. With Claude Code running in VS Code's terminal and its Vim mode on, the terminal panel is coached as `claude-vim`.
 
 **`editor_mode`**: the editor's real mode, one of `normal`, `insert`, `replace`, `visual`, `visual_line`, `visual_block`, `cmdline`, `op_pending`, `other`. It replaces the daemon's guess.
 ```json

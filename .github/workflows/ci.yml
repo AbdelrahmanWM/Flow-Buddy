@@ -25,6 +25,7 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -yq libxkbcommon-dev
           cargo clippy -p flowbuddy-daemon --features xkb --all-targets
+          cargo test -p flowbuddy-daemon --features xkb
       - name: Test the VS Code companion's motion facts
         run: |
           sudo apt-get install -yq gjs
@@ -35,7 +36,11 @@ jobs:
         run: |
           command -v vim >/dev/null || sudo apt-get install -yq vim
           vim-plugin/test/run.sh
+      - name: Test the shell hooks (bash, zsh, fish)
+        run: |
+          sudo apt-get install -yq zsh fish
+          shell/test/run.sh
       - name: Check shell scripts
         run: |
-          for f in shell/flowbuddy.bash scripts/*.sh; do bash -n "$f"; done
-          shellcheck shell/flowbuddy.bash scripts/*.sh
+          for f in shell/flowbuddy.bash shell/test/run.sh scripts/*.sh; do bash -n "$f"; done
+          shellcheck shell/flowbuddy.bash shell/test/run.sh scripts/*.sh

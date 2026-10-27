@@ -218,6 +218,16 @@ impl Keymap for UsKeymap {
     }
 }
 
+/// Whether `keymap` types Latin letters, where Vim commands live: the A
+/// key gives an ASCII letter.
+#[cfg(any(feature = "xkb", test))]
+pub fn is_latin(keymap: &mut dyn Keymap) -> bool {
+    let a = KeyCode::KEY_A.code();
+    let key = keymap.translate(a, 1);
+    keymap.translate(a, 0);
+    matches!(key, Some(Key { sym: Sym::Char(c), .. }) if c.is_ascii_alphabetic())
+}
+
 #[cfg(feature = "xkb")]
 pub mod xkb {
     //! libxkbcommon-backed keymap. Requires `libxkbcommon-dev` to build.
@@ -368,6 +378,39 @@ mod tests {
         assert_eq!(press(&mut km, KeyCode::KEY_ESC), Some(Key::ESC));
         assert_eq!(press(&mut km, KeyCode::KEY_UP), Some(Key::UP));
         assert_eq!(press(&mut km, KeyCode::KEY_BACKSPACE), Some(Key::BACKSPACE));
+    }
+
+    #[test]
+    fn the_us_keymap_is_latin() {
+        assert!(is_latin(&mut UsKeymap::default()));
+    }
+
+    #[cfg(feature = "xkb")]
+    mod xkb_layouts {
+        use super::super::xkb::XkbKeymap;
+        use super::super::{Keymap, is_latin};
+        use evdev::KeyCode;
+        use flowbuddy_core::key::Key;
+
+        fn press(km: &mut XkbKeymap, code: KeyCode) -> Option<Key> {
+            let k = km.translate(code.code(), 1);
+            km.translate(code.code(), 0);
+            k
+        }
+
+        #[test]
+        fn german_swaps_y_and_z() {
+            let mut km = XkbKeymap::new("de", "", &[]).unwrap();
+            assert_eq!(press(&mut km, KeyCode::KEY_Y), Some(Key::ch('z')));
+            assert_eq!(press(&mut km, KeyCode::KEY_J), Some(Key::ch('j')));
+            assert!(is_latin(&mut km));
+        }
+
+        #[test]
+        fn russian_is_not_latin() {
+            let mut km = XkbKeymap::new("ru", "", &[]).unwrap();
+            assert!(!is_latin(&mut km));
+        }
     }
 }
 

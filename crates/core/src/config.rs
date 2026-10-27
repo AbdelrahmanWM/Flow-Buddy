@@ -25,6 +25,16 @@ pub struct Config {
     pub memory: MemoryConfig,
     pub learning: LearningConfig,
     pub ai: AiConfig,
+    pub typing: TypingConfig,
+}
+
+/// Opt-in typing statistics.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TypingConfig {
+    /// Count characters typed and deleted again, and which pairs of
+    /// characters come before a correction (counts only). Off by default.
+    pub accuracy: bool,
 }
 
 /// `flowbuddy coach`: a local model, off until `command` is set.
@@ -108,6 +118,8 @@ pub struct AppsConfig {
     pub vscode: Option<Vec<String>>,
     pub terminals: Option<Vec<String>>,
     pub vims: Option<Vec<String>>,
+    /// Command names of Claude Code.
+    pub claudes: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]

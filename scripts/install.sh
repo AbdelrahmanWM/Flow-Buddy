@@ -11,7 +11,8 @@
 #   ~/.config/systemd/user/flowbuddyd.service (enabled and started)
 #   ~/.config/systemd/user/flowbuddy-weekly.service (only runs with [ai] weekly)
 #   ~/.local/share/gnome-shell/extensions/flowbuddy@abdelrahmanwm.github.io/
-#   ~/.local/share/flowbuddy/flowbuddy.bash, sourced from ~/.bashrc
+#   ~/.local/share/flowbuddy/flowbuddy.{bash,zsh,fish}, sourced from ~/.bashrc,
+#   ~/.zshrc and fish's conf.d (for the shells you have)
 #   ~/.vscode/extensions/flowbuddy.flowbuddy-vscode-<version>/ (if VS Code is installed)
 #   ~/.vim/pack/flowbuddy/start/flowbuddy/ (if Vim is installed)
 #   ~/.local/share/nvim/site/pack/flowbuddy/start/flowbuddy/ (if Neovim is installed)
@@ -29,6 +30,7 @@ vscode_dir=$HOME/.vscode/extensions
 vscode_version=$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$repo/vscode-extension/package.json")
 vscode_ext=$vscode_dir/flowbuddy.flowbuddy-vscode-$vscode_version
 bashrc=$HOME/.bashrc
+fish_conf=${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/flowbuddy.fish
 udev_rule=/etc/udev/rules.d/70-flowbuddy.rules
 marker_begin="# >>> flowbuddy >>>"
 marker_end="# <<< flowbuddy <<<"
@@ -62,7 +64,16 @@ ask() {
 command -v cargo >/dev/null || { echo "cargo not found: install Rust from https://rustup.rs" >&2; exit 1; }
 
 say "Building release binaries"
-run cargo build --release --manifest-path "$repo/Cargo.toml" -p flowbuddy-daemon -p flowbuddy-cli
+# libxkbcommon reads keys in your layout (German, French, ...); without it,
+# keys are read as US.
+features=()
+if pkg-config --exists xkbcommon 2>/dev/null; then
+    features=(--features flowbuddy-daemon/xkb)
+else
+    echo "    note: libxkbcommon-dev isn't installed, so keys are read as US."
+    echo "    For other layouts: sudo apt install libxkbcommon-dev, then run this again."
+fi
+run cargo build --release --manifest-path "$repo/Cargo.toml" -p flowbuddy-daemon -p flowbuddy-cli "${features[@]}"
 
 say "Installing binaries to $bin_dir"
 run install -Dm755 "$repo/target/release/flowbuddyd" "$bin_dir/flowbuddyd"
@@ -72,22 +83,39 @@ case :$PATH: in
     *) echo "    note: $bin_dir is not on your PATH" ;;
 esac
 
-say "Installing the bash hook"
-run install -Dm644 "$repo/shell/flowbuddy.bash" "$share_dir/flowbuddy.bash"
-if grep -qF "$marker_begin" "$bashrc" 2>/dev/null; then
-    echo "    ~/.bashrc already sources it"
-elif ask "Add Flow Buddy (and 'set -o vi') to the end of ~/.bashrc?"; then
-    block=$(printf '%s\n%s\n%s\n%s\n' "$marker_begin" "set -o vi" \
-        "[[ -f \"$share_dir/flowbuddy.bash\" ]] && source \"$share_dir/flowbuddy.bash\"" "$marker_end")
-    if ((dry_run)); then
-        printf '    + append to %s:\n        %s\n' "$bashrc" "${block//$'\n'/$'\n'        }"
+# Source a hook from a shell's rc file, between markers, after asking.
+add_hook() {
+    local rc=$1 vi=$2 hook=$3 name=${1/#$HOME/\~}
+    if grep -qF "$marker_begin" "$rc" 2>/dev/null; then
+        echo "    $name already sources it"
+    elif ask "Add Flow Buddy (and '$vi') to the end of $name?"; then
+        local block
+        block=$(printf '%s\n%s\n%s\n%s\n' "$marker_begin" "$vi" \
+            "[[ -f \"$hook\" ]] && source \"$hook\"" "$marker_end")
+        if ((dry_run)); then
+            printf '    + append to %s:\n        %s\n' "$rc" "${block//$'\n'/$'\n'        }"
+        else
+            printf '\n%s\n' "$block" >>"$rc"
+        fi
     else
-        printf '\n%s\n' "$block" >>"$bashrc"
+        echo "    skipped; add this to $name yourself:"
+        echo "        $vi"
+        echo "        source \"$hook\""
     fi
-else
-    echo "    skipped; add this to ~/.bashrc yourself:"
-    echo "        set -o vi"
-    echo "        source \"$share_dir/flowbuddy.bash\""
+}
+
+say "Installing the shell hooks"
+for f in flowbuddy.bash flowbuddy.zsh flowbuddy.fish; do
+    run install -Dm644 "$repo/shell/$f" "$share_dir/$f"
+done
+add_hook "$bashrc" "set -o vi" "$share_dir/flowbuddy.bash"
+if command -v zsh >/dev/null; then
+    add_hook "${ZDOTDIR:-$HOME}/.zshrc" "bindkey -v" "$share_dir/flowbuddy.zsh"
+fi
+if command -v fish >/dev/null; then
+    # fish loads conf.d by itself; vi bindings stay your choice.
+    run install -Dm644 /dev/stdin "$fish_conf" <<<"source \"$share_dir/flowbuddy.fish\""
+    echo "    for fish vi-mode, add fish_vi_key_bindings to config.fish"
 fi
 
 say "Installing the GNOME Shell extension"

@@ -39,7 +39,7 @@ Details, including the IPC protocol and the context model, are in [docs/architec
 
 ## What it coaches
 
-Vim in VS Code (vscodevim), Vim and Neovim in the terminal, and bash vi-mode.
+Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh and fish, Claude Code's Vim mode (in a terminal or VS Code's terminal), and a few shell habits such as `cd ..` again and again.
 
 | You did | Try |
 |---|---|
@@ -60,6 +60,9 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal, and bash vi-mode.
 `flowbuddy coach` asks a model running on your machine for advice based on the mistake memory. It's off until you set it up, and `--prompt` shows exactly what the model sees:
 
 ```toml
+[typing]
+accuracy = false                              # true: count corrections (counts only) for `flowbuddy summary`
+
 [ai]
 command = ["ollama", "run", "llama3.2:3b"]   # any local program: prompt on stdin, answer on stdout
 weekly = false                                # true: the model writes the weekly progress note
@@ -71,7 +74,7 @@ Linux, initially Ubuntu with GNOME on Wayland.
 
 ## Install
 
-Requires Rust (via [rustup](https://rustup.rs)), GNOME Shell 50 and bash.
+Requires Rust (via [rustup](https://rustup.rs)), GNOME Shell 50, and bash, zsh or fish.
 
 ```sh
 scripts/install.sh --dry-run      # see what it will do

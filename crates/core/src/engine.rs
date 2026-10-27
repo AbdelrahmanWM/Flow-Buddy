@@ -98,6 +98,27 @@ impl Engine {
         })
     }
 
+    /// Something in VS Code's UI.
+    pub fn on_ui(&mut self, ev: &crate::rules::vscode::UiAction) -> Vec<RuleEvent> {
+        let mut out = Vec::new();
+        // These rules need the companion; it's reporting if this arrives.
+        let editor = std::mem::replace(&mut self.editor_motions, true);
+        for rule in self.active(ContextKind::VsCodeVim) {
+            rule.on_ui(ev, &mut out);
+        }
+        self.editor_motions = editor;
+        out
+    }
+
+    /// A command the shell hook reported.
+    pub fn on_shell(&mut self, ev: &crate::rules::shell::ShellEvent) -> Vec<RuleEvent> {
+        let mut out = Vec::new();
+        for rule in self.active(ContextKind::Shell) {
+            rule.on_shell(ev, &mut out);
+        }
+        out
+    }
+
     /// An operator reported by an editor plugin.
     pub fn on_operator(&mut self, context: ContextKind, ev: &OperatorEvent) -> Vec<RuleEvent> {
         let mut out = Vec::new();

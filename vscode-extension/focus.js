@@ -74,27 +74,28 @@ class FocusReporter {
         }));
         sub(w.onDidChangeActiveTerminal(t => {
             if (t)
-                this._left();
+                this._left('terminal');
         }));
         sub(w.onDidChangeTerminalState(t => {
             if (t.state.isInteractedWith)
-                this._left();
+                this._left('terminal');
         }));
         if (w.onDidStartTerminalShellExecution)
-            sub(w.onDidStartTerminalShellExecution(() => this._left()));
+            sub(w.onDidStartTerminalShellExecution(() => this._left('terminal')));
         sub(w.tabGroups.onDidChangeTabs(e => {
             const tab = w.tabGroups.activeTabGroup.activeTab;
             const touched = [...e.opened, ...e.changed].includes(tab);
             if (touched && tab.isActive && isNonEditorTab(tab))
-                this._left();
+                this._left(tab.input instanceof vscode.TabInputTerminal ? 'terminal' : 'other');
         }));
         sub({dispose: () => clearTimeout(this._trailingId)});
     }
 
     // Send the current state again, e.g. after reconnecting.
     resend() {
+        const panel = this._sentPanel ?? 'other';
         this._sent = null;
-        this._report(this.focused);
+        this._report(this.focused, panel);
     }
 
     _activity(editor) {
@@ -107,9 +108,11 @@ class FocusReporter {
             this._beat();
     }
 
-    _left() {
+    // `panel`: what took focus, 'terminal' or 'other'. The daemon coaches
+    // Claude Code's Vim mode when it runs in the terminal.
+    _left(panel = 'other') {
         this._inside = false;
-        this._report(false);
+        this._report(false, panel);
     }
 
     // Throttled: one beat now, and one more at the end of the interval if
@@ -128,17 +131,20 @@ class FocusReporter {
         }, wait);
     }
 
-    _report(focused) {
+    _report(focused, panel = 'other') {
         if (!focused) {
             clearTimeout(this._trailingId);
             this._trailingId = null;
-            if (this._sent === false)
+            if (this._sent === false && this._sentPanel === panel)
                 return;
         } else {
             this._lastBeat = Date.now();
         }
         this._sent = focused;
-        this._link.send({type: 'editor_focus', focused});
+        this._sentPanel = focused ? null : panel;
+        this._link.send(focused
+            ? {type: 'editor_focus', focused}
+            : {type: 'editor_focus', focused, panel});
     }
 }
 

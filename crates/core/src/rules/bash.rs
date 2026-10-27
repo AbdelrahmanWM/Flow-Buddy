@@ -6,7 +6,8 @@ use crate::rule::Rule;
 use crate::rules::repeat::{RepeatRule, RepeatSpec};
 use crate::vim::{Command, InsertKey, Step, VimEvent};
 
-const BASH: &[ContextKind] = &[ContextKind::BashVi];
+/// Shell vi-mode, and Claude Code's prompt, which edits the same way.
+const BASH: &[ContextKind] = &[ContextKind::BashVi, ContextKind::ClaudeVim];
 
 fn insert_key(step: &Step) -> Option<InsertKey> {
     match step.event {

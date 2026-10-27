@@ -130,7 +130,12 @@ enum RulesCmd {
 #[derive(Subcommand)]
 enum CtxCmd {
     /// A command started; pass only its name.
-    Fg { command: String },
+    Fg {
+        command: String,
+        /// cd-up, reused-arg or one-word-changed, worked out by the hook.
+        #[arg(long)]
+        shape: Option<String>,
+    },
     /// The prompt is back.
     Prompt {
         #[arg(long, action = clap::ArgAction::Set, default_value_t = false)]
@@ -210,6 +215,12 @@ fn print_status(s: &Status) {
     println!("  focused:   {}", s.app.as_deref().unwrap_or("nothing"));
     println!("  context:   {}", context_line(s));
     println!("  keyboards: {}", s.keyboards);
+    if let Some(layout) = &s.layout {
+        match &s.layout_note {
+            Some(note) => println!("  layout:    {layout} ({note})"),
+            None => println!("  layout:    {layout}"),
+        }
+    }
     if s.keyboards == 0 {
         println!("             no readable keyboard: run scripts/install.sh --with-udev,");
         println!("             or see docs/privacy.md#keyboard-access");
@@ -544,13 +555,15 @@ fn rules(cmd: RulesCmd) -> anyhow::Result<()> {
 fn ctx(event: CtxCmd, shell_pid: Option<u32>, tty: Option<String>) -> anyhow::Result<()> {
     let shell_pid = shell_pid.unwrap_or_else(parent_pid);
     let msg = match event {
-        CtxCmd::Fg { command } => ClientMsg::Ctx {
+        CtxCmd::Fg { command, shape } => ClientMsg::Ctx {
             event: CtxEvent::Fg,
             // Defence in depth: only ever send a basename.
             command: Some(command.rsplit('/').next().unwrap_or_default().to_string()),
             vi_mode: None,
             shell_pid,
             tty,
+            // Only known shapes; anything else is dropped, never sent.
+            shape: shape.and_then(|s| serde_json::from_value(serde_json::Value::String(s)).ok()),
         },
         CtxCmd::Prompt { vi_mode } => ClientMsg::Ctx {
             event: CtxEvent::Prompt,
@@ -558,6 +571,7 @@ fn ctx(event: CtxCmd, shell_pid: Option<u32>, tty: Option<String>) -> anyhow::Re
             vi_mode: Some(vi_mode),
             shell_pid,
             tty,
+            shape: None,
         },
     };
     Client::connect(ClientKind::BashHook)?.send(&msg)
@@ -612,6 +626,8 @@ mod status_tests {
             app: Some("code_code".into()),
             confident,
             mode_from_editor: false,
+            layout: None,
+            layout_note: None,
             keyboards: 1,
             clients: vec![],
         }

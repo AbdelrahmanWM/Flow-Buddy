@@ -143,6 +143,19 @@ impl Memory {
         self.record(ctx, rule_id, event, now_ms);
     }
 
+    /// Write typing accuracy counts (opt-in).
+    pub fn typing(&self, counts: crate::typing::Counts, now_ms: u64) {
+        let Some(store) = &self.store else { return };
+        let today = day(now_ms);
+        let (contexts, pairs) = counts;
+        for (ctx, typed, corrections) in contexts {
+            let _ = store.add_typing(&today, ctx.as_str(), typed, corrections);
+        }
+        for (pair, n) in pairs {
+            let _ = store.add_typo_pair(&today, &pair, n);
+        }
+    }
+
     /// Count minutes of typing in each supported context.
     pub fn active(&mut self, ctx: ContextKind, now_ms: u64) {
         let minute = now_ms / 60_000;

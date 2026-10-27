@@ -30,6 +30,38 @@ pub enum CtxEvent {
     Prompt,
 }
 
+/// UI events an editor reports for the VS Code pack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiEvent {
+    /// A file opened in a new tab (not which file).
+    FileOpened,
+}
+
+/// What has focus inside an editor window when the text editor doesn't.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Panel {
+    /// The integrated terminal.
+    Terminal,
+    /// Anything else: a chat, the sidebar, a webview.
+    Other,
+}
+
+/// The shape of a command line, from the shell hook.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CommandShape {
+    /// Exactly `cd ..`.
+    CdUp,
+    /// `cd ../..` or further up in one go: the better way.
+    CdUpMany,
+    /// Its last argument is the previous command's long last argument.
+    ReusedArg,
+    /// The previous command with one word changed.
+    OneWordChanged,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NudgeAction {
@@ -101,6 +133,10 @@ pub enum ClientMsg {
         shell_pid: u32,
         #[serde(default)]
         tty: Option<String>,
+        /// What kind of command line it was, worked out by the hook from a
+        /// fixed list; the command line itself is never sent.
+        #[serde(default)]
+        shape: Option<CommandShape>,
     },
     NudgeResponse {
         nudge_id: String,
@@ -108,15 +144,30 @@ pub enum ClientMsg {
     },
     /// A mouse button was pressed or the touchpad tapped. No position, no target.
     PointerClick,
+    /// The extension: the keyboard layout now in use, as xkb names (`de`,
+    /// `nodeadkeys`); no layout for input methods such as IBus.
+    InputSource {
+        #[serde(default)]
+        layout: Option<String>,
+        #[serde(default)]
+        variant: Option<String>,
+    },
     /// Editor clients: whether a text editor has keyboard focus (as opposed
     /// to a terminal, chat or other panel inside the same window).
-    EditorFocus { focused: bool },
+    EditorFocus {
+        focused: bool,
+        /// When not focused: what has focus instead, if known.
+        #[serde(default)]
+        panel: Option<Panel>,
+    },
     /// Editor clients: the editor's real mode.
     EditorMode { mode: EditorMode },
     /// Editor clients: a finished movement and facts about where it ended.
     Motion(Motion),
     /// Editor clients: an operator's range matched these text objects.
     Operator(OperatorReport),
+    /// Editor clients: something happened in the editor's UI, by name.
+    EditorEvent { event: UiEvent },
     Command {
         #[serde(default)]
         id: Option<u64>,
@@ -126,16 +177,18 @@ pub enum ClientMsg {
 }
 
 impl ClientMsg {
-    pub const TYPES: [&'static str; 10] = [
+    pub const TYPES: [&'static str; 12] = [
         "hello",
         "focus",
         "ctx",
         "nudge_response",
         "pointer_click",
+        "input_source",
         "editor_focus",
         "editor_mode",
         "motion",
         "operator",
+        "editor_event",
         "command",
     ];
 }
@@ -222,6 +275,12 @@ pub struct Status {
     /// Whether the mode comes from an editor plugin rather than a guess.
     #[serde(default)]
     pub mode_from_editor: bool,
+    /// The keyboard layout keys are read with, and why, if it isn't the one
+    /// in use.
+    #[serde(default)]
+    pub layout: Option<String>,
+    #[serde(default)]
+    pub layout_note: Option<String>,
     pub keyboards: usize,
     pub clients: Vec<ClientKind>,
 }
@@ -338,11 +397,15 @@ mod tests {
             r#"{"v":0,"type":"hello","client":"gnome-extension","client_version":"0.1.0"}"#,
             r#"{"v":0,"type":"focus","app_id":"code_code","title":"main.rs - Flow-Buddy - Visual Studio Code","pid":41230}"#,
             r#"{"v":0,"type":"ctx","event":"fg","command":"vim","shell_pid":51002,"tty":"/dev/pts/3"}"#,
+            r#"{"v":0,"type":"ctx","event":"fg","command":"cd","shell_pid":51002,"shape":"cd-up"}"#,
             r#"{"v":0,"type":"ctx","event":"prompt","vi_mode":true,"shell_pid":51002,"tty":"/dev/pts/3"}"#,
             r#"{"v":0,"type":"nudge_response","nudge_id":"n-1729740000-3","action":"dismiss"}"#,
             r#"{"v":0,"type":"pointer_click"}"#,
+            r#"{"v":0,"type":"input_source","layout":"de","variant":"nodeadkeys"}"#,
             r#"{"v":0,"type":"hello","client":"editor","client_version":"0.1.0","editor":"vim","pid":61234}"#,
             r#"{"v":0,"type":"editor_focus","focused":false}"#,
+            r#"{"v":0,"type":"editor_focus","focused":false,"panel":"terminal"}"#,
+            r#"{"v":0,"type":"editor_event","event":"file_opened"}"#,
             r#"{"v":0,"type":"operator","op":"delete","at_ms":1729740000500,"objects":["i(","a("]}"#,
             r#"{"v":0,"type":"editor_mode","mode":"visual_line"}"#,
             r#"{"v":0,"type":"motion","start_ms":1729740000000,"end_ms":1729740000900,"moves":12,"mode":"normal","lines":12,"cols":0,"facts":{"paragraph_hops":2,"window_lines":40}}"#,

@@ -7,6 +7,12 @@ use crate::rules::repeat::{RepeatRule, RepeatSpec};
 use crate::vim::{Command, InsertKey, Step, VimEvent};
 
 const VIM: &[ContextKind] = &[ContextKind::TerminalVim, ContextKind::VsCodeVim];
+/// Rules about editing one line, which also apply to Claude Code's prompt.
+const LINE: &[ContextKind] = &[
+    ContextKind::TerminalVim,
+    ContextKind::VsCodeVim,
+    ContextKind::ClaudeVim,
+];
 
 /// The command, if this step completed a Normal/Visual-mode command.
 /// Operator commands such as `dw` complete from OpPending.
@@ -86,7 +92,7 @@ pub fn repeat_hl() -> RepeatRule {
         id: "vim.repeat-hl",
         description: "Pressing h or l many times instead of a word or find motion",
         title: "Move by word",
-        contexts: VIM,
+        contexts: LINE,
         threshold: 5,
         unit: |s| uncounted(s, &['h', 'l']).and_then(|c| c.head()).map(token),
         adopted: |s| {
@@ -116,7 +122,7 @@ pub fn repeat_x() -> RepeatRule {
         id: "vim.repeat-x",
         description: "Deleting character by character with x",
         title: "Delete by word",
-        contexts: VIM,
+        contexts: LINE,
         threshold: 4,
         unit: |s| uncounted(s, &['x']).map(|_| "x"),
         adopted: |s| {
@@ -162,7 +168,7 @@ pub fn arrows_insert() -> RepeatRule {
         id: "vim.arrows-insert",
         description: "Moving around with arrow keys while in Insert mode",
         title: "Leave Insert to move",
-        contexts: VIM,
+        contexts: LINE,
         threshold: 4,
         unit: |s| matches!(insert_key(s), Some(InsertKey::Arrow(_))).then_some("arrow"),
         adopted: |s| matches!(insert_key(s), Some(InsertKey::CtrlO)),
@@ -214,7 +220,7 @@ pub fn backspace_insert() -> RepeatRule {
         id: "vim.backspace-streak",
         description: "Holding Backspace in Insert mode to delete words",
         title: "Delete by word",
-        contexts: VIM,
+        contexts: LINE,
         threshold: 6,
         unit: |s| matches!(insert_key(s), Some(InsertKey::Backspace)).then_some("BS"),
         adopted: |s| {

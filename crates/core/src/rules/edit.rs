@@ -880,11 +880,11 @@ pub fn undo_run() -> RepeatRule {
         message: |unit, n| {
             if unit == "u" {
                 format!(
-                    "`u` {n} times. `{n}u` undoes that many at once, and `:earlier 1m` goes back to how the file was a minute ago."
+                    "`u` {n} times. `{n}u` undoes that many at once. `:earlier 1m` goes back to how the file was a minute ago."
                 )
             } else {
                 format!(
-                    "`Ctrl-r` {n} times. `{n}Ctrl-r` redoes that many, `:later 1m` a minute's worth."
+                    "`Ctrl-r` {n} times. `{n}Ctrl-r` redoes that many. `:later 1m` redoes a minute's worth."
                 )
             }
         },
@@ -1547,7 +1547,7 @@ mod tests {
         assert_eq!(
             texts(&ev),
             [
-                "u 7 times. 7u undoes that many at once, and :earlier 1m goes back to how the file was a minute ago."
+                "u 7 times. 7u undoes that many at once. :earlier 1m goes back to how the file was a minute ago."
             ]
         );
         assert!(findings(&vim(undo_run(), "uuuu<Esc>")).is_empty());

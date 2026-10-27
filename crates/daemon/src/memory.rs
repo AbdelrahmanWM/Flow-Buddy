@@ -399,9 +399,13 @@ impl Memory {
     }
 
     /// The day's "something new", if anything's left to learn.
-    pub fn pick_something_new(&self, now_ms: u64) -> Option<&'static curriculum::Item> {
+    pub fn pick_something_new(
+        &self,
+        ctx: ContextKind,
+        now_ms: u64,
+    ) -> Option<&'static curriculum::Item> {
         let progress = self.progress()?;
-        curriculum::pick(&progress, &self.known(), now_ms / 1000)
+        curriculum::pick_for(&progress, &self.known(), now_ms / 1000, ctx)
     }
 
     pub fn learn_shown(&self, item_id: &str, now_ms: u64) {

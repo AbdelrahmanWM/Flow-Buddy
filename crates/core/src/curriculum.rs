@@ -794,9 +794,25 @@ pub fn pick(
     known: &Known,
     now_s: u64,
 ) -> Option<&'static Item> {
+    pick_for(
+        progress,
+        known,
+        now_s,
+        crate::context::ContextKind::TerminalVim,
+    )
+}
+
+/// [`pick`], skipping what doesn't work in `ctx` (no `:g` in vscodevim).
+pub fn pick_for(
+    progress: &dyn Fn(&str) -> Progress,
+    known: &Known,
+    now_s: u64,
+    ctx: crate::context::ContextKind,
+) -> Option<&'static Item> {
     CURRICULUM.iter().find(|item| {
         let p = progress(item.id);
         known.ready(item.id)
+            && crate::support::supports_all(ctx, &tip_text(item))
             && p.uses < KNOWN_USES
             && !p.learned
             && p.times_shown < MAX_SHOWINGS

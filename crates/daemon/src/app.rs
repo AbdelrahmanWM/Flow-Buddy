@@ -518,7 +518,17 @@ impl App {
         {
             return;
         }
-        let text = match self.personal_tips.get(f.rule_id) {
+        // The model's sentence too must only name what works where the
+        // habit was seen.
+        let ctx = self
+            .memory
+            .finding_context(f.rule_id)
+            .unwrap_or(self.resolved.kind);
+        let text = match self
+            .personal_tips
+            .get(f.rule_id)
+            .filter(|p| flowbuddy_core::support::supports_all(ctx, p))
+        {
             Some(personal) => format!("{} {personal}", f.text),
             None => f.text.clone(),
         };
@@ -618,7 +628,7 @@ impl App {
         {
             return;
         }
-        let Some(item) = self.memory.pick_something_new(now_ms) else {
+        let Some(item) = self.memory.pick_something_new(self.resolved.kind, now_ms) else {
             return;
         };
         self.state.last_learn_day = Some(today);

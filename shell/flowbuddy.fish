@@ -78,6 +78,19 @@ function __flowbuddy_preexec --on-event fish_preexec
     end
 end
 
+# fish says when the vi-mode switches: report it, so Flow Buddy needn't
+# guess the mode from keys.
+function __flowbuddy_mode --on-variable fish_bind_mode
+    switch $fish_bind_mode
+        case default
+            __flowbuddy_send mode normal
+        case insert replace replace_one
+            __flowbuddy_send mode insert
+        case visual
+            __flowbuddy_send mode visual
+    end
+end
+
 function __flowbuddy_prompt --on-event fish_prompt
     set -l vi false
     test "$fish_key_bindings" = fish_vi_key_bindings; and set vi true

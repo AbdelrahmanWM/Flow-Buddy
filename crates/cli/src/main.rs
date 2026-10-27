@@ -5,6 +5,7 @@ mod review;
 mod tips;
 
 use clap::{Parser, Subcommand};
+use flowbuddy_core::editor::EditorMode;
 use flowbuddy_core::ipc::{ClientKind, ClientMsg, Command, CtxEvent, RuleAction, RuleInfo, Status};
 use flowbuddy_core::policy::CoachingMode;
 
@@ -211,6 +212,8 @@ enum CtxCmd {
         #[arg(long, action = clap::ArgAction::Set, default_value_t = false)]
         vi_mode: bool,
     },
+    /// The vi-mode switched: normal, insert or visual.
+    Mode { mode: String },
 }
 
 fn main() {
@@ -1005,6 +1008,21 @@ fn ctx(event: CtxCmd, shell_pid: Option<u32>, tty: Option<String>) -> anyhow::Re
             tty,
             // Only known shapes; anything else is dropped, never sent.
             shape: shape.and_then(|s| serde_json::from_value(serde_json::Value::String(s)).ok()),
+            mode: None,
+        },
+        CtxCmd::Mode { mode } => ClientMsg::Ctx {
+            event: CtxEvent::Mode,
+            command: None,
+            vi_mode: Some(true),
+            shell_pid,
+            tty,
+            shape: None,
+            mode: Some(match mode.as_str() {
+                "normal" => EditorMode::Normal,
+                "visual" => EditorMode::Visual,
+                "replace" => EditorMode::Replace,
+                _ => EditorMode::Insert,
+            }),
         },
         CtxCmd::Prompt { vi_mode } => ClientMsg::Ctx {
             event: CtxEvent::Prompt,
@@ -1013,6 +1031,7 @@ fn ctx(event: CtxCmd, shell_pid: Option<u32>, tty: Option<String>) -> anyhow::Re
             shell_pid,
             tty,
             shape: None,
+            mode: None,
         },
     };
     Client::connect(ClientKind::BashHook)?.send(&msg)
@@ -1022,7 +1041,6 @@ fn parent_pid() -> u32 {
     std::os::unix::process::parent_id()
 }
 
-/// Local HH:MM for a unix timestamp, via `date` to avoid a timezone dependency.
 fn tips_history(search: &str, limit: usize, explain: bool) -> anyhow::Result<()> {
     let Some(store) = open_db()? else {
         println!("No tips yet.");
@@ -1075,6 +1093,7 @@ fn format_day_time(unix: u64) -> String {
         .unwrap_or_else(|| unix.to_string())
 }
 
+/// Local HH:MM for a unix timestamp, via `date` to avoid a timezone dependency.
 fn format_time(unix: u64) -> String {
     std::process::Command::new("date")
         .args(["-d", &format!("@{unix}"), "+%H:%M"])

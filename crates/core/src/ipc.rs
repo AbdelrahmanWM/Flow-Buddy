@@ -28,6 +28,8 @@ pub enum CtxEvent {
     Fg,
     /// The prompt is back.
     Prompt,
+    /// The shell's vi-mode switched (zsh and fish say so; bash can't).
+    Mode,
 }
 
 /// UI events an editor reports for the VS Code pack.
@@ -201,6 +203,9 @@ pub enum ClientMsg {
         /// fixed list; the command line itself is never sent.
         #[serde(default)]
         shape: Option<CommandShape>,
+        /// With [`CtxEvent::Mode`]: the mode it switched to.
+        #[serde(default)]
+        mode: Option<crate::editor::EditorMode>,
     },
     NudgeResponse {
         nudge_id: String,

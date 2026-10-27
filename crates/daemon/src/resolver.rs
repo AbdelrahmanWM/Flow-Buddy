@@ -264,6 +264,13 @@ impl Resolver {
         self.focus.app_id.as_deref()
     }
 
+    /// The shell did something (its vi-mode switched): it's in use.
+    pub fn shell_active(&mut self, shell_pid: u32, now_ms: u64) {
+        if let Some(s) = self.shells.get_mut(&shell_pid) {
+            s.updated_ms = now_ms;
+        }
+    }
+
     pub fn shell_report(
         &mut self,
         shell_pid: u32,

@@ -1214,12 +1214,30 @@ impl App {
             }
             ClientMsg::Focus { app_id, pid, .. } => self.set_focus(app_id, pid, now_ms),
             ClientMsg::Ctx {
+                event: CtxEvent::Mode,
+                mode,
+                shell_pid,
+                ..
+            } => {
+                // The shell said which vi-mode it's in: better than our guess.
+                // Only a disagreement resets, so keys typed meanwhile count.
+                self.resolver.shell_active(shell_pid, now_ms);
+                self.update_context(None, now_ms);
+                if let Some(m) = mode.and_then(|m| m.vim_mode())
+                    && self.resolved.shell_pid == Some(shell_pid)
+                    && (!self.tracker.confident() || !self.tracker.mode().same_kind(m))
+                {
+                    self.tracker.reset_known(m);
+                }
+            }
+            ClientMsg::Ctx {
                 event,
                 command,
                 vi_mode,
                 shell_pid,
                 shape,
                 tty,
+                ..
             } => {
                 // Two habits are plain from the command's name alone.
                 let named = match (event, command.as_deref()) {
@@ -1246,7 +1264,7 @@ impl App {
                         };
                         (ShellState::Fg(command), known)
                     }
-                    CtxEvent::Prompt => (
+                    CtxEvent::Prompt | CtxEvent::Mode => (
                         ShellState::Prompt {
                             vi: vi_mode.unwrap_or(false),
                         },
@@ -1716,6 +1734,7 @@ pub(crate) mod tests {
                 shell_pid,
                 tty: None,
                 shape: None,
+                mode: None,
             },
             0,
         );
@@ -2256,6 +2275,7 @@ pub(crate) mod tests {
                     shell_pid: 200,
                     tty: None,
                     shape: Some(CommandShape::CdUp),
+                    mode: None,
                 },
                 at,
             )
@@ -2609,6 +2629,7 @@ pub(crate) mod tests {
                 shell_pid: 200,
                 tty: None,
                 shape: None,
+                mode: None,
             },
             0,
         );
@@ -3127,5 +3148,36 @@ pub(crate) mod tests {
         let n = nudges(&mut ext);
         assert_eq!(n.len(), 1, "{n:?}");
         assert_eq!(n[0].rule_id, "vim.reselect");
+    }
+
+    #[test]
+    fn shells_say_their_vi_mode() {
+        let mut app = test_app(CoachingMode::Active);
+        let _rx = connect(&mut app, 1);
+        focus(&mut app, "org.gnome.Terminal", 100);
+        ctx(&mut app, CtxEvent::Prompt, None, 200);
+        assert_eq!(app.context().kind, ContextKind::BashVi);
+        assert_eq!(app.mode_known(), (VimMode::Insert, true));
+        let mode = |app: &mut App, m, pid| {
+            send(
+                app,
+                1,
+                ClientMsg::Ctx {
+                    event: CtxEvent::Mode,
+                    command: None,
+                    vi_mode: Some(true),
+                    shell_pid: pid,
+                    tty: None,
+                    shape: None,
+                    mode: Some(m),
+                },
+                0,
+            )
+        };
+        mode(&mut app, EditorMode::Normal, 200);
+        assert_eq!(app.mode_known(), (VimMode::Normal, true));
+        // Another shell's switch doesn't count here.
+        mode(&mut app, EditorMode::Insert, 300);
+        assert_eq!(app.mode_known(), (VimMode::Normal, true));
     }
 }

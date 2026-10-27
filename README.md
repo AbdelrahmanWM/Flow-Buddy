@@ -33,6 +33,7 @@ Flow Buddy is a local companion that helps you get better at your tools continuo
 ```
 
 - **Coaching modes:** `off`, `passive` (summaries only), `balanced` (occasional batched tips) and `active` (real-time nudges).
+- **Tips you can keep:** the top-bar menu lists recent tips and can keep one on screen while you practise it. `Super+Alt+T` keeps the current tip, `Super+Alt+D` dismisses it, `Super+Alt+N` marks it not helpful (change them with `gsettings` under `org.gnome.shell.extensions.flowbuddy`).
 - **Mistake memory:** remembers which patterns you repeat and how each habit is progressing (new → improving → mastered), so coaching adapts over time.
 
 Details, including the IPC protocol and the context model, are in [docs/architecture.md](docs/architecture.md).

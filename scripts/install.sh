@@ -125,6 +125,13 @@ for f in "$repo"/gnome-extension/*.js "$repo"/gnome-extension/*.json "$repo"/gno
     [[ -e $f ]] || continue
     run install -m644 "$f" "$ext_dir/${f##*/}"
 done
+# Its settings: the shortcuts for the current tip.
+run install -Dm644 "$repo"/gnome-extension/schemas/*.gschema.xml -t "$ext_dir/schemas"
+if command -v glib-compile-schemas >/dev/null; then
+    run glib-compile-schemas "$ext_dir/schemas"
+else
+    echo "    glib-compile-schemas is missing: the tip shortcuts won't work"
+fi
 # A shell that hasn't seen the extension yet refuses to enable it, so also
 # add it to the list GNOME reads at login.
 if ! { command -v gnome-extensions >/dev/null && run gnome-extensions enable "$uuid" 2>/dev/null; }; then

@@ -2,7 +2,10 @@
   "uuid": "flowbuddy@abdelrahmanwm.github.io",
   "name": "Flow Buddy",
   "description": "Reports the focused app to the local Flow Buddy daemon and shows its coaching hints in the top bar. Nothing leaves your machine.",
-  "shell-version": ["50"],
+  "shell-version": [
+    "50"
+  ],
   "url": "https://github.com/AbdelrahmanWM/Flow-Buddy",
-  "version-name": "0.1.0"
+  "version-name": "0.1.0",
+  "settings-schema": "org.gnome.shell.extensions.flowbuddy"
 }

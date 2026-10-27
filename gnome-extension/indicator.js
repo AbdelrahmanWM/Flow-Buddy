@@ -192,6 +192,15 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._link.send(args ? {type: 'command', name, args} : {type: 'command', name});
     }
 
+    // For the shortcuts.
+    keepTip() {
+        this._toggleKeep();
+    }
+
+    respond(action) {
+        this._respond(action);
+    }
+
     _respond(action) {
         if (!this._nudge)
             return;

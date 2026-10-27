@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.flowbuddy" path="/org/gnome/shell/extensions/flowbuddy/">
+    <key name="keep-tip" type="as">
+      <default><![CDATA[['<Super><Alt>t']]]></default>
+      <summary>Keep the current tip on screen (again: stop keeping it)</summary>
+    </key>
+    <key name="dismiss-tip" type="as">
+      <default><![CDATA[['<Super><Alt>d']]]></default>
+      <summary>Dismiss the current tip</summary>
+    </key>
+    <key name="tip-not-helpful" type="as">
+      <default><![CDATA[['<Super><Alt>n']]]></default>
+      <summary>Mark the current tip as not helpful</summary>
+    </key>
+  </schema>
+</schemalist>

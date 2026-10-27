@@ -16,7 +16,7 @@ function load() {
     return module.exports;
 }
 
-const {computeFacts, rested, charObjects, lineObjects, Cursor, wordForward, wordBackward, wordEndForward} = load();
+const {computeFacts, rangeFacts, rested, charObjects, lineObjects, Cursor, wordForward, wordBackward, wordEndForward} = load();
 
 // Every field of MotionFacts; the daemon rejects anything else.
 const FIELDS = [
@@ -199,6 +199,16 @@ objs('two paragraphs', lineObjects(['a', '', 'b'], true, true), []);
 
 // Nothing at all for a move that goes nowhere.
 facts('no move', words, [0, 3], [0, 3], {}, {});
+
+// Operator ranges, as the Vim plugin's tests (0-based here).
+check('dw over call', rangeFacts('call(foo, bar)', 0, 3), {cols: 3, words: 1,
+    facts: {word_end_hops: 1, find_hops: 2, till_hops: 1, line_end: false}});
+check('dt, from f', rangeFacts('call(foo, bar)', 5, 7), {cols: 2, words: 1,
+    facts: {word_end_hops: 1, find_hops: 2, till_hops: 1, line_end: false}});
+check('d$ and f)', rangeFacts('call(foo, bar)', 5, 13), {cols: 8, words: 4,
+    facts: {word_end_hops: 4, find_hops: 1, line_end: true}});
+check('d2w', rangeFacts('one two three', 0, 7).words, 2);
+check('outside the line', {r: rangeFacts('abc', 4, 5)}, {r: null});
 
 print(`${passed} passed, ${failed} failed`);
 if (failed)

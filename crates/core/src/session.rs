@@ -55,6 +55,8 @@ pub enum Entry {
         t: u64,
         report: OperatorReport,
         keys_used: u32,
+        #[serde(default)]
+        op_keys: u32,
     },
     /// In-progress streaks were dropped (a click, a VS Code shortcut).
     Reset {
@@ -346,12 +348,16 @@ pub fn replay(entries: &[Entry]) -> Vec<Finding> {
                 },
             )),
             Entry::Operator {
-                report, keys_used, ..
+                report,
+                keys_used,
+                op_keys,
+                ..
             } => keep(engine.on_operator(
                 context,
                 &OperatorEvent {
                     report: report.clone(),
                     keys_used: *keys_used,
+                    op_keys: *op_keys,
                 },
             )),
             Entry::Reset { .. } => engine.reset(),

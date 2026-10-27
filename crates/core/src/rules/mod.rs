@@ -20,6 +20,7 @@ pub const PRECEDENCE: &[&str] = &[
     "vim.delete-then-insert",
     "vim.visual-operator",
     "motion.text-object",
+    "motion.operator",
     "vim.shorthand",
     "vim.w-then-q",
 ];

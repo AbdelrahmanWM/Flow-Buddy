@@ -17,7 +17,10 @@ use crate::vim::{Command, Step};
 #[derive(Clone, Debug, PartialEq)]
 pub struct OperatorEvent {
     pub report: OperatorReport,
+    /// Keys for the operator and anything that moved into place first.
     pub keys_used: u32,
+    /// Keys for the operator command alone (`d3w`: 3).
+    pub op_keys: u32,
 }
 
 /// A movement plus the keys the user pressed to make it.
@@ -882,6 +885,124 @@ impl Rule for TextObjectRule {
     fn reset(&mut self) {}
 }
 
+/// An operator whose motion took more keys than one that covers the same
+/// range exactly: `d4l` where `de` does it. Needs `[text] shapes`.
+#[derive(Default)]
+pub struct OperatorMotionRule {
+    known: Known,
+}
+
+impl OperatorMotionRule {
+    const ID: &'static str = "motion.operator";
+    const MIN_SAVING: u32 = 2;
+}
+
+/// Ways to cover an operator's range, as (keys, cost, skill), best first.
+pub fn range_plans(
+    op: crate::editor::Operator,
+    range: &crate::editor::OperatorRange,
+) -> Vec<(String, u32, &'static str)> {
+    use crate::editor::Operator;
+    let o = op.key();
+    let f = &range.facts;
+    // `motion` takes `cost` keys (`t<char>`: 2), plus a count if n > 1.
+    let counted = |n: u32, motion: &str, cost: u32| {
+        if n == 1 {
+            (format!("{o}{motion}"), 1 + cost)
+        } else {
+            (format!("{o}{n}{motion}"), 1 + digits(n) + cost)
+        }
+    };
+    let mut out = Vec::new();
+    if f.line_end {
+        match op {
+            Operator::Delete => out.push(("D".to_string(), 1, "d-to-end")),
+            Operator::Change => out.push(("C".to_string(), 1, "d-to-end")),
+            Operator::Yank => out.push((format!("{o}$"), 2, "line-ends")),
+        }
+    }
+    // `cw` works like `ce`, so for a change the word-start count is left out.
+    if let Some(n) = range
+        .words
+        .filter(|n| *n <= GLANCE && op != Operator::Change)
+    {
+        let (k, c) = counted(n, "w", 1);
+        out.push((k, c, "word"));
+    }
+    if let Some(n) = f.word_end_hops.filter(|n| *n <= GLANCE) {
+        let (k, c) = counted(n, "e", 1);
+        out.push((k, c, "word-end"));
+    }
+    if let Some(n) = f.till_hops.filter(|n| *n <= GLANCE) {
+        let (k, c) = counted(n, "t<char>", 2);
+        out.push((k, c, "till"));
+    }
+    if let Some(n) = f.find_hops.filter(|n| *n <= GLANCE) {
+        let (k, c) = counted(n, "f<char>", 2);
+        out.push((k, c, "find"));
+    }
+    // Cheapest first; on a tie the earlier (simpler) one.
+    out.sort_by_key(|(_, c, _)| *c);
+    out
+}
+
+impl Rule for OperatorMotionRule {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "An operator with a longer motion than one that covers the same text (d4l for de)"
+    }
+
+    fn title(&self) -> &'static str {
+        "A shorter motion"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn needs_editor(&self) -> bool {
+        true
+    }
+
+    fn on_step(&mut self, _step: &Step, _out: &mut Vec<RuleEvent>) {}
+
+    fn on_operator(&mut self, ev: &OperatorEvent, out: &mut Vec<RuleEvent>) {
+        let Some(range) = &ev.report.range else {
+            return;
+        };
+        let used = ev.op_keys;
+        let Some((keys, cost, _)) = range_plans(ev.report.op, range)
+            .into_iter()
+            .find(|(_, _, skill)| self.known.ready(skill))
+        else {
+            return;
+        };
+        if used == 0 || used < cost + Self::MIN_SAVING {
+            return;
+        }
+        out.push(RuleEvent::Finding(Finding {
+            rule_id: Self::ID,
+            title: "A shorter motion",
+            text: format!(
+                "That took {used} keys. {} covers the same text in {cost}.",
+                crate::glossary::mark(&keys)
+            ),
+            shape: Shape::repeat("keys for an operator's motion", used),
+            mode: VimMode::Normal,
+            at_ms: ev.report.at_ms,
+        }));
+    }
+
+    fn set_known(&mut self, known: &Known) {
+        self.known = known.clone();
+    }
+
+    fn reset(&mut self) {}
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
     let mut rules: Vec<Box<dyn Rule>> = Category::ALL
         .into_iter()
@@ -890,6 +1011,7 @@ pub fn all() -> Vec<Box<dyn Rule>> {
     rules.push(Box::new(ScrollRule::default()));
     rules.push(Box::new(MarkRule));
     rules.push(Box::new(TextObjectRule::default()));
+    rules.push(Box::new(OperatorMotionRule::default()));
     rules
 }
 
@@ -1177,6 +1299,7 @@ mod tests {
     fn text_objects_instead_of_positioning() {
         use crate::editor::{Operator, TextObject};
         let ev = |keys_used, objects: Vec<TextObject>| OperatorEvent {
+            op_keys: 2,
             report: OperatorReport {
                 op: Operator::Delete,
                 at_ms: 9,
@@ -1339,5 +1462,65 @@ mod tests {
         );
         // On the same line it's just a move along it.
         assert_ne!(plan(0, 5, f).0, Category::LastChange);
+    }
+
+    #[test]
+    fn shorter_motions_for_an_operator() {
+        use crate::editor::{Operator, OperatorRange};
+        let ev = |op, op_keys, range| OperatorEvent {
+            report: OperatorReport {
+                op,
+                at_ms: 9,
+                objects: vec![],
+                range: Some(range),
+            },
+            keys_used: op_keys,
+            op_keys,
+        };
+        // d6l over a word: de.
+        let word = OperatorRange {
+            cols: 5,
+            facts: MotionFacts {
+                word_end_hops: Some(1),
+                ..Default::default()
+            },
+            words: None,
+        };
+        let mut out = Vec::new();
+        OperatorMotionRule::default().on_operator(&ev(Operator::Delete, 3, word.clone()), &mut out);
+        assert!(out.is_empty(), "d6l is 3 keys, de is 2: not enough");
+        OperatorMotionRule::default().on_operator(&ev(Operator::Delete, 5, word), &mut out);
+        let f = crate::rules::testing::findings(&out);
+        assert_eq!(
+            crate::glossary::plain(&f[0].text),
+            "That took 5 keys. de covers the same text in 2."
+        );
+        // To the end of the line: D, or C for a change.
+        let to_end = OperatorRange {
+            cols: 20,
+            facts: MotionFacts {
+                line_end: true,
+                till_hops: Some(3),
+                ..Default::default()
+            },
+            words: Some(4),
+        };
+        let plans = range_plans(Operator::Change, &to_end);
+        assert_eq!(plans[0].0, "C");
+        assert!(
+            plans.iter().all(|p| !p.0.contains('w')),
+            "cw is ce: {plans:?}"
+        );
+        let keys: Vec<_> = range_plans(Operator::Delete, &to_end)
+            .into_iter()
+            .map(|p| p.0)
+            .collect();
+        assert_eq!(keys, ["D", "d4w", "d3t<char>"]);
+        // Without range facts ([text] shapes off), nothing.
+        let mut out = Vec::new();
+        let mut plain = ev(Operator::Delete, 9, OperatorRange::default());
+        plain.report.range = None;
+        OperatorMotionRule::default().on_operator(&plain, &mut out);
+        assert!(out.is_empty());
     }
 }

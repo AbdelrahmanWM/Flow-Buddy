@@ -707,7 +707,9 @@ impl App {
     /// command itself, plus the motions just before it that positioned the
     /// cursor (a text object works from anywhere inside, so it wouldn't
     /// need them). 0 if the operator isn't in the history.
-    fn keys_for_operator(&self, at_ms: u64) -> u32 {
+    /// Keys for the operator that made `at_ms`'s report, and with the
+    /// moves into place before it.
+    fn keys_for_operator(&self, at_ms: u64) -> (u32, u32) {
         let mut recent = self
             .commands
             .iter()
@@ -716,7 +718,7 @@ impl App {
         let Some(op) = recent.next().filter(|c| {
             c.kind == CmdKind::Operator && at_ms.saturating_sub(c.at_ms) <= MOTION_LEAD_MS
         }) else {
-            return 0;
+            return (0, 0);
         };
         let mut keys = op.keys;
         let mut next_at = op.at_ms;
@@ -727,7 +729,7 @@ impl App {
             keys += c.keys;
             next_at = c.at_ms;
         }
-        keys
+        (keys, op.keys)
     }
 
     /// The mappings for the current context: its editor's, else the config's.
@@ -1172,8 +1174,10 @@ impl App {
             // From an editor that isn't the current context.
             ClientMsg::Motion(_) => {}
             ClientMsg::Operator(report) if self.resolved.editor == Some(conn) => {
+                let (keys_used, op_keys) = self.keys_for_operator(report.at_ms);
                 let ev = OperatorEvent {
-                    keys_used: self.keys_for_operator(report.at_ms),
+                    keys_used,
+                    op_keys,
                     report,
                 };
                 self.record(now_ms, |t| {
@@ -1181,6 +1185,7 @@ impl App {
                         t,
                         report: ev.report.clone(),
                         keys_used: ev.keys_used,
+                        op_keys: ev.op_keys,
                     })
                 });
                 let events = self.engine.on_operator(self.resolved.kind, &ev);

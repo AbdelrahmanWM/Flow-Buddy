@@ -668,6 +668,7 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("motion.scroll", &["center"]),
     ("motion.mark", &["marks"]),
     ("motion.text-object", &["ciw"]),
+    ("motion.operator", &["word-end", "till", "d-to-end"]),
     ("bash.up-history", &[]),
     ("bash.backspace-clear", &[]),
     ("bash.left-streak", &[]),

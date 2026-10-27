@@ -27,6 +27,7 @@ Flow Buddy reads your keyboard. That is a lot of trust to ask for, so this docum
 | That a click happened (no position, no target) | GNOME Shell extension | Not kept: it only marks the Vim mode as unknown | Immediately |
 | Whether a VS Code editor has focus, vscodevim's mode, and cursor movements as deltas, counts and flags (never text, characters, file names or positions) | VS Code companion (`vscode-extension/`) | Memory only | Replaced on every report |
 | Which text objects (`iw`, `i(`, `ap`…) a delete, change or yank covered, by name only | Vim plugin, VS Code companion | Memory only | Used for one nudge, then dropped |
+| **Opt-in** (`[text] shapes = true`): for a delete, change or yank on one line, which motions would have covered it exactly (`e` presses, `w` presses, `f`/`t` presses, whether it ran to the line's end). The editor plugin works this out from the line and sends the counts. Never in files on the exclusion list (`.env`, keys, `.ssh/`, password stores…, plus `[text] exclude`), nor in anything that isn't a file buffer | Vim plugin, VS Code companion | Memory only | Used for one nudge, then dropped |
 | **Only while you record** (`flowbuddy record start`): what the rules see, step by step. That means Normal-mode commands (`5j`, `ciw`, with `x` for the character after `f`, `t` or `r`), Insert-mode keys as their kind only (`text`, `backspace`), searches without their pattern, `:` commands with every letter and digit after the name replaced (`:%s/x/x/x`), and the editors' motion and text-object reports | Daemon | A file in `~/.local/state/flowbuddy/recordings/` | Until you delete it; never sent anywhere |
 
 The key buffer is only filled while a supported context is focused (VS Code with Vim, Vim in a terminal, bash vi-mode). In any other app, keys are dropped as soon as they are read.
@@ -90,3 +91,19 @@ Off until you choose an AI in `config.toml`. The daemon never talks to it: it ha
 - **Check first:** `flowbuddy coach --prompt` prints exactly what would be sent, without sending anything.
 - **Keys:** read from an environment variable (`api_key_env`, default `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) or a command such as your keyring (`api_key_command`), never from `config.toml`, and never logged. The one-shot services don't see your shell's environment, so for them use `api_key_command`.
 - **When it runs:** only when you run `flowbuddy coach` or `flowbuddy review`, unless you also turn on `[ai] weekly`, in which case it writes the weekly note and runs the review once a week too. A review only proposes: nothing changes until you `flowbuddy review --apply`. With `[ai] tips = true`, a daily timer has it write one sentence per recent habit from the same export. Each sentence is checked (short, plain, only commands Flow Buddy knows) before the daemon adds it to tips.
+
+## Text features (`[text]`, all off by default)
+
+Two features look at your text, and only inside the editor plugins:
+
+- `shapes`: more counts about edits, as above. The text stays in the editor.
+- `ai_snippets`: a few lines around recent slow edits, kept in the plugin's memory and handed to `flowbuddy coach` when you ask it. See the AI section.
+
+Whatever the config says, the plugins never look at:
+
+- **Secret files.** The built-in list is in `crates/core/src/text.rs` (`NEVER`): `.env*`, `*.pem`, `*.key`, SSH and GPG keys, `.netrc`, `.git-credentials`, cloud credentials, password stores, `*.tfvars`, and files whose name says secret, password or credential. `[text] exclude` adds your own globs.
+- **Anything that isn't a file you're editing:** terminals, prompts, the Claude Code prompt, password prompts, untitled buffers, VS Code's panels, and Vim buffers encrypted with `:X`.
+- **Anywhere outside `[text] projects`,** for snippets.
+
+The daemon sends the plugins the list; they check paths themselves, so file paths are never sent.
+

@@ -173,6 +173,10 @@ enum RecordCmd {
     Stop,
     /// Whether a recording is going.
     Status,
+    /// Replay your recordings (all of them, or these files) with each
+    /// rule's threshold lower and higher: how many tips each would give,
+    /// and how many of them you marked dismissed or not helpful.
+    Tune { files: Vec<std::path::PathBuf> },
     /// Run a recording through the rules and count what they find. With
     /// --expect, compare with the counts you checked by hand.
     Check {
@@ -306,6 +310,31 @@ fn record(action: RecordCmd) -> anyhow::Result<()> {
         RecordCmd::Start => Some(true),
         RecordCmd::Stop => Some(false),
         RecordCmd::Status => None,
+        RecordCmd::Tune { files } => {
+            let files = if files.is_empty() {
+                let dir = flowbuddy_core::paths::recordings_dir();
+                let mut all: Vec<_> = std::fs::read_dir(&dir)
+                    .map(|d| d.flatten().map(|e| e.path()).collect())
+                    .unwrap_or_default();
+                all.retain(|p: &std::path::PathBuf| p.extension().is_some_and(|x| x == "jsonl"));
+                all.sort();
+                all
+            } else {
+                files
+            };
+            if files.is_empty() {
+                println!(
+                    "No recordings yet: set [record] keep_days = 7, or run flowbuddy record start."
+                );
+                return Ok(());
+            }
+            let sessions: Vec<_> = files
+                .iter()
+                .filter_map(|f| session::parse(&std::fs::read_to_string(f).ok()?).ok())
+                .collect();
+            print!("{}", tune_text(&session::tune(&sessions), sessions.len()));
+            return Ok(());
+        }
         RecordCmd::Check { file, expect } => {
             let text = std::fs::read_to_string(&file)?;
             let entries = session::parse(&text).map_err(anyhow::Error::msg)?;
@@ -350,6 +379,38 @@ fn record(action: RecordCmd) -> anyhow::Result<()> {
         _ => println!("not recording"),
     }
     Ok(())
+}
+
+fn tune_text(
+    rows: &[(String, u32, Vec<flowbuddy_core::session::TuneRow>)],
+    sessions: usize,
+) -> String {
+    let mut out = format!(
+        "Over {sessions} recording(s): tips each threshold would give, and how many you marked dismissed or not helpful.\n"
+    );
+    for (rule, now, values) in rows {
+        out.push_str(&format!("\n{rule}\n"));
+        for r in values {
+            let mark = if r.threshold == *now { "  (now)" } else { "" };
+            out.push_str(&format!(
+                "  {:>4}  {:>4} tips, {:>3} unwanted{mark}\n",
+                r.threshold, r.tips, r.unwanted
+            ));
+        }
+        let current = values.iter().find(|r| r.threshold == *now);
+        // Most tips unwanted, and a higher threshold drops them: say so.
+        if let Some(c) = current.filter(|c| c.unwanted * 2 > c.tips && c.tips >= 3)
+            && let Some(better) = values
+                .iter()
+                .find(|r| r.threshold > *now && r.unwanted * 2 <= r.tips.max(1))
+        {
+            out.push_str(&format!(
+                "  → {} of {} tips were unwanted; try [rules.\"{rule}\"] threshold = {} in config.toml\n",
+                c.unwanted, c.tips, better.threshold
+            ));
+        }
+    }
+    out
 }
 
 fn status(watch: bool) -> anyhow::Result<()> {
@@ -1341,6 +1402,32 @@ mod status_tests {
         let text = watch_text(0, "Try a count", "Try `7j`.", &["`7j`: a count".into()]);
         assert!(
             text.ends_with("  Try a count\n  Try 7j.\n    7j: a count\n\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn tune_table_and_suggestion() {
+        use flowbuddy_core::session::TuneRow;
+        let row = |threshold, tips, unwanted| TuneRow {
+            threshold,
+            tips,
+            unwanted,
+        };
+        let text = tune_text(
+            &[(
+                "vim.repeat-jk".into(),
+                5,
+                vec![row(4, 12, 8), row(5, 8, 6), row(6, 4, 1), row(10, 1, 0)],
+            )],
+            3,
+        );
+        assert!(
+            text.contains("     5     8 tips,   6 unwanted  (now)\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("try [rules.\"vim.repeat-jk\"] threshold = 6"),
             "{text}"
         );
     }

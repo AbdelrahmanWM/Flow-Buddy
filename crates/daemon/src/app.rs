@@ -112,6 +112,8 @@ pub struct App {
     mode_guess: ModeGuess,
     /// How long keys and messages take to handle.
     timings: crate::timing::Timings,
+    /// The day the rolling recording (`[record] keep_days`) was started for.
+    auto_recording: Option<String>,
     /// A session being recorded (`flowbuddy record`), and where to.
     recorder: Option<crate::recorder::Recorder>,
     recordings: PathBuf,
@@ -277,6 +279,7 @@ impl App {
             snippet_waits: Vec::new(),
             snippet_seq: 0,
             recorder: None,
+            auto_recording: None,
             recordings: flowbuddy_core::paths::recordings_dir(),
             last_nudge_ms: None,
             held_findings: Vec::new(),
@@ -306,6 +309,34 @@ impl App {
     fn reset_rules(&mut self, now_ms: u64) {
         self.engine.reset();
         self.record(now_ms, |t| Some(Entry::Reset { t }));
+    }
+
+    /// With `[record] keep_days`: keep recording, one file per day, and
+    /// delete the old ones. A recording you started yourself is left alone.
+    fn roll_recording(&mut self, now_ms: u64) {
+        let days = self.config.record.keep_days;
+        let today = memory::day(now_ms);
+        if days == 0 {
+            if self.auto_recording.take().is_some() {
+                self.recorder.take().map(|r| r.stop());
+            }
+            return;
+        }
+        let manual = self.recorder.is_some() && self.auto_recording.is_none();
+        if manual || self.auto_recording.as_deref() == Some(today.as_str()) {
+            return;
+        }
+        self.recorder.take().map(|r| r.stop());
+        crate::recorder::Recorder::prune(&self.recordings, days);
+        match crate::recorder::Recorder::start_as(&self.recordings, "auto", now_ms) {
+            Ok(r) => {
+                self.recorder = Some(r);
+                let (context, editor) = (self.resolved.kind, self.resolved.editor.is_some());
+                self.record(now_ms, |t| Some(Entry::Context { t, context, editor }));
+            }
+            Err(e) => tracing::warn!(error = %e, "can't keep the rolling recording"),
+        }
+        self.auto_recording = Some(today);
     }
 
     fn on_record(&mut self, on: Option<bool>, now_ms: u64) -> Result<Recording, String> {
@@ -629,6 +660,13 @@ impl App {
             }
             self.notifier.notify(&nudge.title, &body, nudge.ttl_ms);
         }
+        self.record(now_ms, |t| {
+            Some(Entry::Feedback {
+                t,
+                rule: rule_id.into(),
+                what: "shown".into(),
+            })
+        });
         self.memory.add_history(&flowbuddy_store::HistoryTip {
             shown_at: now_ms / 1000,
             rule_id: rule_id.into(),
@@ -694,6 +732,17 @@ impl App {
             return;
         };
         self.memory.response(rule_id, action, now_ms);
+        let what = serde_json::to_value(action)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default();
+        self.record(now_ms, |t| {
+            Some(Entry::Feedback {
+                t,
+                rule: rule_id.into(),
+                what,
+            })
+        });
         if action == NudgeAction::MuteRule {
             self.set_rule(rule_id, RuleAction::Mute);
         }
@@ -1088,6 +1137,7 @@ impl App {
         }
         self.something_new(now_ms);
         self.answer_snippets(now_ms);
+        self.roll_recording(now_ms);
         self.release(now_ms);
         let events = self.engine.tick(self.resolved.kind, now_ms);
         self.on_rule_events(&events, now_ms);
@@ -3503,5 +3553,40 @@ pub(crate) mod tests {
         app.tick(13_000);
         let n = nudges(&mut ext);
         assert_eq!(n.len(), 1, "{n:?}");
+    }
+
+    #[test]
+    fn a_rolling_recording_with_feedback() {
+        let dir = std::env::temp_dir().join(format!("flowbuddy-roll-{}", std::process::id()));
+        let mut app = test_app(CoachingMode::Active);
+        app.recordings = dir.clone();
+        app.config.record.keep_days = 3;
+        let mut ext = ext_hello(&mut app, 1);
+        app.tick(1_000);
+        assert!(app.on_record(None, 1_000).unwrap().recording);
+        app.show("vim.repeat-jk", "Try a count", "Try `7j`.", false, 2_000);
+        let id = nudges(&mut ext)[0].nudge_id.clone();
+        send(
+            &mut app,
+            1,
+            ClientMsg::NudgeResponse {
+                nudge_id: id,
+                action: NudgeAction::FalsePositive,
+            },
+            3_000,
+        );
+        let path = app.on_record(None, 3_000).unwrap().path.unwrap();
+        app.recorder.as_mut().unwrap().flush();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(path.contains("/auto-"), "{path}");
+        assert!(
+            text.contains(r#""what":"shown""#) && text.contains(r#""what":"false_positive""#),
+            "{text}"
+        );
+        // Turned off: it stops.
+        app.config.record.keep_days = 0;
+        app.tick(4_000);
+        assert!(!app.on_record(None, 4_000).unwrap().recording);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

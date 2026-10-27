@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::{ContextKind, VimMode};
 use crate::editor::{Motion, OperatorReport};
-use crate::engine::Engine;
+use crate::engine::{Engine, RuleSettings};
 use crate::key::{Key, Mods, Sym};
 use crate::motion::{MotionEvent, OperatorEvent};
 use crate::rule::{Finding, RuleEvent};
@@ -61,6 +61,13 @@ pub enum Entry {
     /// In-progress streaks were dropped (a click, a VS Code shortcut).
     Reset {
         t: u64,
+    },
+    /// A tip was shown, or what you did with it: `shown`, `dismiss`,
+    /// `mute_rule` or `false_positive` (not helpful).
+    Feedback {
+        t: u64,
+        rule: String,
+        what: String,
     },
 }
 
@@ -288,7 +295,13 @@ pub fn parse(text: &str) -> Result<Vec<Entry>, String> {
 /// Run a recording through the rules as the daemon would, ticking once a
 /// second, and return what they found.
 pub fn replay(entries: &[Entry]) -> Vec<Finding> {
+    replay_with(entries, &RuleSettings::default())
+}
+
+/// [`replay`] with rule settings (thresholds) other than the defaults.
+pub fn replay_with(entries: &[Entry], settings: &RuleSettings) -> Vec<Finding> {
     let mut engine = Engine::standard();
+    engine.apply(settings);
     let mut context = ContextKind::Unsupported;
     let mut found = Vec::new();
     let mut last_tick = 0;
@@ -305,7 +318,8 @@ pub fn replay(entries: &[Entry]) -> Vec<Finding> {
             | Entry::Step { t, .. }
             | Entry::Motion { t, .. }
             | Entry::Operator { t, .. }
-            | Entry::Reset { t } => *t,
+            | Entry::Reset { t }
+            | Entry::Feedback { t, .. } => *t,
         };
         while last_tick + 1000 <= t {
             last_tick += 1000;
@@ -361,6 +375,7 @@ pub fn replay(entries: &[Entry]) -> Vec<Finding> {
                 },
             )),
             Entry::Reset { .. } => engine.reset(),
+            Entry::Feedback { .. } => {}
         }
     }
     keep(engine.tick(context, last_tick + 1_000_000));
@@ -372,6 +387,91 @@ pub fn counts(found: &[Finding]) -> BTreeMap<String, u32> {
     let mut out = BTreeMap::new();
     for f in found {
         *out.entry(f.rule_id.to_string()).or_default() += 1;
+    }
+    out
+}
+
+/// Times (ms into the recording) a rule's tips were marked dismissed or not
+/// helpful.
+pub fn unwanted(entries: &[Entry], rule: &str) -> Vec<u64> {
+    entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Feedback { t, rule: r, what }
+                if r == rule
+                    && matches!(what.as_str(), "dismiss" | "false_positive" | "mute_rule") =>
+            {
+                Some(*t)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// One row of `flowbuddy record tune`: at this threshold, how many tips
+/// the rule gives over the recordings, and how many of them were ones you
+/// marked unwanted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TuneRow {
+    pub threshold: u32,
+    pub tips: u32,
+    pub unwanted: u32,
+}
+
+/// A tip is the one you reacted to if your reaction came within this long
+/// after it (time to read it and click).
+const REACTION_MS: u64 = 120_000;
+
+/// Each threshold-carrying rule, with what lower and higher thresholds
+/// would have given over `sessions`.
+pub fn tune(sessions: &[Vec<Entry>]) -> Vec<(String, u32, Vec<TuneRow>)> {
+    let engine = Engine::standard();
+    let mut out = Vec::new();
+    for rule in engine.rules() {
+        let id = rule.id();
+        let Some(default) = engine.default_threshold(id) else {
+            continue;
+        };
+        let mut values = vec![
+            default.saturating_sub(1).max(1),
+            default,
+            default + 1,
+            default * 2,
+        ];
+        values.dedup();
+        let rows: Vec<TuneRow> = values
+            .into_iter()
+            .map(|threshold| {
+                let settings = RuleSettings {
+                    thresholds: [(id.to_string(), threshold)].into(),
+                    ..Default::default()
+                };
+                let (mut tips, mut unwanted_n) = (0, 0);
+                for entries in sessions {
+                    let marks = unwanted(entries, id);
+                    for f in replay_with(entries, &settings)
+                        .into_iter()
+                        .filter(|f| f.rule_id == id)
+                    {
+                        tips += 1;
+                        if marks
+                            .iter()
+                            .any(|m| *m >= f.at_ms && m - f.at_ms <= REACTION_MS)
+                        {
+                            unwanted_n += 1;
+                        }
+                    }
+                }
+                TuneRow {
+                    threshold,
+                    tips,
+                    unwanted: unwanted_n,
+                }
+            })
+            .collect();
+        if rows.iter().any(|r| r.tips > 0) {
+            out.push((id.to_string(), default, rows));
+        }
     }
     out
 }
@@ -478,5 +578,45 @@ mod tests {
         assert_eq!(s["vim.repeat-jk"].hits, 1);
         assert_eq!(s["vim.delete-then-insert"].extra, 1);
         assert_eq!(s["vim.macro"].missed, 1);
+    }
+
+    #[test]
+    fn tuning_shows_what_thresholds_would_give() {
+        let mut entries = record("jjjjjj<Esc>kkkkkkkkkk<Esc>");
+        // The first streak's tip was marked not helpful.
+        let first = replay(&entries)[0].at_ms;
+        entries.push(Entry::Feedback {
+            t: first + 1000,
+            rule: "vim.repeat-jk".into(),
+            what: "false_positive".into(),
+        });
+        let rows = tune(&[entries]);
+        let (_, default, jk) = rows
+            .iter()
+            .find(|(id, _, _)| id == "vim.repeat-jk")
+            .unwrap();
+        assert_eq!(*default, 5);
+        let at = |t: u32| jk.iter().find(|r| r.threshold == t).unwrap().clone();
+        assert_eq!(
+            at(5),
+            TuneRow {
+                threshold: 5,
+                tips: 2,
+                unwanted: 1
+            }
+        );
+        // At 10, the 6-press streak is left alone: the unwanted tip goes.
+        assert_eq!(
+            at(10),
+            TuneRow {
+                threshold: 10,
+                tips: 1,
+                unwanted: 0
+            }
+        );
+        assert_eq!(
+            jk.iter().map(|r| r.threshold).collect::<Vec<_>>(),
+            [4, 5, 6, 10]
+        );
     }
 }

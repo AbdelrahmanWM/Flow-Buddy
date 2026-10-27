@@ -28,6 +28,16 @@ pub struct Config {
     pub typing: TypingConfig,
     pub learn: LearnConfig,
     pub text: TextConfig,
+    pub record: RecordConfig,
+}
+
+/// Recording what the rules see, to tune them (`flowbuddy record tune`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RecordConfig {
+    /// Keep a rolling recording of this many days (0: only when you run
+    /// `flowbuddy record start`). Nothing typed is kept; see docs/privacy.md.
+    pub keep_days: u32,
 }
 
 /// Opt-in features that look at your text, in the editor plugins only.

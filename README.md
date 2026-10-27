@@ -70,6 +70,9 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh
 daily = true                                  # one small Vim feature you don't use yet, once a day
 level = "beginner"                            # or "intermediate" / "advanced": skip ahead instead of waiting to see you use the basics
 
+[record]
+keep_days = 0                                 # e.g. 7: keep a week of recordings for `flowbuddy record tune`
+
 [typing]
 accuracy = false                              # true: count corrections (counts only) for `flowbuddy summary`
 
@@ -135,7 +138,8 @@ flowbuddy review [--apply 1 2]    # your AI proposes tuning the tips; apply what
 flowbuddy rules                   # list; `rules mute|disable|enable|reset <id>`
 flowbuddy memory show             # the mistake memory; `memory export`, `memory forget`, `memory fix-adoptions`
 flowbuddy report-fp               # the last nudge was wrong
-flowbuddy record start|stop       # record what the rules see (nothing typed) to check them; `record check FILE`
+flowbuddy record start|stop       # record what the rules see (nothing typed); `record check FILE`
+flowbuddy record tune             # what each rule's threshold would give over your recordings, and what you marked unwanted
 ```
 
 Settings live in `~/.config/flowbuddy/config.toml` and are reloaded automatically:

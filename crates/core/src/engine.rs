@@ -3,8 +3,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::context::ContextKind;
+use crate::curriculum::Known;
 use crate::motion::{MotionEvent, OperatorEvent};
-use crate::rule::{Rule, RuleEvent};
+use crate::rule::{Finding, Rule, RuleEvent};
 use crate::vim::Step;
 
 /// Per-rule settings from the config file and runtime overrides.
@@ -23,7 +24,15 @@ pub struct Engine {
     editor_motions: bool,
     /// Each rule's built-in threshold.
     defaults: HashMap<&'static str, u32>,
+    known: Known,
+    /// Each rule's place in [`crate::rules::PRECEDENCE`], then in the list.
+    rank: HashMap<&'static str, usize>,
 }
+
+/// Findings this close together in one batch are about the same keys.
+const SAME_GESTURE_MS: u64 = 2000;
+/// A runner-up joins the winning tip only if both fit in this.
+const MAX_JOINED: usize = 280;
 
 impl Engine {
     pub fn new(rules: Vec<Box<dyn Rule>>) -> Self {
@@ -31,12 +40,84 @@ impl Engine {
             .iter()
             .filter_map(|r| Some((r.id(), r.threshold()?)))
             .collect();
+        let precedence = crate::rules::PRECEDENCE;
+        let rank = rules
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let p = precedence.iter().position(|id| *id == r.id());
+                (r.id(), p.unwrap_or(precedence.len() + i))
+            })
+            .collect();
         Engine {
             rules,
             disabled: HashSet::new(),
             editor_motions: false,
             defaults,
+            known: Known::everything(),
+            rank,
         }
+    }
+
+    pub fn known(&self) -> &Known {
+        &self.known
+    }
+
+    /// What you already use: advice you're not ready for is held back.
+    pub fn set_known(&mut self, known: Known) {
+        for rule in &mut self.rules {
+            rule.set_known(&known);
+        }
+        self.known = known;
+    }
+
+    /// One tip per gesture, and only advice you're ready for: drop
+    /// findings whose main skill builds on something you don't use yet;
+    /// of findings about the same keys, keep the best-ranked and add the
+    /// runner-up to it as another way, if both are short enough.
+    fn settle(&self, out: &mut Vec<RuleEvent>) {
+        let rank = |f: &Finding| self.rank.get(f.rule_id).copied().unwrap_or(usize::MAX);
+        out.retain(|e| match e {
+            RuleEvent::Finding(f) => self.known.ready_for_rule(f.rule_id),
+            _ => true,
+        });
+        if out
+            .iter()
+            .filter(|e| matches!(e, RuleEvent::Finding(_)))
+            .count()
+            < 2
+        {
+            return;
+        }
+        let events = std::mem::take(out);
+        let mut group: Vec<Finding> = Vec::new();
+        let flush = |group: &mut Vec<Finding>, out: &mut Vec<RuleEvent>| {
+            group.sort_by_key(rank);
+            let mut it = group.drain(..);
+            if let Some(mut best) = it.next() {
+                if let Some(next) = it.next()
+                    && best.text.len() + next.text.len() < MAX_JOINED
+                {
+                    best.text = format!("{} Also: {}", best.text, next.text);
+                }
+                out.push(RuleEvent::Finding(best));
+            }
+        };
+        for e in events {
+            match e {
+                RuleEvent::Finding(f) => {
+                    if group
+                        .last()
+                        .is_some_and(|g| f.at_ms.abs_diff(g.at_ms) > SAME_GESTURE_MS)
+                    {
+                        flush(&mut group, out);
+                    }
+                    group.push(f);
+                }
+                other => out.push(other),
+            }
+        }
+        flush(&mut group, out);
     }
 
     /// All built-in rules.
@@ -107,6 +188,7 @@ impl Engine {
             rule.on_ui(ev, &mut out);
         }
         self.editor_motions = editor;
+        self.settle(&mut out);
         out
     }
 
@@ -116,6 +198,7 @@ impl Engine {
         for rule in self.active(ContextKind::Shell) {
             rule.on_shell(ev, &mut out);
         }
+        self.settle(&mut out);
         out
     }
 
@@ -125,6 +208,7 @@ impl Engine {
         for rule in self.active(context) {
             rule.on_operator(ev, &mut out);
         }
+        self.settle(&mut out);
         out
     }
 
@@ -134,6 +218,7 @@ impl Engine {
         for rule in self.active(context) {
             rule.on_motion(ev, &mut out);
         }
+        self.settle(&mut out);
         out
     }
 
@@ -148,6 +233,7 @@ impl Engine {
         for rule in self.active(context) {
             rule.on_step(step, &mut out);
         }
+        self.settle(&mut out);
         out
     }
 
@@ -158,6 +244,7 @@ impl Engine {
         for rule in self.active(context) {
             rule.tick(now_ms, &mut out);
         }
+        self.settle(&mut out);
         out
     }
 
@@ -265,5 +352,53 @@ mod tests {
         }
         let out = e.context_changed(ContextKind::TerminalVim, 600);
         assert_eq!(found(&out), ["vim.repeat-jk"]);
+    }
+
+    #[test]
+    fn one_tip_per_gesture() {
+        // Seven x then i: both "delete by word" and "change instead" fit;
+        // the change covers the whole gesture, so it leads.
+        let mut e = Engine::standard();
+        let out = feed(&mut e, ContextKind::TerminalVim, "xxxxxxxihi<Esc>");
+        let tips: Vec<_> = out
+            .iter()
+            .filter_map(|e| match e {
+                RuleEvent::Finding(f) => Some(f),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tips.len(), 1, "{tips:?}");
+        assert_eq!(tips[0].rule_id, "vim.delete-then-insert");
+        assert!(tips[0].text.contains("`7s`"), "{}", tips[0].text);
+        assert!(
+            tips[0].text.contains("Also: You pressed x 7 times"),
+            "{}",
+            tips[0].text
+        );
+    }
+
+    #[test]
+    fn advice_waits_for_what_it_builds_on() {
+        // Macros build on `.`: not suggested to someone who doesn't use it.
+        let keys = "0cwnew<Esc>j0cwnew<Esc>j0cwnew<Esc>j0cwnew<Esc>j";
+        let rules = |known: Known| {
+            let mut e = Engine::standard();
+            e.set_known(known);
+            let out = feed(&mut e, ContextKind::TerminalVim, keys);
+            out.iter()
+                .filter_map(|e| match e {
+                    RuleEvent::Finding(f) => Some((f.rule_id, f.at_ms)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let all = rules(Known::everything());
+        assert!(all.iter().any(|(r, _)| *r == "vim.macro"), "{all:?}");
+        let beginner = rules(Known::of([]));
+        assert!(
+            beginner.iter().all(|(r, _)| *r != "vim.macro"),
+            "{beginner:?}"
+        );
+        assert_eq!(rules(Known::of(["dot"])), all);
     }
 }

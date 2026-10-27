@@ -175,6 +175,15 @@ pub fn facts(export: &Export) -> String {
 
 /// The prompt for `export`, answering `question` if there is one.
 pub fn prompt(export: &Export, question: Option<&str>) -> String {
+    prompt_with(export, question, &[])
+}
+
+/// The prompt, with recent tips and the code around them, redacted.
+pub fn prompt_with(
+    export: &Export,
+    question: Option<&str>,
+    snippets: &[flowbuddy_core::ipc::TipSnippet],
+) -> String {
     let mut out = String::new();
     out.push_str(
         "You are a friendly, practical Vim coach. Below is what Flow Buddy, a local tool, \
@@ -191,6 +200,23 @@ pub fn prompt(export: &Export, question: Option<&str>) -> String {
     );
     out.push_str(&facts(export));
     out.push('\n');
+    if !snippets.is_empty() {
+        out.push_str(
+            "Recent tips, each with the code it was about (secrets redacted). Use them \
+             only to make the advice concrete; don't review the code.\n\n",
+        );
+        for s in snippets {
+            let code = flowbuddy_core::text::redact(&s.snippet.lines.join("\n"));
+            let _ = writeln!(
+                out,
+                "- Tip ({}): {}\n```{}\n{code}\n```",
+                s.rule_id,
+                flowbuddy_core::glossary::plain(&s.tip),
+                s.snippet.filetype.as_deref().unwrap_or("")
+            );
+        }
+        out.push('\n');
+    }
     match question {
         Some(q) => {
             let _ = writeln!(out, "Their question: {q}");
@@ -609,6 +635,26 @@ mod tests {
             notification_text(&"x".repeat(500)).unwrap().chars().count(),
             400
         );
+    }
+
+    #[test]
+    fn snippets_are_redacted_in_the_prompt() {
+        let tip = flowbuddy_core::ipc::TipSnippet {
+            rule_id: "motion.text-object".into(),
+            tip: "That took 7 keys. `diw` does it from anywhere inside, in 3.".into(),
+            snippet: flowbuddy_core::ipc::Snippet {
+                at_ms: 1,
+                filetype: Some("python".into()),
+                lines: vec!["api_key = 'sk-live-abcdefghijk'".into(), "call(foo)".into()],
+            },
+        };
+        let p = prompt_with(&sample(), None, &[tip]);
+        assert!(
+            p.contains("```python\napi_key = '<redacted>'\ncall(foo)\n```"),
+            "{p}"
+        );
+        assert!(p.contains("diw does it from anywhere inside"));
+        assert!(!p.contains("abcdefghijk"));
     }
 
     #[test]

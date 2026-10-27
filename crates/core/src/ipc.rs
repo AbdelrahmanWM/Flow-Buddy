@@ -106,6 +106,39 @@ pub enum Command {
         rule_id: String,
         threshold: Option<u32>,
     },
+    /// Start (`true`) or stop recording a session, or (`None`) just say
+    /// whether one is going. Answers with [`Recording`].
+    Record {
+        #[serde(default)]
+        on: Option<bool>,
+    },
+    /// The last movement or edit that took more keys than it needed, with
+    /// the best ways to do it. Answers with `Option<LastSlow>`.
+    LastSlow,
+    /// Recent tips with the code around them, from editors that keep
+    /// snippets (`[text] ai_snippets`). Answers with `Vec<TipSnippet>`,
+    /// after a second at most.
+    Snippets,
+}
+
+/// Data returned by [`Command::LastSlow`]: keys only, never text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastSlow {
+    /// "move" or "edit".
+    pub kind: String,
+    /// Unix epoch milliseconds.
+    pub at_ms: u64,
+    pub keys_used: u32,
+    /// Best first: what to type (`}}w`, `dt<char>`) and how many keys.
+    pub best: Vec<(String, u32)>,
+}
+
+/// Data returned by [`Command::Record`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Recording {
+    pub recording: bool,
+    /// The file being written, or the one just finished.
+    pub path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -182,6 +215,10 @@ pub enum ClientMsg {
         #[serde(default)]
         normal: Vec<String>,
     },
+    /// Editor clients, answering [`ServerMsg::SnippetRequest`]: lines
+    /// around those moments, from files `[text]` allows. Kept in memory
+    /// only, on their way to `flowbuddy coach`.
+    Snippets { id: u64, snippets: Vec<Snippet> },
     Command {
         #[serde(default)]
         id: Option<u64>,
@@ -190,8 +227,25 @@ pub enum ClientMsg {
     },
 }
 
+/// A few lines of code around a moment in the editor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snippet {
+    pub at_ms: u64,
+    #[serde(default)]
+    pub filetype: Option<String>,
+    pub lines: Vec<String>,
+}
+
+/// A recent tip with the code it was about: [`Command::Snippets`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TipSnippet {
+    pub rule_id: String,
+    pub tip: String,
+    pub snippet: Snippet,
+}
+
 impl ClientMsg {
-    pub const TYPES: [&'static str; 13] = [
+    pub const TYPES: [&'static str; 14] = [
         "hello",
         "focus",
         "ctx",
@@ -204,6 +258,7 @@ impl ClientMsg {
         "operator",
         "editor_event",
         "editor_mappings",
+        "snippets",
         "command",
     ];
 }
@@ -272,6 +327,43 @@ pub enum ServerMsg {
         /// Unix seconds.
         paused_until: Option<u64>,
     },
+    /// To editor plugins, on hello and when the config changes: which
+    /// opt-in text features are on, and the files never to look at.
+    EditorConfig(EditorConfig),
+    /// To editor plugins with snippets on: the lines around these moments
+    /// (epoch ms), if you kept them. Answered with [`ClientMsg::Snippets`].
+    SnippetRequest {
+        id: u64,
+        times: Vec<u64>,
+    },
+}
+
+/// What editor plugins may do with your text; see `crate::text`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditorConfig {
+    /// Work out text-shape facts (sent as numbers).
+    pub shapes: bool,
+    /// Keep redacted snippets around slow edits, in memory, for `coach`.
+    pub snippets: bool,
+    /// Globs of files never looked at (built-in list plus yours).
+    pub exclude: Vec<String>,
+    /// Folders snippets may come from, expanded.
+    pub projects: Vec<String>,
+}
+
+impl EditorConfig {
+    pub fn from_config(text: &crate::config::TextConfig) -> Self {
+        EditorConfig {
+            shapes: text.shapes,
+            snippets: text.ai_snippets,
+            exclude: crate::text::exclusions(text),
+            projects: text
+                .projects
+                .iter()
+                .map(|p| crate::text::expand(p))
+                .collect(),
+        }
+    }
 }
 
 /// Data returned by [`Command::Status`].
@@ -299,8 +391,46 @@ pub struct Status {
     /// What the learned tip filter is doing.
     #[serde(default)]
     pub tip_filter: Option<String>,
+    /// How the mode guessed from keys compared with editors' reports,
+    /// since the daemon started; `None` before any report.
+    #[serde(default)]
+    pub mode_guess: Option<ModeGuess>,
     pub keyboards: usize,
     pub clients: Vec<ClientKind>,
+}
+
+/// Mode changes an editor reported, by whether the guess from keys had
+/// it already.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModeGuess {
+    pub right: u32,
+    pub wrong: u32,
+    /// The guess wasn't sure (after a click, or before the first Esc).
+    pub unsure: u32,
+    /// Keys in Vim contexts while unsure: no rule looks at them.
+    #[serde(default)]
+    pub keys_unsure: u32,
+}
+
+impl ModeGuess {
+    /// "96% right over 120 mode changes", if there's anything to say.
+    pub fn describe(&self) -> Option<String> {
+        let sure = self.right + self.wrong;
+        if sure + self.unsure == 0 {
+            return None;
+        }
+        let mut s = match (self.right * 100 + sure / 2).checked_div(sure) {
+            Some(pct) => format!("{pct}% right over {sure} mode changes"),
+            None => "no sure guesses yet".into(),
+        };
+        if self.unsure > 0 {
+            s.push_str(&format!(", {} while unsure", self.unsure));
+        }
+        if self.keys_unsure > 0 {
+            s.push_str(&format!(" ({} keys skipped)", self.keys_unsure));
+        }
+        Some(s)
+    }
 }
 
 /// One rule as listed by [`Command::Rules`].
@@ -500,5 +630,20 @@ mod tests {
 
         let e = decode_client(r#"{"v":0,"type":"ctx","event":"fg"}"#).unwrap_err();
         assert_eq!(e.code, ErrorCode::BadRequest);
+    }
+
+    #[test]
+    fn mode_guess_lines() {
+        assert_eq!(ModeGuess::default().describe(), None);
+        let g = ModeGuess {
+            right: 95,
+            wrong: 5,
+            unsure: 0,
+            keys_unsure: 12,
+        };
+        assert_eq!(
+            g.describe().unwrap(),
+            "95% right over 100 mode changes (12 keys skipped)"
+        );
     }
 }

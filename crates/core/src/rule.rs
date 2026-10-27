@@ -116,6 +116,9 @@ pub trait Rule: Send {
         false
     }
 
+    /// What you already use, so advice stays one step ahead of it.
+    fn set_known(&mut self, _known: &crate::curriculum::Known) {}
+
     /// Forget in-progress state (context changed, mode uncertain).
     fn reset(&mut self);
 }

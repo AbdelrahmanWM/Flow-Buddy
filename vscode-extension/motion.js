@@ -9,6 +9,7 @@
 
 const vscode = require('vscode');
 const {computeFacts, rested} = require('./facts');
+const {textAllowed} = require('./textguard');
 
 const REST_MS = 1000;
 // Visual Block has a selection per line and no single cursor to follow.
@@ -67,6 +68,8 @@ class MotionTracker {
         this._restId = null;
         this._top = null;
         this._rests = [];
+        // Where the last edit was, for `g;`: the document and line only.
+        this._lastChange = null;
     }
 
     enable(subscriptions) {
@@ -75,8 +78,12 @@ class MotionTracker {
         sub(w.onDidChangeTextEditorSelection(e => this._onSelection(e)));
         sub(w.onDidChangeActiveTextEditor(() => this._abort()));
         sub(vscode.workspace.onDidChangeTextDocument(e => {
+            if (!e.contentChanges.length)
+                return;
+            const last = e.contentChanges[e.contentChanges.length - 1];
+            this._lastChange = {document: e.document, line: last.range.start.line};
             // An edit, not a movement.
-            if (e.contentChanges.length && e.document === this._editor?.document)
+            if (e.document === this._editor?.document)
                 this._abort();
         }));
         sub({dispose: () => this._abort()});
@@ -165,9 +172,16 @@ class MotionTracker {
         const top = topLine(editor);
         if (seg.top !== null && top !== null)
             facts.view_scrolled = top - seg.top;
+        const change = this._lastChange;
+        if (change && change.document === editor.document && change.line === seg.end.line
+            && seg.start.line !== seg.end.line)
+            facts.last_change = true;
         const visits = rested(this._rests, seg.end.line, Date.now());
         if (visits)
             facts.revisits = visits;
+        const doc = editor.document;
+        if (textAllowed(this._link.editorConfig, doc.uri.scheme, doc.uri.fsPath, true))
+            this._link.snippets.add(seg.endMs, doc.languageId, linesOf(doc), seg.end.line);
         this._link.send({
             type: 'motion',
             start_ms: seg.startMs,

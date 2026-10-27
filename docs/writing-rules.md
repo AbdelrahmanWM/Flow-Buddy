@@ -96,9 +96,15 @@ To teach it a new motion:
 
 Rules that only guess from keys and that a motion rule does better, such as `vim.repeat-jk`, are marked `.replaced_by_editor()`. They step aside while an editor reports motions, so one habit gets one nudge.
 
+## The skill tree
+
+Rules and the daily "something new" share one tree: the items in `crates/core/src/curriculum.rs`. Each item can need others first (`REQUIRES`, e.g. `ci(` needs `ciw`), and each rule names the items its advice teaches (`RULE_SKILLS`, main one first). A tip is only shown when you're ready for its main skill, meaning you use it already or use everything it builds on. Motion plans and text objects you're not ready for give way to the next best one. A test fails if a rule is missing from `RULE_SKILLS`.
+
+When several rules fire on the same keys in one go, the engine keeps one tip: the first rule in `rules::PRECEDENCE`, which lists the rules whose advice covers more of the gesture. The runner-up is added to it ("Also: …") if both are short. List a new rule there if it covers more of a gesture than an existing rule does.
+
 ## Then
 
-1. Add the constructor to the pack's `all()` so the engine runs it.
+1. Add the constructor to the pack's `all()` so the engine runs it, and the rule to `RULE_SKILLS`.
 2. Write tests next to the rule with the helpers in `rules::testing`:
 
    ```rust

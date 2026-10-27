@@ -349,7 +349,7 @@ pub fn next(store: &Store, now_ms: u64, skip: &BTreeSet<String>) -> anyhow::Resu
 /// `flowbuddy learn`: the latest "something new", progress through the
 /// curriculum, and what's next.
 pub fn learn(store: &Store, now_ms: u64) -> anyhow::Result<String> {
-    use flowbuddy_core::curriculum::{self, CURRICULUM, KNOWN_USES, Progress};
+    use flowbuddy_core::curriculum::{self, CURRICULUM, Known, Progress};
     use flowbuddy_core::glossary::plain;
     let uses = store.command_uses("0000-00-00")?;
     let rows: BTreeMap<String, flowbuddy_store::LearnRow> = store
@@ -366,10 +366,13 @@ pub fn learn(store: &Store, now_ms: u64) -> anyhow::Result<String> {
             learned: row.is_some_and(|r| r.learned_at.is_some()),
         }
     };
-    let known = |id: &str| {
-        let p = progress(id);
-        p.learned || p.uses >= KNOWN_USES
-    };
+    let stages = store.stages()?;
+    let mastered = stages
+        .iter()
+        .filter(|(_, s)| **s == flowbuddy_core::learning::Stage::Mastered)
+        .map(|((rule, _), _)| rule.as_str());
+    let tree = Known::from_progress(&progress, mastered);
+    let known = |id: &str| tree.knows(id);
     let mut out = String::new();
     if let Some(row) = rows.values().max_by_key(|r| r.last_shown)
         && let Some(item) = curriculum::find(&row.item_id)
@@ -385,15 +388,52 @@ pub fn learn(store: &Store, now_ms: u64) -> anyhow::Result<String> {
             plain(&curriculum::tip_text(item))
         )?;
     }
-    writeln!(out, "\nProgress, from basic to advanced:")?;
+    writeln!(
+        out,
+        "\nProgress, from basic to advanced (█ you use it, ○ ready to learn, · later):"
+    )?;
     for level in 1..=4 {
         let items: Vec<_> = CURRICULUM.iter().filter(|i| i.level == level).collect();
         let done = items.iter().filter(|i| known(i.id)).count();
         let bar: String = items
             .iter()
-            .map(|i| if known(i.id) { '█' } else { '·' })
+            .map(|i| {
+                if known(i.id) {
+                    '█'
+                } else if tree.ready(i.id) {
+                    '○'
+                } else {
+                    '·'
+                }
+            })
             .collect();
         writeln!(out, "  level {level}  {bar}  {done} of {}", items.len())?;
+    }
+    let ready: Vec<String> = CURRICULUM
+        .iter()
+        .filter(|i| !known(i.id) && tree.ready(i.id))
+        .take(6)
+        .map(|i| plain(i.keys))
+        .collect();
+    if !ready.is_empty() {
+        writeln!(out, "\nReady to learn: {}", ready.join("; "))?;
+    }
+    let waiting: Vec<String> = CURRICULUM
+        .iter()
+        .filter(|i| !tree.ready(i.id))
+        .take(4)
+        .map(|i| {
+            let first: Vec<String> = curriculum::requires(i.id)
+                .iter()
+                .filter(|r| !known(r))
+                .filter_map(|r| curriculum::find(r))
+                .map(|r| plain(r.keys))
+                .collect();
+            format!("{} after {}", plain(i.keys), first.join(" and "))
+        })
+        .collect();
+    if !waiting.is_empty() {
+        writeln!(out, "Later: {}", waiting.join("; "))?;
     }
     let learned: Vec<String> = rows
         .values()
@@ -404,7 +444,7 @@ pub fn learn(store: &Store, now_ms: u64) -> anyhow::Result<String> {
     if !learned.is_empty() {
         writeln!(out, "\nLearned from daily tips: {}", learned.join("; "))?;
     }
-    match curriculum::pick(&progress, now_ms / 1000) {
+    match curriculum::pick(&progress, &tree, now_ms / 1000) {
         Some(next) => writeln!(out, "\nUp next: {}", plain(&curriculum::tip_text(next)))?,
         None => writeln!(out, "\nNothing new left for now.")?,
     }
@@ -557,7 +597,8 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("(learned)"), "{out}");
-        assert!(out.contains("level 1  ██··········  2 of 12"), "{out}");
+        assert!(out.contains("level 1  ██○○○○○○○○○○  2 of 12"), "{out}");
+        assert!(out.contains("ci( after ciw"), "{out}");
         assert!(out.contains("Up next: 0, ^ and $"), "{out}");
     }
 }

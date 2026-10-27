@@ -29,6 +29,8 @@ pub struct Command {
     pub count: Option<u32>,
     /// The keys after the count and register, e.g. `[d, d]`.
     pub keys: Vec<Key>,
+    /// The register named with `"`, e.g. `0` in `"0p`.
+    pub register: Option<char>,
 }
 
 impl Command {
@@ -364,9 +366,15 @@ impl Tracker {
     fn take_command(&mut self) -> Command {
         let keys = std::mem::take(&mut self.pending);
         let (count, rest) = split_count(&keys);
+        let prefix = &keys[..keys.len() - rest.len()];
+        let register = prefix
+            .windows(2)
+            .find(|w| w[0].plain_char() == Some('"'))
+            .and_then(|w| w[1].plain_char());
         Command {
             count,
             keys: rest.to_vec(),
+            register,
         }
     }
 
@@ -511,6 +519,10 @@ fn parse_normal(keys: &[Key]) -> Parse {
     };
     if k.is_ctrl('v') {
         return complete(Some(VimMode::VisualBlock));
+    }
+    // Window commands: Ctrl-w and one more key.
+    if k.is_ctrl('w') {
+        return need_one(rest, None);
     }
     let Some(c) = k.plain_char() else {
         return complete(None);

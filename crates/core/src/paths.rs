@@ -36,6 +36,12 @@ pub fn state_file() -> PathBuf {
     xdg("XDG_STATE_HOME", ".local/state").join("flowbuddy/state.json")
 }
 
+/// `~/.local/state/flowbuddy/recordings/`: sessions you chose to record
+/// (`flowbuddy record`).
+pub fn recordings_dir() -> PathBuf {
+    xdg("XDG_STATE_HOME", ".local/state").join("flowbuddy/recordings")
+}
+
 /// `~/.local/share/flowbuddy/flowbuddy.db`: stats and mistake memory.
 pub fn database() -> PathBuf {
     xdg("XDG_DATA_HOME", ".local/share").join("flowbuddy/flowbuddy.db")

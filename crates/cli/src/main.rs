@@ -66,6 +66,11 @@ enum Cmd {
         #[arg(long)]
         prompt: bool,
     },
+    /// Record a session to check rules against (nothing typed is kept).
+    Record {
+        #[command(subcommand)]
+        action: RecordCmd,
+    },
     /// Print the ssh config that lets Vim on a remote machine report here.
     SshConfig {
         /// The host, as you `ssh` to it.
@@ -73,7 +78,12 @@ enum Cmd {
     },
     /// What Vim keys do, piece by piece: `flowbuddy explain 'ci"'`.
     Explain {
+        /// Keys to explain; with --last, leave out.
+        #[arg(required_unless_present = "last", default_value = "")]
         keys: String,
+        /// Your last slow move or edit, and the best ways to do it.
+        #[arg(long)]
+        last: bool,
         /// Insert-mode meanings (Ctrl-w, Ctrl-u, Ctrl-o).
         #[arg(long)]
         insert: bool,
@@ -134,6 +144,24 @@ enum MemoryCmd {
 }
 
 #[derive(Subcommand)]
+enum RecordCmd {
+    /// Start recording to ~/.local/state/flowbuddy/recordings/.
+    Start,
+    /// Stop and print where it was saved.
+    Stop,
+    /// Whether a recording is going.
+    Status,
+    /// Run a recording through the rules and count what they find. With
+    /// --expect, compare with the counts you checked by hand.
+    Check {
+        file: std::path::PathBuf,
+        /// A JSON object of rule id to how many findings are right.
+        #[arg(long)]
+        expect: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
 enum RulesCmd {
     /// List rules (the default).
     List,
@@ -183,6 +211,7 @@ fn main() {
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),
         Cmd::Learn => learn(),
+        Cmd::Record { action } => record(action),
         Cmd::SshConfig { host } => {
             print!("{}", ssh_config(&host, &flowbuddy_core::paths::socket()));
             Ok(())
@@ -203,7 +232,8 @@ fn main() {
         Cmd::Coach {
             question, prompt, ..
         } => coach(&question.join(" "), prompt),
-        Cmd::Explain { keys, insert } => {
+        Cmd::Explain { last: true, .. } => explain_last(),
+        Cmd::Explain { keys, insert, .. } => {
             explain(&keys, insert);
             Ok(())
         }
@@ -224,6 +254,59 @@ fn main() {
         eprintln!("flowbuddy: {e:#}");
         std::process::exit(1);
     }
+}
+
+fn record(action: RecordCmd) -> anyhow::Result<()> {
+    use flowbuddy_core::ipc::Recording;
+    use flowbuddy_core::session;
+    let on = match action {
+        RecordCmd::Start => Some(true),
+        RecordCmd::Stop => Some(false),
+        RecordCmd::Status => None,
+        RecordCmd::Check { file, expect } => {
+            let text = std::fs::read_to_string(&file)?;
+            let entries = session::parse(&text).map_err(anyhow::Error::msg)?;
+            let found = session::counts(&session::replay(&entries));
+            let expected: std::collections::BTreeMap<String, u32> = match expect {
+                Some(path) => serde_json::from_str(&std::fs::read_to_string(path)?)?,
+                None => {
+                    // Counts only, ready to check and save as the expectation.
+                    println!("{}", serde_json::to_string_pretty(&found)?);
+                    return Ok(());
+                }
+            };
+            let mut wrong = 0;
+            for (rule, s) in session::score(&expected, &found) {
+                wrong += s.extra + s.missed;
+                println!(
+                    "{rule:<28} {} right, {} extra, {} missed",
+                    s.hits, s.extra, s.missed
+                );
+            }
+            if wrong > 0 {
+                anyhow::bail!("{wrong} findings differ from what was expected");
+            }
+            return Ok(());
+        }
+    };
+    let mut client = Client::connect(ClientKind::Cli)?;
+    let r: Recording = serde_json::from_value(client.query(Command::Record { on })?)?;
+    match (on, r.recording, r.path) {
+        (Some(true), _, Some(p)) => {
+            println!("recording to {p}");
+            println!(
+                "only what the rules see is kept: commands, Insert-mode key kinds, motion counts."
+            );
+            println!("stop with: flowbuddy record stop");
+        }
+
+        (Some(false), _, Some(p)) => {
+            println!("saved {p}\ncheck it with: flowbuddy record check {p}")
+        }
+        (_, true, Some(p)) => println!("recording to {p}"),
+        _ => println!("not recording"),
+    }
+    Ok(())
 }
 
 fn status(watch: bool) -> anyhow::Result<()> {
@@ -260,6 +343,9 @@ fn print_status(s: &Status) {
     println!("  mode:      {}{paused}", s.mode.as_str());
     println!("  focused:   {}", s.app.as_deref().unwrap_or("nothing"));
     println!("  context:   {}", context_line(s));
+    if let Some(guess) = s.mode_guess.and_then(|g| g.describe()) {
+        println!("  guessing:  {guess}");
+    }
     println!("  keyboards: {}", s.keyboards);
     if let Some(filter) = &s.tip_filter {
         println!("  filter:    {filter}");
@@ -352,13 +438,32 @@ fn coach(question: &str, show_prompt: bool) -> anyhow::Result<()> {
     let week = flowbuddy_store::days::range(now, 7, 0);
     let describe = |id: &str| Some(report::describe(id));
     let export = flowbuddy_store::Export::build(&store, &describe, (&week.0, &week.1), now / 1000)?;
-    let prompt = coach::prompt(&export, Some(question).filter(|q| !q.trim().is_empty()));
+    let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
+        .map_err(anyhow::Error::msg)?;
+    // Code around recent tips, only if [text] allows it for this provider.
+    let snippets = if flowbuddy_core::text::snippets_may_go_to(&config.text, &config.ai) {
+        Client::connect(ClientKind::Cli)
+            .and_then(|mut c| c.query(Command::Snippets))
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default()
+    } else {
+        if config.text.ai_snippets && !show_prompt {
+            eprintln!(
+                "flowbuddy: not sending code snippets to a cloud provider; set [text] cloud = true to allow it"
+            );
+        }
+        Vec::new()
+    };
+    let prompt = coach::prompt_with(
+        &export,
+        Some(question).filter(|q| !q.trim().is_empty()),
+        &snippets,
+    );
     if show_prompt {
         print!("{prompt}");
         return Ok(());
     }
-    let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
-        .map_err(anyhow::Error::msg)?;
     match coach::ask(&config.ai, &prompt, &mut std::io::stdout()) {
         None => print!("{}", coach::SETUP),
         Some(result) => {
@@ -430,6 +535,45 @@ fn weekly_note() -> anyhow::Result<()> {
         .arg(flowbuddy_core::glossary::plain(&text))
         .status()?;
     Ok(())
+}
+
+fn explain_last() -> anyhow::Result<()> {
+    use flowbuddy_core::glossary::{explain as pieces, plain};
+    use flowbuddy_core::ipc::LastSlow;
+    let mut client = Client::connect(ClientKind::Cli)?;
+    let last: Option<LastSlow> = serde_json::from_value(client.query(Command::LastSlow)?)?;
+    let Some(last) = last else {
+        println!("No slow move or edit since the daemon started.");
+        return Ok(());
+    };
+    print!("{}", last_slow_text(&last, now_ms()));
+    let marked: Vec<String> = last
+        .best
+        .iter()
+        .map(|(k, _)| flowbuddy_core::motion::marked(k))
+        .collect();
+    for line in pieces(&marked.join(" "), false) {
+        println!("  {}", plain(&line));
+    }
+    Ok(())
+}
+
+fn last_slow_text(last: &flowbuddy_core::ipc::LastSlow, now_ms: u64) -> String {
+    let ago = now_ms.saturating_sub(last.at_ms) / 1000;
+    let when = match ago {
+        0..60 => format!("{ago} s ago"),
+        60..3600 => format!("{} min ago", ago / 60),
+        _ => format!("{} h ago", ago / 3600),
+    };
+    let mut out = format!(
+        "Your last slow {} ({when}) took {} keys.\n",
+        last.kind, last.keys_used
+    );
+    for (i, (keys, cost)) in last.best.iter().enumerate() {
+        let lead = if i == 0 { "Best:" } else { "Or:  " };
+        out.push_str(&format!("  {lead} {keys}  ({cost} keys)\n"));
+    }
+    out
 }
 
 fn explain(keys: &str, insert: bool) {
@@ -910,6 +1054,7 @@ mod status_tests {
             layout: None,
             layout_note: None,
             tip_filter: None,
+            mode_guess: None,
             keyboards: 1,
             clients: vec![],
         }
@@ -949,5 +1094,19 @@ mod status_tests {
             "{out}"
         );
         assert!(out.contains("StreamLocalBindUnlink yes"), "{out}");
+    }
+
+    #[test]
+    fn last_slow_lines() {
+        let last = flowbuddy_core::ipc::LastSlow {
+            kind: "edit".into(),
+            at_ms: 1_000,
+            keys_used: 9,
+            best: vec![("di(".into(), 3), ("dt<char>".into(), 3)],
+        };
+        assert_eq!(
+            last_slow_text(&last, 121_000),
+            "Your last slow edit (2 min ago) took 9 keys.\n  Best: di(  (3 keys)\n  Or:   dt<char>  (3 keys)\n"
+        );
     }
 }

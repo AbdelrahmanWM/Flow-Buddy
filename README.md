@@ -52,10 +52,15 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh
 | `viwd`, `Vjjd` | `diw`, `3dd` |
 | The same change again | `.` |
 | The same edit on every line | a macro: `qq…q`, `@q` |
+| `n.n.n.` through search matches | `cgn` then `...`, or `:%s` |
+| `uuuuuuu` | `7u`, `:earlier 1m` |
+| `I// <Esc>j` on line after line | `Ctrl-v`, `j`…, `I`, type once |
+| Yank, delete, `p` pastes the wrong thing | `"0p` |
+| `Ctrl-w w` round the windows, `:bn :bn :bn` | `Ctrl-w h/j/k/l`, `:b name`, `Ctrl-^` |
 | `:w` then `:q` | `:wq` or `ZZ` |
 | `↑↑↑↑` hunting shell history | `Ctrl-r` |
 
-`flowbuddy rules` lists all of them. Motion coaching (the first three rows) compares each movement with the cheapest motion that lands in the same place. It needs the editor plugins, which tell Flow Buddy where a movement ended without sending any text: [vim-plugin/](vim-plugin/README.md) and [vscode-extension/](vscode-extension/README.md). Without them, the simpler rules that count repeated keys take over.
+`flowbuddy rules` lists all of them. Tips move one step at a time: Flow Buddy notices which commands you already use, and won't suggest `ci(` before you use `ciw`, or `t` before `f` (`flowbuddy learn` shows where you are). Motion coaching (the first three rows) compares each movement with the cheapest motion that lands in the same place. It needs the editor plugins, which tell Flow Buddy where a movement ended without sending any text: [vim-plugin/](vim-plugin/README.md) and [vscode-extension/](vscode-extension/README.md). Without them, the simpler rules that count repeated keys take over.
 
 `flowbuddy coach` asks an AI of your choice (your Claude subscription, an API key, or a local model) for advice based on the mistake memory. It's off until you set it up, and `--prompt` shows exactly what would be sent:
 
@@ -72,6 +77,13 @@ provider = "claude-code"     # your Claude subscription via `claude -p`; or "ant
 weekly = false               # true: the model writes the weekly progress note and reviews the tips
 tips = false                 # true: once a day the model writes a personal sentence for each recent habit
 filter = true                # the learned tip filter (no LLM); skips tips you tend to dismiss
+
+[text]                       # opt-in, off by default; secret files are never looked at (docs/privacy.md)
+shapes = false               # true: plugins work out which motions an edit could have used (counts only)
+ai_snippets = false          # true: `coach` shows your AI a few redacted lines around recent tips
+projects = []                # folders snippets may come from, e.g. ["~/code/myapp"]
+cloud = false                # true: snippets may go to a cloud provider, not only a local one
+exclude = []                 # more files never to look at, e.g. ["*.sql"]
 ```
 
 ## Platform
@@ -111,12 +123,13 @@ flowbuddy pause 1h                # or 30m, until-tomorrow; `flowbuddy resume`
 flowbuddy summary [--week]        # how you're doing vs. before
 flowbuddy next                    # the one habit worth working on now
 flowbuddy learn                   # today's "something new" and your progress through Vim
-flowbuddy explain 'ci"'            # what keys do, piece by piece
+flowbuddy explain 'ci"'            # what keys do, piece by piece; `explain --last`: your last slow move, done better
 flowbuddy coach [question]        # advice from your AI ([ai]; --prompt shows what it's sent)
 flowbuddy review [--apply 1 2]    # your AI proposes tuning the tips; apply what you agree with
 flowbuddy rules                   # list; `rules mute|disable|enable|reset <id>`
 flowbuddy memory show             # the mistake memory; `memory export`, `memory forget`, `memory fix-adoptions`
 flowbuddy report-fp               # the last nudge was wrong
+flowbuddy record start|stop       # record what the rules see (nothing typed) to check them; `record check FILE`
 ```
 
 Settings live in `~/.config/flowbuddy/config.toml` and are reloaded automatically:

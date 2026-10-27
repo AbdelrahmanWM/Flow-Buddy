@@ -15,12 +15,13 @@ use flowbuddy_core::ipc::{
     ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, Nudge, NudgeAction, NudgeStyle,
     RuleAction, RuleInfo, ServerMsg, Status,
 };
-use flowbuddy_core::ipc::{Panel, UiEvent};
+use flowbuddy_core::ipc::{ModeGuess, Panel, Recording, UiEvent};
 use flowbuddy_core::key::{Key, KeyStroke, Sym};
 use flowbuddy_core::motion::{self, MotionEvent, OperatorEvent};
 use flowbuddy_core::policy::{Coach, CoachingMode, Gate, PolicyConfig, RuleFacts};
 use flowbuddy_core::rule::{Finding, RuleEvent};
 use flowbuddy_core::rules::vscode::{How, UiAction, UiWhat};
+use flowbuddy_core::session::{self, Entry};
 use flowbuddy_core::vim::{Flavor, InsertKey, Mappings, Tracker, VimEvent};
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -35,6 +36,22 @@ struct Client {
     kind: Option<ClientKind>,
     tx: mpsc::UnboundedSender<ServerMsg>,
 }
+
+/// A `flowbuddy coach` waiting for editors' snippets.
+struct SnippetWait {
+    cli: ConnId,
+    cli_id: Option<u64>,
+    /// The request id sent to editors.
+    id: u64,
+    waiting: std::collections::HashSet<ConnId>,
+    got: Vec<flowbuddy_core::ipc::Snippet>,
+    deadline_ms: u64,
+}
+
+/// Recent tips kept for snippets: this many, at most.
+const RECENT_TIPS: usize = 8;
+/// How long editors get to answer.
+const SNIPPET_WAIT_MS: u64 = 1000;
 
 pub struct App {
     clients: HashMap<ConnId, Client>,
@@ -68,6 +85,17 @@ pub struct App {
     /// shortcut (Ctrl-P, Ctrl-`) as its letter and time.
     last_click_ms: Option<u64>,
     last_shortcut: Option<(char, u64)>,
+    /// Recent tips in an editor: (rule, text, when), for snippets.
+    recent_tips: VecDeque<(&'static str, String, u64)>,
+    snippet_waits: Vec<SnippetWait>,
+    snippet_seq: u64,
+    /// The last movement or edit that could have been shorter.
+    last_slow: Option<flowbuddy_core::ipc::LastSlow>,
+    /// How the mode guessed from keys compares with editors' reports.
+    mode_guess: ModeGuess,
+    /// A session being recorded (`flowbuddy record`), and where to.
+    recorder: Option<crate::recorder::Recorder>,
+    recordings: PathBuf,
     /// When the last tip was shown.
     last_nudge_ms: Option<u64>,
     /// Each editor's key mappings, as it reported them.
@@ -212,6 +240,13 @@ impl App {
             claude_probe: crate::claude::vim_mode_on,
             last_click_ms: None,
             last_shortcut: None,
+            mode_guess: ModeGuess::default(),
+            last_slow: None,
+            recent_tips: VecDeque::new(),
+            snippet_waits: Vec::new(),
+            snippet_seq: 0,
+            recorder: None,
+            recordings: flowbuddy_core::paths::recordings_dir(),
             last_nudge_ms: None,
             held_findings: Vec::new(),
             editor_mappings: HashMap::new(),
@@ -226,6 +261,142 @@ impl App {
         .with_memory_config()
     }
 
+    /// Add an entry to the recording, if one is going; `entry` gets the
+    /// time since it started.
+    fn record(&mut self, at_ms: u64, entry: impl FnOnce(u64) -> Option<Entry>) {
+        if let Some(r) = self.recorder.as_mut()
+            && let Some(e) = entry(r.t(at_ms))
+        {
+            r.write(&e);
+        }
+    }
+
+    /// Drop in-progress streaks, and note it in a recording.
+    fn reset_rules(&mut self, now_ms: u64) {
+        self.engine.reset();
+        self.record(now_ms, |t| Some(Entry::Reset { t }));
+    }
+
+    fn on_record(&mut self, on: Option<bool>, now_ms: u64) -> Result<Recording, String> {
+        match on {
+            Some(true) if self.recorder.is_none() => {
+                let r = crate::recorder::Recorder::start(&self.recordings, now_ms)
+                    .map_err(|e| format!("can't start recording: {e}"))?;
+                tracing::info!(path = %r.path().display(), "recording a session");
+                self.recorder = Some(r);
+                let (context, editor) = (self.resolved.kind, self.resolved.editor.is_some());
+                self.record(now_ms, |t| Some(Entry::Context { t, context, editor }));
+            }
+            Some(false) => {
+                if let Some(r) = self.recorder.take() {
+                    let path = r.stop();
+                    return Ok(Recording {
+                        recording: false,
+                        path: Some(path.display().to_string()),
+                    });
+                }
+            }
+            _ => {}
+        }
+        Ok(Recording {
+            recording: self.recorder.is_some(),
+            path: self
+                .recorder
+                .as_ref()
+                .map(|r| r.path().display().to_string()),
+        })
+    }
+
+    /// Ask every editor for the lines around recent tips; answer `cli` when
+    /// they all have, or after a second.
+    fn ask_for_snippets(&mut self, cli: ConnId, cli_id: Option<u64>, now_ms: u64) {
+        let editors: std::collections::HashSet<ConnId> = self
+            .clients
+            .iter()
+            .filter(|(_, c)| c.kind == Some(ClientKind::Editor))
+            .map(|(id, _)| *id)
+            .collect();
+        self.snippet_seq += 1;
+        let id = self.snippet_seq;
+        if self.config.text.ai_snippets && !self.recent_tips.is_empty() {
+            let times: Vec<u64> = self.recent_tips.iter().map(|(_, _, t)| *t).collect();
+            for e in &editors {
+                self.reply(
+                    *e,
+                    ServerMsg::SnippetRequest {
+                        id,
+                        times: times.clone(),
+                    },
+                );
+            }
+        } else {
+            return self.reply(
+                cli,
+                ServerMsg::Result {
+                    id: cli_id,
+                    data: json!([]),
+                },
+            );
+        }
+        self.snippet_waits.push(SnippetWait {
+            cli,
+            cli_id,
+            id,
+            waiting: editors,
+            got: Vec::new(),
+            deadline_ms: now_ms + SNIPPET_WAIT_MS,
+        });
+        self.answer_snippets(now_ms);
+    }
+
+    /// Answer the waits that are complete or out of time: each recent tip
+    /// with the snippet closest to it.
+    fn answer_snippets(&mut self, now_ms: u64) {
+        let (done, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.snippet_waits)
+            .into_iter()
+            .partition(|w| w.waiting.is_empty() || now_ms >= w.deadline_ms);
+        self.snippet_waits = waiting;
+        for w in done {
+            let tips: Vec<flowbuddy_core::ipc::TipSnippet> = self
+                .recent_tips
+                .iter()
+                .filter_map(|(rule, tip, at)| {
+                    let s = w
+                        .got
+                        .iter()
+                        .filter(|s| s.at_ms.abs_diff(*at) <= 3000)
+                        .min_by_key(|s| s.at_ms.abs_diff(*at))?;
+                    Some(flowbuddy_core::ipc::TipSnippet {
+                        rule_id: rule.to_string(),
+                        tip: tip.clone(),
+                        snippet: s.clone(),
+                    })
+                })
+                .collect();
+            self.reply(
+                w.cli,
+                ServerMsg::Result {
+                    id: w.cli_id,
+                    data: serde_json::to_value(tips).unwrap_or_default(),
+                },
+            );
+        }
+    }
+
+    /// Remember a movement or edit if the best way saves two keys or more.
+    fn note_slow(&mut self, kind: &str, at_ms: u64, keys_used: u32, mut best: Vec<(String, u32)>) {
+        if best.first().is_none_or(|(_, cost)| keys_used < cost + 2) {
+            return;
+        }
+        best.truncate(3);
+        self.last_slow = Some(flowbuddy_core::ipc::LastSlow {
+            kind: kind.into(),
+            at_ms,
+            keys_used,
+            best,
+        });
+    }
+
     fn with_memory_config(mut self) -> Self {
         self.memory.set_config(&self.config);
         self
@@ -234,6 +405,7 @@ impl App {
     /// Record stats and the mistake memory in `store`.
     pub fn with_store(mut self, store: flowbuddy_store::Store) -> Self {
         self.memory = Memory::new(Some(store), &self.config);
+        self.engine.set_known(self.memory.known());
         self
     }
 
@@ -526,8 +698,23 @@ impl App {
         self.resolver.set_ids(app_ids(&config));
         self.coach.set_config(PolicyConfig::from(&config.coaching));
         self.memory.set_config(&config);
+        let text_changed = config.text != self.config.text;
         self.config = config;
+        if text_changed {
+            let msg = self.editor_config();
+            for c in self.clients.values() {
+                if c.kind == Some(ClientKind::Editor) {
+                    let _ = c.tx.send(msg.clone());
+                }
+            }
+        }
         tracing::info!("config reloaded");
+    }
+
+    fn editor_config(&self) -> ServerMsg {
+        ServerMsg::EditorConfig(flowbuddy_core::ipc::EditorConfig::from_config(
+            &self.config.text,
+        ))
     }
 
     /// Findings and adoptions go here: coaching policy and storage hook in
@@ -571,6 +758,13 @@ impl App {
                 RuleEvent::Finding(f) => {
                     tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
                     self.memory.hit(f, ctx, now_ms);
+                    if self.resolved.editor.is_some() {
+                        if self.recent_tips.len() == RECENT_TIPS {
+                            self.recent_tips.pop_front();
+                        }
+                        self.recent_tips
+                            .push_back((f.rule_id, f.text.clone(), f.at_ms));
+                    }
                     let facts = RuleFacts {
                         muted: muted.contains(f.rule_id),
                         stage: self.memory.stage(f.rule_id, ctx),
@@ -636,7 +830,9 @@ impl App {
     /// command itself, plus the motions just before it that positioned the
     /// cursor (a text object works from anywhere inside, so it wouldn't
     /// need them). 0 if the operator isn't in the history.
-    fn keys_for_operator(&self, at_ms: u64) -> u32 {
+    /// Keys for the operator that made `at_ms`'s report, and with the
+    /// moves into place before it.
+    fn keys_for_operator(&self, at_ms: u64) -> (u32, u32) {
         let mut recent = self
             .commands
             .iter()
@@ -645,7 +841,7 @@ impl App {
         let Some(op) = recent.next().filter(|c| {
             c.kind == CmdKind::Operator && at_ms.saturating_sub(c.at_ms) <= MOTION_LEAD_MS
         }) else {
-            return 0;
+            return (0, 0);
         };
         let mut keys = op.keys;
         let mut next_at = op.at_ms;
@@ -656,7 +852,7 @@ impl App {
             keys += c.keys;
             next_at = c.at_ms;
         }
-        keys
+        (keys, op.keys)
     }
 
     /// The mappings for the current context: its editor's, else the config's.
@@ -745,6 +941,10 @@ impl App {
             self.memory.typing(counts, now_ms);
             let usage = std::mem::take(&mut self.usage);
             self.memory.command_uses(usage, now_ms);
+            self.engine.set_known(self.memory.known());
+            if let Some(r) = self.recorder.as_mut() {
+                r.flush();
+            }
             self.load_personal_tips(now_ms);
         }
         // Switching tmux panes tells no one; look again.
@@ -757,6 +957,7 @@ impl App {
             self.save_state();
         }
         self.something_new(now_ms);
+        self.answer_snippets(now_ms);
         let events = self.engine.tick(self.resolved.kind, now_ms);
         self.on_rule_events(&events, now_ms);
         let gate = self.gate(now_ms);
@@ -786,11 +987,14 @@ impl App {
                 self.last_shortcut = Some((c.to_ascii_lowercase(), stroke.at_ms));
             }
             self.tracker.invalidate();
-            self.engine.reset();
+            self.reset_rules(now_ms);
             return Vec::new();
         }
         self.memory.active(kind, now_ms);
         let step = self.tracker.feed(stroke);
+        if !step.confident {
+            self.mode_guess.keys_unsure += 1;
+        }
         if step.confident
             && matches!(
                 kind,
@@ -832,6 +1036,7 @@ impl App {
                 kind,
             });
         }
+        self.record(stroke.at_ms, |t| session::step_entry(t, &step));
         let events = self.engine.on_step(kind, &step);
         self.on_rule_events(&events, now_ms);
         events
@@ -841,7 +1046,7 @@ impl App {
     pub fn on_pointer_click(&mut self, now_ms: u64) {
         self.last_click_ms = Some(now_ms);
         self.tracker.invalidate();
-        self.engine.reset();
+        self.reset_rules(now_ms);
         // An editor that reports its mode still knows it.
         self.apply_editor_mode();
     }
@@ -875,6 +1080,8 @@ impl App {
             self.commands.clear();
             self.typing.other();
             self.engine.set_editor_motions(new.editor.is_some());
+            let (context, editor) = (new.kind, new.editor.is_some());
+            self.record(now_ms, |t| Some(Entry::Context { t, context, editor }));
         }
         if let Some(mode) = known {
             self.tracker.reset_known(mode);
@@ -927,6 +1134,10 @@ impl App {
             }
             ConnEvent::Closed { id } => {
                 self.clients.remove(&id);
+                for w in &mut self.snippet_waits {
+                    w.waiting.remove(&id);
+                }
+                self.answer_snippets(now_ms);
                 if self.resolver.editor(id).is_some() {
                     self.resolver.editor_gone(id);
                     self.update_context(None, now_ms);
@@ -972,6 +1183,7 @@ impl App {
                 if let (ClientKind::Editor, Some(editor)) = (client, editor) {
                     self.resolver.editor_hello(conn, editor, pid, now_ms);
                     self.update_context(None, now_ms);
+                    self.reply(conn, self.editor_config());
                 }
             }
             ClientMsg::Focus { app_id, pid, .. } => self.set_focus(app_id, pid, now_ms),
@@ -1054,6 +1266,16 @@ impl App {
                 self.release_held(now_ms);
             }
             ClientMsg::EditorMode { mode } => {
+                if self.resolved.editor == Some(conn)
+                    && let Some(m) = mode.vim_mode()
+                {
+                    let g = &mut self.mode_guess;
+                    match (self.tracker.confident(), self.tracker.mode().same_kind(m)) {
+                        (false, _) => g.unsure += 1,
+                        (true, true) => g.right += 1,
+                        (true, false) => g.wrong += 1,
+                    }
+                }
                 self.resolver.editor_mode(conn, mode.vim_mode(), now_ms);
                 if self.resolved.editor == Some(conn) {
                     self.apply_editor_mode();
@@ -1067,23 +1289,55 @@ impl App {
                     keys_used: self.keys_for(&m),
                     motion: m,
                 };
+                self.record(now_ms, |t| {
+                    Some(Entry::Motion {
+                        t,
+                        motion: ev.motion.clone(),
+                        keys_used: ev.keys_used,
+                    })
+                });
+                let best = motion::best_for_motion(&ev, self.engine.known());
+                self.note_slow("move", ev.motion.end_ms, ev.keys_used, best);
                 let events = self.engine.on_motion(self.resolved.kind, &ev);
                 self.on_rule_events(&events, now_ms);
             }
             // From an editor that isn't the current context.
             ClientMsg::Motion(_) => {}
             ClientMsg::Operator(report) if self.resolved.editor == Some(conn) => {
+                let (keys_used, op_keys) = self.keys_for_operator(report.at_ms);
                 let ev = OperatorEvent {
-                    keys_used: self.keys_for_operator(report.at_ms),
+                    keys_used,
+                    op_keys,
                     report,
                 };
+                self.record(now_ms, |t| {
+                    Some(Entry::Operator {
+                        t,
+                        report: ev.report.clone(),
+                        keys_used: ev.keys_used,
+                        op_keys: ev.op_keys,
+                    })
+                });
+                let best = motion::best_for_edit(&ev, self.engine.known());
+                self.note_slow("edit", ev.report.at_ms, ev.keys_used, best);
                 let events = self.engine.on_operator(self.resolved.kind, &ev);
                 self.on_rule_events(&events, now_ms);
             }
             ClientMsg::Operator(_) => {}
+            ClientMsg::Command {
+                id,
+                command: Command::Snippets,
+            } => self.ask_for_snippets(conn, id, now_ms),
             ClientMsg::Command { id, command } => {
                 let reply = self.on_command(id, command, now_ms);
                 self.reply(conn, reply);
+            }
+            ClientMsg::Snippets { id, snippets } => {
+                if let Some(w) = self.snippet_waits.iter_mut().find(|w| w.id == id) {
+                    w.waiting.remove(&conn);
+                    w.got.extend(snippets.into_iter().take(RECENT_TIPS));
+                }
+                self.answer_snippets(now_ms);
             }
         }
     }
@@ -1141,6 +1395,26 @@ impl App {
                     }
                 }
             }
+            // Answered once the editors have (ask_for_snippets).
+            Command::Snippets => ServerMsg::Result {
+                id,
+                data: json!([]),
+            },
+            Command::LastSlow => ServerMsg::Result {
+                id,
+                data: serde_json::to_value(&self.last_slow).unwrap_or_default(),
+            },
+            Command::Record { on } => match self.on_record(on, now_ms) {
+                Ok(r) => ServerMsg::Result {
+                    id,
+                    data: serde_json::to_value(r).unwrap_or_default(),
+                },
+                Err(message) => ServerMsg::Error {
+                    id,
+                    code: ErrorCode::BadRequest,
+                    message,
+                },
+            },
             Command::ReportFalsePositive => match self.nudges.back() {
                 Some((nudge_id, _)) => {
                     let nudge_id = nudge_id.clone();
@@ -1228,6 +1502,7 @@ impl App {
                 .and_then(|id| self.resolver.editor(id)?.mode)
                 .is_some(),
             confident: self.tracker.confident(),
+            mode_guess: (self.mode_guess != ModeGuess::default()).then_some(self.mode_guess),
             keyboards: self.keyboards,
             clients,
         }
@@ -2101,6 +2376,21 @@ pub(crate) mod tests {
         // A click no longer loses the mode: the editor still knows it.
         app.on_pointer_click(0);
         assert_eq!(app.mode_known(), (VimMode::Insert, true));
+        // The guess from keys is scored against what the editor says.
+        let mode = |app: &mut App, mode| send(app, 2, ClientMsg::EditorMode { mode }, 0);
+        keys(&mut app, "<Esc>");
+        mode(&mut app, EditorMode::Normal);
+        keys(&mut app, "v");
+        mode(&mut app, EditorMode::VisualLine);
+        // A mapping we didn't know about: `;` entered Insert mode.
+        keys(&mut app, "<Esc>;");
+        mode(&mut app, EditorMode::Insert);
+        let g = app.status(0).mode_guess.unwrap();
+        assert_eq!((g.right, g.wrong, g.unsure), (2, 1, 1), "{g:?}");
+        assert_eq!(
+            g.describe().unwrap(),
+            "67% right over 3 mode changes, 1 while unsure"
+        );
     }
 
     #[test]
@@ -2188,6 +2478,7 @@ pub(crate) mod tests {
             op: Operator::Delete,
             at_ms: 650,
             objects: vec![TextObject::InnerParen],
+            range: None,
         };
         send(&mut app, 3, ClientMsg::Operator(report), 700);
         let n = nudges(&mut ext);
@@ -2551,5 +2842,137 @@ pub(crate) mod tests {
         app.tick(now + 4 * 86_400_000);
         assert!(app.personal_tips.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn records_a_session_without_text() {
+        let dir = std::env::temp_dir().join(format!("flowbuddy-rec-{}", std::process::id()));
+        let mut app = test_app(CoachingMode::Active);
+        app.recordings = dir.clone();
+        focus(&mut app, "code_code", 500);
+        let started = app.on_record(Some(true), 1000).unwrap();
+        assert!(started.recording);
+        type_at(&mut app, "<Esc>jjjjjjjihello there<Esc>", 2000);
+        let done = app.on_record(Some(false), 9000).unwrap();
+        assert!(!done.recording);
+        let text = std::fs::read_to_string(done.path.unwrap()).unwrap();
+        assert!(!text.contains("hello") && !text.contains("there"), "{text}");
+        let found = session::replay(&session::parse(&text).unwrap());
+        assert!(
+            found.iter().any(|f| f.rule_id == "vim.repeat-jk"),
+            "{found:?}"
+        );
+        assert!(!app.on_record(None, 9000).unwrap().recording);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn remembers_the_last_slow_move() {
+        let mut app = test_app(CoachingMode::Active);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        keys(&mut app, "jjjjjjj");
+        let motion = Motion {
+            start_ms: 10,
+            end_ms: 610,
+            moves: 7,
+            mode: EditorMode::Normal,
+            lines: 7,
+            cols: 0,
+            facts: flowbuddy_core::editor::MotionFacts {
+                paragraph_hops: Some(1),
+                ..Default::default()
+            },
+        };
+        send(&mut app, 3, ClientMsg::Motion(motion), 700);
+        let last = app.last_slow.clone().unwrap();
+        assert_eq!((last.kind.as_str(), last.keys_used), ("move", 7));
+        assert_eq!(last.best[0], ("}".to_string(), 1));
+    }
+
+    #[test]
+    fn snippets_go_from_the_editor_to_coach() {
+        let mut app = test_app(CoachingMode::Active);
+        app.config.text.ai_snippets = true;
+        let mut cli = connect(&mut app, 1);
+        let mut vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        // A tip in the editor: a text object instead of moving in.
+        keys(&mut app, "llllldw");
+        use flowbuddy_core::editor::{Operator, OperatorReport, TextObject};
+        let report = OperatorReport {
+            op: Operator::Delete,
+            at_ms: 700,
+            objects: vec![TextObject::InnerWord],
+            range: None,
+        };
+        send(&mut app, 3, ClientMsg::Operator(report), 750);
+        assert_eq!(app.recent_tips.len(), 1, "{:?}", app.recent_tips);
+        while vim.try_recv().is_ok() {}
+        send(
+            &mut app,
+            1,
+            ClientMsg::Command {
+                id: Some(9),
+                command: Command::Snippets,
+            },
+            800,
+        );
+        let ServerMsg::SnippetRequest { id, times } = vim.try_recv().unwrap() else {
+            panic!()
+        };
+        assert_eq!(times, [700]);
+        while cli.try_recv().is_ok() {}
+        let lines = vec!["let x = foo(bar);".to_string()];
+        send(
+            &mut app,
+            3,
+            ClientMsg::Snippets {
+                id,
+                snippets: vec![flowbuddy_core::ipc::Snippet {
+                    at_ms: 690,
+                    filetype: Some("rust".into()),
+                    lines: lines.clone(),
+                }],
+            },
+            900,
+        );
+        let ServerMsg::Result { id: Some(9), data } = cli.try_recv().unwrap() else {
+            panic!()
+        };
+        let tips: Vec<flowbuddy_core::ipc::TipSnippet> = serde_json::from_value(data).unwrap();
+        assert_eq!(tips[0].snippet.lines, lines);
+        // Off: an empty answer straight away, and no editor is asked.
+        app.config.text.ai_snippets = false;
+        send(
+            &mut app,
+            1,
+            ClientMsg::Command {
+                id: Some(10),
+                command: Command::Snippets,
+            },
+            1000,
+        );
+        assert!(vim.try_recv().is_err());
+        let ServerMsg::Result { data, .. } = cli.try_recv().unwrap() else {
+            panic!()
+        };
+        assert_eq!(data, json!([]));
     }
 }

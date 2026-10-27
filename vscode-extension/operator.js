@@ -11,7 +11,8 @@
 'use strict';
 
 const vscode = require('vscode');
-const {charObjects, lineObjects} = require('./facts');
+const {charObjects, lineObjects, rangeFacts} = require('./facts');
+const {textAllowed} = require('./textguard');
 
 const OPERATOR_MODES = ['normal', 'visual', 'visual_line', 'visual_block'];
 // vscodevim may switch to Insert just before a change's edit arrives.
@@ -79,6 +80,7 @@ class OperatorTracker {
     _report(lines, range) {
         const {start, end} = range;
         let objects;
+        let shape = null;
         if (start.character === 0 && end.character === 0 && end.line > start.line) {
             objects = lineObjects(lines.slice(start.line, end.line),
                 blank(lines[start.line - 1]) || start.line === 0, blank(lines[end.line]));
@@ -91,13 +93,29 @@ class OperatorTracker {
             const before = lines[start.line].charAt(start.character - 1);
             const after = lines[end.line].charAt(end.character);
             objects = charObjects(text, before, after);
+            // With [text] shapes on: which motions would have covered it.
+            const doc = this._document;
+            if (start.line === end.line && end.character > start.character &&
+                textAllowed(this._link.editorConfig, doc?.uri.scheme, doc?.uri.fsPath, false)) {
+                const line = lines[start.line];
+                // Code points, as Vim counts characters.
+                const first = [...line.slice(0, start.character)].length;
+                const last = first + [...text].length - 1;
+                shape = rangeFacts(line, first, last);
+            }
         }
-        if (!objects.length)
+        if (!objects.length && !shape)
             return;
         const atMs = Date.now();
+        const doc = this._document;
+        if (doc && textAllowed(this._link.editorConfig, doc.uri.scheme, doc.uri.fsPath, true))
+            this._link.snippets.add(atMs, doc.languageId, lines, start.line);
         setTimeout(() => {
             const op = this._modes.mode === 'insert' ? 'change' : 'delete';
-            this._link.send({type: 'operator', op, at_ms: atMs, objects});
+            const msg = {type: 'operator', op, at_ms: atMs, objects};
+            if (shape)
+                msg.range = shape;
+            this._link.send(msg);
         }, SETTLE_MS);
     }
 }

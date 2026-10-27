@@ -102,6 +102,8 @@ enum Deleted {
 #[derive(Default)]
 pub struct DeleteThenInsert {
     last: Option<(Deleted, u64)>,
+    /// `x` then `i`: characters typed so far. One, then Esc, is `r`.
+    replacing: Option<u32>,
 }
 
 impl DeleteThenInsert {
@@ -129,6 +131,34 @@ impl Rule for DeleteThenInsert {
         if step.event.is_none() {
             return;
         }
+        if let Some(typed) = self.replacing.as_mut() {
+            match (insert_key(step), &step.event) {
+                (Some(InsertKey::Text), _) => {
+                    *typed += 1;
+                    return;
+                }
+                (_, Some(VimEvent::Escape)) => {
+                    let (shape, text) = if *typed == 1 {
+                        (
+                            "x then i, one letter",
+                            "`x`, `i`, one letter and `Esc` is `r<char>`: replace the character and stay in Normal mode (`~` if it's only the case).",
+                        )
+                    } else {
+                        ("x then i", "`x` then `i` is `s`: substitute the character.")
+                    };
+                    self.replacing = None;
+                    out.push(finding(
+                        Self::ID,
+                        "Change instead",
+                        text.into(),
+                        Shape::fixed(shape),
+                        step,
+                    ));
+                    return;
+                }
+                _ => self.replacing = None,
+            }
+        }
         let Some(c) = command(step).filter(|_| step.before != VimMode::Insert) else {
             self.last = None;
             return;
@@ -142,7 +172,15 @@ impl Rule for DeleteThenInsert {
             return;
         }
         let deleted = if c.is("x") {
-            Some(Deleted::Chars(c.count))
+            // `xxx` then `i` is `3s`.
+            let before = match last {
+                Some((Deleted::Chars(n), at)) if step.at_ms.saturating_sub(at) <= GESTURE_MS => {
+                    n.unwrap_or(1)
+                }
+                _ => 0,
+            };
+            let n = before + c.count.unwrap_or(1);
+            Some(Deleted::Chars((n > 1).then_some(n)))
         } else if c.is("D") || c.is("d$") {
             Some(Deleted::ToEnd)
         } else if c.is("dd") {
@@ -164,10 +202,11 @@ impl Rule for DeleteThenInsert {
             return;
         }
         let (shape, text) = match (d, c.single().and_then(|k| k.plain_char())) {
-            (Deleted::Chars(None), Some('i')) => (
-                "x then i",
-                "`x` then `i` is `s`: substitute the character.".to_string(),
-            ),
+            (Deleted::Chars(None), Some('i')) => {
+                // Said at Esc, once it's clear whether one letter replaced it.
+                self.replacing = Some(0);
+                return;
+            }
             (Deleted::Chars(Some(n)), Some('i')) => (
                 "x then i",
                 format!("`{n}x` then `i` is `{n}s`: substitute {n} characters."),
@@ -202,6 +241,7 @@ impl Rule for DeleteThenInsert {
 
     fn reset(&mut self) {
         self.last = None;
+        self.replacing = None;
     }
 }
 
@@ -212,6 +252,8 @@ impl Rule for DeleteThenInsert {
 pub struct Shorthand {
     /// The previous single-key command, if it can start a pair.
     prev: Option<(char, u64)>,
+    /// `A` was just pressed: Enter right away is `o`.
+    appended: Option<u64>,
 }
 
 impl Shorthand {
@@ -239,6 +281,19 @@ impl Rule for Shorthand {
         if step.event.is_none() {
             return;
         }
+        if let Some(at) = self.appended.take()
+            && insert_key(step) == Some(InsertKey::Enter)
+            && step.at_ms.saturating_sub(at) <= GESTURE_MS
+        {
+            out.push(finding(
+                Self::ID,
+                "One key does it",
+                "`A` then Enter is `o`: open a line below.".into(),
+                Shape::fixed("A then Enter"),
+                step,
+            ));
+            return;
+        }
         let prev = self.prev.take();
         let Some(c) =
             command(step).filter(|_| matches!(step.before, VimMode::Normal | VimMode::OpPending))
@@ -260,8 +315,11 @@ impl Rule for Shorthand {
             ));
             return;
         }
-        if ["D", "C", "A", "I"].iter().any(|s| c.is(s)) {
+        if ["D", "C", "A", "I", "o", "O", "gI"].iter().any(|s| c.is(s)) {
             out.push(adoption(Self::ID, step));
+        }
+        if c.is("A") {
+            self.appended = Some(step.at_ms);
         }
         let this = c.single().and_then(|k| k.plain_char());
         let pair = prev
@@ -275,6 +333,10 @@ impl Rule for Shorthand {
                 ('^', 'i') => Some((
                     "^ then i",
                     "`^` then `i` is `I`: insert at the first non-blank.",
+                )),
+                ('0', 'i') => Some((
+                    "0 then i",
+                    "`0` then `i` is `gI`: insert at the very start of the line (`I` starts at the first non-blank).",
                 )),
                 ('k', 'o') => Some(("k then o", "`k` then `o` is `O`: open a line above.")),
                 ('j', 'O') => Some(("j then O", "`j` then `O` is `o`: open a line below.")),
@@ -290,13 +352,14 @@ impl Rule for Shorthand {
             ));
             return;
         }
-        if let Some(t) = this.filter(|t| matches!(t, '$' | '^' | 'k' | 'j')) {
+        if let Some(t) = this.filter(|t| matches!(t, '$' | '^' | '0' | 'k' | 'j')) {
             self.prev = Some((t, step.at_ms));
         }
     }
 
     fn reset(&mut self) {
         self.prev = None;
+        self.appended = None;
     }
 }
 
@@ -726,6 +789,7 @@ fn is_motion_keys(keys: &[Key]) -> bool {
     crate::motion::is_motion(&Command {
         count: None,
         keys: keys.to_vec(),
+        register: None,
     })
 }
 
@@ -788,6 +852,508 @@ impl Rule for Macro {
     }
 }
 
+pub fn undo_run() -> RepeatRule {
+    RepeatRule::new(RepeatSpec {
+        id: "vim.undo-run",
+        description: "Pressing u (or Ctrl-r) many times to go back through changes",
+        title: "Undo further at once",
+        contexts: VIM,
+        threshold: 6,
+        unit: |s| {
+            let c = command(s).filter(|c| c.count.is_none() && !s.before.is_visual())?;
+            if c.is("u") {
+                Some("u")
+            } else if c.single().is_some_and(|k| k.is_ctrl('r')) {
+                Some("Ctrl-r")
+            } else {
+                None
+            }
+        },
+        adopted: |s| {
+            command(s).is_some_and(|c| {
+                (c.count.is_some() && (c.is("u") || c.single().is_some_and(|k| k.is_ctrl('r'))))
+                    || c.is("U")
+                    || c.is("g-")
+                    || c.is("g+")
+            }) || is_cmdline(s, &["earlier", "later", "undo"])
+        },
+        message: |unit, n| {
+            if unit == "u" {
+                format!(
+                    "`u` {n} times. `{n}u` undoes that many at once, and `:earlier 1m` goes back to how the file was a minute ago."
+                )
+            } else {
+                format!(
+                    "`Ctrl-r` {n} times. `{n}Ctrl-r` redoes that many, `:later 1m` a minute's worth."
+                )
+            }
+        },
+    })
+}
+
+/// A `:` command starting with one of `names`.
+fn is_cmdline(step: &Step, names: &[&str]) -> bool {
+    match &step.event {
+        Some(VimEvent::Cmdline {
+            kind: ':',
+            text: Some(t),
+        }) => {
+            let t = t.trim_start().trim_start_matches('%');
+            names.iter().any(|n| t.starts_with(n))
+        }
+        _ => false,
+    }
+}
+
+/// `n.n.n.` → `cgn` then `...`, or `:%s` for every match.
+#[derive(Default)]
+pub struct ChangeMatches {
+    /// Saw a search hop and waits for `.`.
+    hopped: bool,
+    /// (hop, `.`) pairs in a row, and when the last step was.
+    pairs: u32,
+    last_ms: u64,
+}
+
+impl ChangeMatches {
+    const ID: &'static str = "vim.change-matches";
+    const PAIRS: u32 = 3;
+    /// Longer than a gesture: you look at each match before changing it.
+    const GAP_MS: u64 = 8000;
+}
+
+impl Rule for ChangeMatches {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Jumping to each search match and repeating the change by hand (n then .)"
+    }
+
+    fn title(&self) -> &'static str {
+        "Change the next match"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn threshold(&self) -> Option<u32> {
+        Some(Self::PAIRS)
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if is_cmdline(step, &["s/", "s#", "substitute"]) {
+            out.push(adoption(Self::ID, step));
+        }
+        let Some(c) = command(step).filter(|_| !step.before.is_visual()) else {
+            if step.event.is_some() && !matches!(step.event, Some(VimEvent::Escape)) {
+                self.reset();
+            }
+            return;
+        };
+        if step.at_ms.saturating_sub(self.last_ms) > Self::GAP_MS {
+            self.reset();
+        }
+        self.last_ms = step.at_ms;
+        if c.is("cgn") || c.is("dgn") {
+            out.push(adoption(Self::ID, step));
+            self.reset();
+            return;
+        }
+        let hop = c.count.is_none() && ["n", "N", "*", "#"].iter().any(|h| c.is(h));
+        if hop {
+            self.hopped = true;
+            return;
+        }
+        if c.is(".") && self.hopped {
+            self.hopped = false;
+            self.pairs += 1;
+            if self.pairs == Self::PAIRS {
+                let n = self.pairs;
+                out.push(finding(
+                    Self::ID,
+                    "Change the next match",
+                    format!(
+                        "`n` then `.` {n} times. Make the change with `cgn` instead: then `.` alone jumps to the next match and changes it. For every match at once, `:%s/old/new/g`."
+                    ),
+                    Shape::repeat("n then .", n),
+                    step,
+                ));
+            }
+            return;
+        }
+        self.reset();
+    }
+
+    fn reset(&mut self) {
+        self.hopped = false;
+        self.pairs = 0;
+    }
+}
+
+/// `Ifoo<Esc>j` line after line → `Ctrl-v`, `j`…, `I`, type once.
+#[derive(Default)]
+pub struct VisualBlock {
+    /// The line's edit so far: `I` or `A`, then characters typed.
+    edit: Option<(char, u32)>,
+    /// The last finished edit, and how many lines in a row had it.
+    last: Option<(char, u32)>,
+    times: u32,
+}
+
+impl VisualBlock {
+    const ID: &'static str = "vim.visual-block";
+    const LINES: u32 = 3;
+}
+
+impl Rule for VisualBlock {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Adding the same text at the start or end of line after line, where a block selection does all at once"
+    }
+
+    fn title(&self) -> &'static str {
+        "Edit a block of lines"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn threshold(&self) -> Option<u32> {
+        Some(Self::LINES)
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if step.event.is_none() {
+            return;
+        }
+        if step.before == VimMode::Insert {
+            match (&mut self.edit, insert_key(step), &step.event) {
+                (Some((_, n)), Some(InsertKey::Text), _) => *n += 1,
+                (_, _, Some(VimEvent::Escape)) => {}
+                _ => {
+                    self.edit = None;
+                    self.last = None;
+                }
+            }
+            return;
+        }
+        let Some(c) = command(step) else {
+            if !matches!(step.event, Some(VimEvent::Escape)) {
+                self.reset();
+            }
+            return;
+        };
+        if c.single().is_some_and(|k| k.is_ctrl('v')) {
+            out.push(adoption(Self::ID, step));
+            self.reset();
+            return;
+        }
+        if c.count.is_none() && (c.is("I") || c.is("A")) {
+            self.edit = Some((c.head().unwrap_or('I'), 0));
+            return;
+        }
+        if !(c.count.is_none() && (c.is("j") || c.is("+"))) {
+            self.reset();
+            return;
+        }
+        let Some(edit) = self.edit.take().filter(|(_, n)| *n > 0) else {
+            self.last = None;
+            self.times = 0;
+            return;
+        };
+        if self.last == Some(edit) {
+            self.times += 1;
+        } else {
+            self.last = Some(edit);
+            self.times = 1;
+        }
+        if self.times == Self::LINES {
+            let n = self.times;
+            let how = if edit.0 == 'I' { "`I`" } else { "`$` then `A`" };
+            out.push(finding(
+                Self::ID,
+                "Edit a block of lines",
+                format!(
+                    "The same text added to {n} lines one at a time. Select them with `Ctrl-v` and `j`, press {how}, type it once and `Esc`: it goes on every line."
+                ),
+                Shape::repeat("same text per line", n),
+                step,
+            ));
+        }
+    }
+
+    fn reset(&mut self) {
+        self.edit = None;
+        self.last = None;
+        self.times = 0;
+    }
+}
+
+/// Yank, delete something else, paste the deleted text by mistake, undo:
+/// `"0p` pastes the yank.
+#[derive(Default)]
+pub struct Registers {
+    /// 0 nothing, 1 yanked, 2 then deleted, 3 then pasted.
+    state: u8,
+    at_ms: u64,
+}
+
+impl Registers {
+    const ID: &'static str = "vim.registers";
+    /// Yank to paste: you go somewhere and delete in between.
+    const WINDOW_MS: u64 = 60_000;
+}
+
+impl Rule for Registers {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Pasting the text you just deleted instead of the text you yanked, then undoing"
+    }
+
+    fn title(&self) -> &'static str {
+        "Paste the yank"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        let Some(c) = command(step) else { return };
+        if step.at_ms.saturating_sub(self.at_ms) > Self::WINDOW_MS {
+            self.state = 0;
+        }
+        let head = c.head();
+        let paste = matches!(head, Some('p' | 'P')) && c.keys.len() == 1;
+        if paste
+            && c.register
+                .is_some_and(|r| r == '0' || r.is_ascii_lowercase())
+        {
+            out.push(adoption(Self::ID, step));
+            self.state = 0;
+            return;
+        }
+        // Into a named register or the black hole: nothing to clobber.
+        let unnamed = c.register.is_none();
+        let yank = head == Some('y');
+        let delete = matches!(head, Some('d' | 'c' | 'x' | 'X' | 's' | 'D' | 'C'));
+        self.state = match (self.state, yank, delete, paste, c.is("u")) {
+            (_, true, _, _, _) if unnamed => 1,
+            (1, _, true, _, _) if unnamed => 2,
+            (2, _, _, true, _) => 3,
+            (3, _, _, _, true) => {
+                out.push(finding(
+                    Self::ID,
+                    "Paste the yank",
+                    "The delete replaced what you yanked, so `p` pasted the deleted text. `\"0p` always pastes the last yank.".into(),
+                    Shape::fixed("yank, delete, paste, undo"),
+                    step,
+                ));
+                0
+            }
+            (s @ (1 | 2), _, _, _, _) if crate::motion::is_motion(c) => s,
+            _ => 0,
+        };
+        self.at_ms = step.at_ms;
+    }
+
+    fn reset(&mut self) {
+        self.state = 0;
+    }
+}
+
+pub fn case_run() -> RepeatRule {
+    RepeatRule::new(RepeatSpec {
+        id: "vim.case-run",
+        description: "Switching case one character at a time with ~",
+        title: "Change case by word",
+        contexts: LINE,
+        threshold: 4,
+        unit: |s| uncounted_is(s, &["~"]),
+        adopted: |s| {
+            counted_is(s, &["~"])
+                || command(s).is_some_and(|c| {
+                    c.keys.len() > 2
+                        && c.head() == Some('g')
+                        && c.keys[1]
+                            .plain_char()
+                            .is_some_and(|k| matches!(k, '~' | 'u' | 'U'))
+                })
+        },
+        message: |_, n| {
+            format!(
+                "`~` {n} times. `g~iw` switches the whole word's case; `gUiw` makes it upper case, `guiw` lower."
+            )
+        },
+    })
+}
+
+/// Replacing digits one by one where `Ctrl-a` and `Ctrl-x` count.
+#[derive(Default)]
+pub struct Increment {
+    times: Vec<u64>,
+}
+
+impl Increment {
+    const ID: &'static str = "vim.increment";
+    const TIMES: usize = 3;
+    const WINDOW_MS: u64 = 10 * 60_000;
+}
+
+impl Rule for Increment {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Changing numbers by retyping digits where Ctrl-a and Ctrl-x add and subtract"
+    }
+
+    fn title(&self) -> &'static str {
+        "Count with Ctrl-a"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        let Some(c) = command(step) else { return };
+        if c.single().is_some_and(|k| k.is_ctrl('a') || k.is_ctrl('x')) {
+            out.push(adoption(Self::ID, step));
+            self.times.clear();
+            return;
+        }
+        // `r` and a digit: only whether it's a digit is looked at.
+        let digit = c.keys.len() == 2
+            && c.head() == Some('r')
+            && c.keys[1].plain_char().is_some_and(|d| d.is_ascii_digit());
+        if !digit {
+            return;
+        }
+        self.times
+            .retain(|t| step.at_ms.saturating_sub(*t) <= Self::WINDOW_MS);
+        self.times.push(step.at_ms);
+        if self.times.len() == Self::TIMES {
+            self.times.clear();
+            out.push(finding(
+                Self::ID,
+                "Count with Ctrl-a",
+                "Changing numbers digit by digit? `Ctrl-a` adds one to the number under or after the cursor, `5Ctrl-a` adds five, `Ctrl-x` subtracts.".into(),
+                Shape::fixed("r then a digit"),
+                step,
+            ));
+        }
+    }
+
+    fn reset(&mut self) {}
+}
+
+/// Leaving Insert mode for one command and coming straight back.
+#[derive(Default)]
+pub struct InsertKeys {
+    /// Escaped from Insert at this time; then the command run, if one.
+    escaped: Option<u64>,
+    command: Option<&'static str>,
+    /// Earlier round trips: when, and for a paste or a move.
+    seen: Vec<(u64, &'static str)>,
+}
+
+impl InsertKeys {
+    const ID: &'static str = "vim.insert-keys";
+    /// It saves a key each time: worth a tip once it's a habit.
+    const TIMES: usize = 3;
+    const WINDOW_MS: u64 = 5 * 60_000;
+}
+
+impl Rule for InsertKeys {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Leaving Insert mode for one command or a paste and going straight back"
+    }
+
+    fn title(&self) -> &'static str {
+        "Stay in Insert mode"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if step.event.is_none() {
+            return;
+        }
+        if step.before == VimMode::Insert {
+            if matches!(insert_key(step), Some(InsertKey::CtrlO | InsertKey::CtrlR)) {
+                out.push(adoption(Self::ID, step));
+            }
+            self.escaped = matches!(step.event, Some(VimEvent::Escape)).then_some(step.at_ms);
+            self.command = None;
+            return;
+        }
+        let Some(at) = self.escaped else { return };
+        let Some(c) = command(step).filter(|_| step.at_ms.saturating_sub(at) <= GESTURE_MS) else {
+            self.reset();
+            return;
+        };
+        match self.command {
+            None if c.count.is_none() && (c.is("p") || c.is("P")) => self.command = Some("p"),
+            None if crate::motion::is_motion(c) && c.keys.len() <= 2 => {
+                self.command = Some("motion")
+            }
+            Some(what) if c.is("a") || c.is("i") => {
+                let now = step.at_ms;
+                self.seen
+                    .retain(|(t, w)| *w == what && now.saturating_sub(*t) <= Self::WINDOW_MS);
+                self.seen.push((now, what));
+                self.reset();
+                if self.seen.len() < Self::TIMES {
+                    return;
+                }
+                self.seen.clear();
+                let text = if what == "p" {
+                    "`Esc`, `p`, then back to typing: `Ctrl-r\"` pastes without leaving Insert mode."
+                } else {
+                    "`Esc`, one move, then back to typing: `Ctrl-o` runs one Normal-mode command and returns to Insert mode."
+                };
+                // Insert-mode meanings for Ctrl-o and Ctrl-r.
+                out.push(RuleEvent::Finding(Finding {
+                    rule_id: Self::ID,
+                    title: "Stay in Insert mode",
+                    text: text.into(),
+                    shape: Shape::fixed(if what == "p" {
+                        "Esc p a"
+                    } else {
+                        "Esc motion a"
+                    }),
+                    mode: VimMode::Insert,
+                    at_ms: step.at_ms,
+                }));
+            }
+            _ => self.reset(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.escaped = None;
+        self.command = None;
+    }
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
     vec![
         Box::new(Macro::default()),
@@ -798,6 +1364,13 @@ pub fn all() -> Vec<Box<dyn Rule>> {
         Box::new(repeat_indent()),
         Box::new(repeat_join()),
         Box::new(repeat_paste()),
+        Box::new(undo_run()),
+        Box::new(ChangeMatches::default()),
+        Box::new(VisualBlock::default()),
+        Box::new(Registers::default()),
+        Box::new(case_run()),
+        Box::new(Increment::default()),
+        Box::new(InsertKeys::default()),
     ]
 }
 
@@ -966,5 +1539,138 @@ mod tests {
                 assert!(!f.text.contains('z') && !f.text.contains('q'), "{}", f.text);
             }
         }
+    }
+
+    #[test]
+    fn undo_runs() {
+        let ev = vim(undo_run(), "uuuuuuu<Esc>");
+        assert_eq!(
+            texts(&ev),
+            [
+                "u 7 times. 7u undoes that many at once, and :earlier 1m goes back to how the file was a minute ago."
+            ]
+        );
+        assert!(findings(&vim(undo_run(), "uuuu<Esc>")).is_empty());
+        assert_eq!(adoptions(&vim(undo_run(), "5u")), 1);
+        assert_eq!(adoptions(&vim(undo_run(), ":earlier 2m<CR>")), 1);
+    }
+
+    #[test]
+    fn changing_match_after_match() {
+        let ev = vim(ChangeMatches::default(), "/foo<CR>cwbar<Esc>n.n.n.n.");
+        assert_eq!(findings(&ev).len(), 1, "{ev:?}");
+        assert_eq!(findings(&ev)[0].rule_id, "vim.change-matches");
+        // Twice is fine; something else in between breaks the run.
+        assert!(findings(&vim(ChangeMatches::default(), "n.n.")).is_empty());
+        assert!(findings(&vim(ChangeMatches::default(), "n.n.x.n.")).is_empty());
+        assert_eq!(
+            adoptions(&vim(ChangeMatches::default(), "cgnbar<Esc>...")),
+            1
+        );
+        assert_eq!(
+            adoptions(&vim(ChangeMatches::default(), ":%s/a/b/g<CR>")),
+            1
+        );
+    }
+
+    #[test]
+    fn more_shorthands() {
+        assert_eq!(
+            texts(&vim(Shorthand::default(), "Ahi<Esc>A<CR>x<Esc>")),
+            ["A then Enter is o: open a line below."]
+        );
+        assert_eq!(
+            texts(&vim(Shorthand::default(), "0ihi<Esc>")),
+            [
+                "0 then i is gI: insert at the very start of the line (I starts at the first non-blank)."
+            ]
+        );
+        // Typing before Enter is a real append.
+        assert!(findings(&vim(Shorthand::default(), "Ahi<CR>")).is_empty());
+    }
+
+    #[test]
+    fn one_letter_replaced_is_r() {
+        assert_eq!(
+            texts(&vim(DeleteThenInsert::default(), "xiX<Esc>")),
+            [
+                "x, i, one letter and Esc is r<char>: replace the character and stay in Normal mode (~ if it's only the case)."
+            ]
+        );
+        assert_eq!(
+            texts(&vim(DeleteThenInsert::default(), "xihi<Esc>")),
+            ["x then i is s: substitute the character."]
+        );
+    }
+
+    #[test]
+    fn same_text_line_after_line() {
+        let ev = vim(VisualBlock::default(), "I// <Esc>jI// <Esc>jI// <Esc>j");
+        assert_eq!(findings(&ev).len(), 1, "{ev:?}");
+        assert!(texts(&ev)[0].contains("Ctrl-v"));
+        // Different edits, or not moving down a line, aren't a block.
+        assert!(findings(&vim(VisualBlock::default(), "Ia<Esc>jIab<Esc>jIa<Esc>j")).is_empty());
+        assert!(findings(&vim(VisualBlock::default(), "Ia<Esc>wIa<Esc>wIa<Esc>w")).is_empty());
+        assert_eq!(
+            adoptions(&vim(VisualBlock::default(), "<C-v>jjI// <Esc>")),
+            1
+        );
+        // And it beats the macro tip for the same keys.
+        let mut e = crate::engine::Engine::standard();
+        let mut t = crate::vim::Tracker::new(Flavor::Vim);
+        t.reset_known(VimMode::Normal);
+        let mut ids = Vec::new();
+        for k in crate::vim::notation::strokes("A;<Esc>jA;<Esc>jA;<Esc>j", 0) {
+            let step = t.feed(k);
+            for ev in e.on_step(ContextKind::TerminalVim, &step) {
+                if let RuleEvent::Finding(f) = ev {
+                    ids.push(f.rule_id);
+                }
+            }
+        }
+        assert_eq!(ids, ["vim.visual-block"]);
+    }
+
+    #[test]
+    fn pasting_the_delete_by_mistake() {
+        let ev = vim(Registers::default(), "yiwwwdiwpu");
+        assert_eq!(findings(&ev).len(), 1, "{ev:?}");
+        // Pasted what was meant: no undo.
+        assert!(findings(&vim(Registers::default(), "yiwwdiwpx")).is_empty());
+        // Deleted into the black hole: the yank is still there.
+        assert!(findings(&vim(Registers::default(), "yiww\"_diwpu")).is_empty());
+        assert_eq!(adoptions(&vim(Registers::default(), "yiwwdiw\"0p")), 1);
+    }
+
+    #[test]
+    fn case_and_numbers() {
+        assert_eq!(findings(&vim(case_run(), "~~~~~<Esc>")).len(), 1);
+        assert_eq!(adoptions(&vim(case_run(), "gUiw")), 1);
+        let ev = vim(Increment::default(), "r1wr2wr3");
+        assert_eq!(findings(&ev).len(), 1);
+        assert!(findings(&vim(Increment::default(), "rxryrz")).is_empty());
+        assert_eq!(adoptions(&vim(Increment::default(), "5<C-a>")), 1);
+    }
+
+    #[test]
+    fn leaving_insert_for_one_command() {
+        let ev = vim(InsertKeys::default(), "ihi<Esc>pahi<Esc>pahi<Esc>pa");
+        assert_eq!(
+            texts(&ev),
+            ["Esc, p, then back to typing: Ctrl-r\" pastes without leaving Insert mode."]
+        );
+        assert_eq!(findings(&ev)[0].mode, VimMode::Insert);
+        let ev = vim(InsertKeys::default(), "ihi<Esc>wahi<Esc>wahi<Esc>wa");
+        assert_eq!(findings(&ev).len(), 1);
+        // Twice isn't a habit yet; more than one command is real editing.
+        assert!(findings(&vim(InsertKeys::default(), "ihi<Esc>pahi<Esc>pa")).is_empty());
+        assert!(
+            findings(&vim(
+                InsertKeys::default(),
+                "ihi<Esc>wwahi<Esc>wwahi<Esc>wwa"
+            ))
+            .is_empty()
+        );
+        assert_eq!(adoptions(&vim(InsertKeys::default(), "ihi<C-o>w")), 1);
     }
 }

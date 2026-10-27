@@ -363,8 +363,8 @@ impl Memory {
         }
     }
 
-    /// The day's "something new", if anything's left to learn.
-    pub fn pick_something_new(&self, now_ms: u64) -> Option<&'static curriculum::Item> {
+    /// Uses and daily-tip rows per curriculum item.
+    fn progress(&self) -> Option<impl Fn(&str) -> curriculum::Progress + use<>> {
         let store = self.store.as_ref()?;
         let uses = store.command_uses("0000-00-00").ok()?;
         let items: HashMap<String, flowbuddy_store::LearnRow> = store
@@ -373,18 +373,35 @@ impl Memory {
             .into_iter()
             .map(|r| (r.item_id.clone(), r))
             .collect();
-        curriculum::pick(
-            &|id| {
-                let row = items.get(id);
-                curriculum::Progress {
-                    uses: uses.get(id).copied().unwrap_or(0),
-                    times_shown: row.map_or(0, |r| r.times_shown),
-                    last_shown: row.map(|r| r.last_shown),
-                    learned: row.is_some_and(|r| r.learned_at.is_some()),
-                }
-            },
-            now_ms / 1000,
-        )
+        Some(move |id: &str| {
+            let row = items.get(id);
+            curriculum::Progress {
+                uses: uses.get(id).copied().unwrap_or(0),
+                times_shown: row.map_or(0, |r| r.times_shown),
+                last_shown: row.map(|r| r.last_shown),
+                learned: row.is_some_and(|r| r.learned_at.is_some()),
+            }
+        })
+    }
+
+    /// What you already use, for the skill tree; everything when there's
+    /// no memory to tell.
+    pub fn known(&self) -> curriculum::Known {
+        let Some(progress) = self.progress() else {
+            return curriculum::Known::everything();
+        };
+        let mastered = self
+            .stages
+            .iter()
+            .filter(|(_, s)| **s == Stage::Mastered)
+            .map(|((rule, _), _)| rule.as_str());
+        curriculum::Known::from_progress(&progress, mastered)
+    }
+
+    /// The day's "something new", if anything's left to learn.
+    pub fn pick_something_new(&self, now_ms: u64) -> Option<&'static curriculum::Item> {
+        let progress = self.progress()?;
+        curriculum::pick(&progress, &self.known(), now_ms / 1000)
     }
 
     pub fn learn_shown(&self, item_id: &str, now_ms: u64) {

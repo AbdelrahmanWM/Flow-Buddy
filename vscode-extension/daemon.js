@@ -6,6 +6,7 @@
 'use strict';
 
 const net = require('net');
+const {SnippetRing} = require('./textguard');
 
 const PROTOCOL_VERSION = 0;
 const MAX_BACKOFF_S = 30;
@@ -19,6 +20,9 @@ class DaemonLink {
     constructor({version, onConnected}) {
         this._version = version;
         this._onConnected = onConnected;
+        // [text] settings from the daemon; see textguard.js.
+        this.editorConfig = null;
+        this.snippets = new SnippetRing();
         this._backoff = 1;
         this._sock = null;
         this._ready = false;
@@ -83,6 +87,9 @@ class DaemonLink {
                 return;
             this._sock = null;
             this._ready = false;
+            // Whatever was allowed, it's off until the daemon says so again.
+            this.editorConfig = null;
+            this.snippets.clear();
             if (!this._stopped)
                 this._scheduleReconnect();
         });
@@ -96,7 +103,16 @@ class DaemonLink {
             console.warn(`flowbuddy: bad message from daemon: ${e}`);
             return;
         }
-        // Nothing to act on yet; errors mean this extension sent something wrong.
+        if (msg.type === 'editor_config') {
+            this.editorConfig = msg;
+            if (!msg.snippets)
+                this.snippets.clear();
+        }
+        if (msg.type === 'snippet_request') {
+            const snippets = this.editorConfig?.snippets ? this.snippets.pick(msg.times ?? []) : [];
+            this.send({type: 'snippets', id: msg.id, snippets});
+        }
+        // Errors mean this extension sent something wrong.
         if (msg.type === 'error')
             console.warn(`flowbuddy: daemon error ${msg.code}: ${msg.message}`);
     }

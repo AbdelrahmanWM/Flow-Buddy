@@ -332,6 +332,132 @@ impl Rule for WriteThenQuit {
     }
 }
 
+/// Cycling windows with `Ctrl-w w` or buffers with `:bn` to reach one.
+#[derive(Default)]
+pub struct Windows {
+    /// The last step's kind (`w` window, `b` buffer), how many in a row,
+    /// and when.
+    run: Option<(char, u32, u64)>,
+}
+
+impl Windows {
+    const ID: &'static str = "vim.windows";
+    const TIMES: u32 = 3;
+    const GAP_MS: u64 = 10_000;
+}
+
+fn is_ctrl_caret(k: &Key) -> bool {
+    k.is_ctrl('^') || k.is_ctrl('6')
+}
+
+impl Rule for Windows {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Cycling through windows or buffers one at a time to reach the one you want"
+    }
+
+    fn title(&self) -> &'static str {
+        "Go straight to the window"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        &[ContextKind::TerminalVim]
+    }
+
+    fn threshold(&self) -> Option<u32> {
+        Some(Self::TIMES)
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if step.event.is_none() {
+            return;
+        }
+        let c = command(step);
+        let window = c.filter(|c| c.count.is_none() && c.keys.len() == 2 && c.keys[0].is_ctrl('w'));
+        let adopted = window
+            .is_some_and(|c| c.keys[1].plain_char().is_some_and(|k| "hjkl".contains(k)))
+            || c.and_then(|c| c.single())
+                .is_some_and(|k| is_ctrl_caret(&k))
+            || cmdline_text(step).is_some_and(|t| t.starts_with("b ") || t.starts_with("buffer "));
+        if adopted {
+            out.push(RuleEvent::Adoption {
+                rule_id: Self::ID,
+                at_ms: step.at_ms,
+            });
+            self.run = None;
+            return;
+        }
+        if cmdline_text(step).is_some_and(|t| matches!(t, "e #" | "e#" | "edit #")) {
+            out.push(RuleEvent::Finding(Finding {
+                rule_id: Self::ID,
+                title: "Go straight to the window",
+                text: "`:e #` is `Ctrl-^`: back to the file you had open before.".into(),
+                shape: Shape::fixed(":e #"),
+                mode: VimMode::Cmdline,
+                at_ms: step.at_ms,
+            }));
+            return;
+        }
+        let kind = if window
+            .is_some_and(|c| c.keys[1].plain_char() == Some('w') || c.keys[1].is_ctrl('w'))
+        {
+            'w'
+        } else if cmdline_text(step)
+            .is_some_and(|t| matches!(t, "bn" | "bnext" | "bp" | "bprev" | "bprevious" | "bN"))
+        {
+            'b'
+        } else {
+            // Typing the `:` of the next `:bn` doesn't break the run.
+            if !matches!(step.event, Some(VimEvent::Escape))
+                && !c.is_some_and(|c| c.single() == Some(Key::ch(':')))
+            {
+                self.run = None;
+            }
+            return;
+        };
+        let n = match self.run {
+            Some((k, n, at)) if k == kind && step.at_ms.saturating_sub(at) <= Self::GAP_MS => n + 1,
+            _ => 1,
+        };
+        self.run = Some((kind, n, step.at_ms));
+        if n != Self::TIMES {
+            return;
+        }
+        let (shape, text, mode) = if kind == 'w' {
+            (
+                "Ctrl-w w again and again",
+                format!(
+                    "`Ctrl-w w` {n} times to cycle windows. `Ctrl-w h`, `Ctrl-w j`, `Ctrl-w k` and `Ctrl-w l` go straight to the window in that direction."
+                ),
+                VimMode::Normal,
+            )
+        } else {
+            (
+                ":bn again and again",
+                format!(
+                    "`:bn` {n} times to reach a file. `:b` and part of its name jumps straight to it; `Ctrl-^` switches back to the last one."
+                ),
+                VimMode::Cmdline,
+            )
+        };
+        out.push(RuleEvent::Finding(Finding {
+            rule_id: Self::ID,
+            title: "Go straight to the window",
+            text,
+            shape: Shape::fixed(shape),
+            mode,
+            at_ms: step.at_ms,
+        }));
+    }
+
+    fn reset(&mut self) {
+        self.run = None;
+    }
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
     vec![
         Box::new(repeat_jk()),
@@ -342,6 +468,7 @@ pub fn all() -> Vec<Box<dyn Rule>> {
         Box::new(repeat_dd()),
         Box::new(backspace_insert()),
         Box::new(WriteThenQuit::default()),
+        Box::new(Windows::default()),
     ]
 }
 
@@ -476,5 +603,23 @@ mod tests {
                 assert!(!f.text.contains("secret") && !f.shape.to_string().contains("secret"));
             }
         }
+    }
+
+    #[test]
+    fn cycling_windows_and_buffers() {
+        let ev = vim(Windows::default(), "<C-w>w<C-w>w<C-w>w");
+        assert_eq!(findings(&ev).len(), 1, "{ev:?}");
+        let ev = vim(Windows::default(), ":bn<CR>:bn<CR>:bn<CR>");
+        assert!(findings(&ev)[0].text.contains("`:b`"));
+        assert_eq!(findings(&vim(Windows::default(), ":e #<CR>")).len(), 1);
+        assert!(findings(&vim(Windows::default(), "<C-w>wj<C-w>wj<C-w>w")).is_empty());
+        assert_eq!(adoptions(&vim(Windows::default(), "<C-w>l<C-^>")), 2);
+    }
+
+    #[test]
+    fn window_commands_take_two_keys() {
+        // Ctrl-w w is one command, not Ctrl-w and a word motion.
+        let ev = vim(repeat_hl(), "<C-w>l<C-w>l<C-w>l<C-w>l<C-w>l<C-w>l");
+        assert!(findings(&ev).is_empty());
     }
 }

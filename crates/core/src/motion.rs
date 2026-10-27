@@ -7,6 +7,7 @@
 //! and the motion rules nudge when it would have saved enough keys.
 
 use crate::context::{ContextKind, VimMode};
+use crate::curriculum::Known;
 use crate::editor::{Motion, MotionFacts, OperatorReport, ScreenPos};
 use crate::key::Sym;
 use crate::rule::{Finding, Rule, RuleEvent, Shape};
@@ -16,7 +17,10 @@ use crate::vim::{Command, Step};
 #[derive(Clone, Debug, PartialEq)]
 pub struct OperatorEvent {
     pub report: OperatorReport,
+    /// Keys for the operator and anything that moved into place first.
     pub keys_used: u32,
+    /// Keys for the operator command alone (`d3w`: 3).
+    pub op_keys: u32,
 }
 
 /// A movement plus the keys the user pressed to make it.
@@ -41,10 +45,11 @@ pub enum Category {
     JumpBack,
     Page,
     Search,
+    LastChange,
 }
 
 impl Category {
-    pub const ALL: [Category; 12] = [
+    pub const ALL: [Category; 13] = [
         Category::Count,
         Category::Paragraph,
         Category::Screen,
@@ -57,6 +62,7 @@ impl Category {
         Category::JumpBack,
         Category::Page,
         Category::Search,
+        Category::LastChange,
     ];
 
     pub fn id(self) -> &'static str {
@@ -73,6 +79,7 @@ impl Category {
             Category::JumpBack => "motion.jump-back",
             Category::Page => "motion.page",
             Category::Search => "motion.search",
+            Category::LastChange => "motion.last-change",
         }
     }
 
@@ -90,6 +97,30 @@ impl Category {
             Category::JumpBack => "Jump back",
             Category::Page => "Move by half a page",
             Category::Search => "Repeat the search",
+            Category::LastChange => "Jump to the last change",
+        }
+    }
+
+    /// The skill-tree item a plan of this kind exercises; `keys` tells
+    /// `w` from `e` from `W`, and `f` from `t`.
+    fn skill(self, keys: &str) -> &'static str {
+        match self {
+            Category::Count => "count",
+            Category::Paragraph => "paragraph",
+            Category::Screen => "screen",
+            Category::File => "file-ends",
+            Category::Word if keys.contains(['W', 'B']) => "bigword",
+            Category::Word if keys.contains('e') => "word-end",
+            Category::Word => "word",
+            Category::Find if keys.contains(['t', 'T']) => "till",
+            Category::Find => "find",
+            Category::LineEnds => "line-ends",
+            Category::Bracket => "percent",
+            Category::Star => "star",
+            Category::JumpBack => "jump-back",
+            Category::Page => "half-page",
+            Category::Search => "search-next",
+            Category::LastChange => "change-list",
         }
     }
 
@@ -111,6 +142,7 @@ impl Category {
             Category::JumpBack => "Walking back to where you were without Ctrl-o",
             Category::Page => "Moving many lines where Ctrl-d or Ctrl-u land",
             Category::Search => "Moving to the next search match without n or N",
+            Category::LastChange => "Moving back to where you last changed something without g;",
         }
     }
 
@@ -129,6 +161,7 @@ impl Category {
             Category::JumpBack => "keys for Ctrl-o",
             Category::Page => "keys for Ctrl-d/u",
             Category::Search => "keys for n/N",
+            Category::LastChange => "keys for g;",
         }
     }
 }
@@ -140,6 +173,12 @@ pub struct Plan {
     /// What to type, e.g. `}}w` or `3f<char>`. Static pieces and numbers.
     pub keys: String,
     pub cost: u32,
+}
+
+impl Plan {
+    pub fn skill(&self) -> &'static str {
+        self.category.skill(&self.keys)
+    }
 }
 
 struct Part {
@@ -345,6 +384,13 @@ pub fn cheapest(m: &Motion) -> Option<Plan> {
 
 /// Every practical exact plan for `m`, best first.
 pub fn plans(m: &Motion) -> Vec<Plan> {
+    plans_for(m, &Known::everything())
+}
+
+/// Every practical exact plan for `m` made only of what `known` is ready
+/// for, best first.
+pub fn plans_for(m: &Motion, known: &Known) -> Vec<Plan> {
+    let ready = |p: &Part| known.ready(p.category.skill(&p.keys));
     let f = &m.facts;
     let mut plans = Vec::new();
 
@@ -386,6 +432,13 @@ pub fn plans(m: &Motion) -> Vec<Plan> {
             cost: 1,
         });
     }
+    if f.last_change && m.lines != 0 {
+        plans.push(Plan {
+            category: Category::LastChange,
+            keys: "g;".into(),
+            cost: 2,
+        });
+    }
 
     // A vertical part, then a part within the end line.
     let none = || Part {
@@ -394,14 +447,21 @@ pub fn plans(m: &Motion) -> Vec<Plan> {
         cost: 0,
     };
     let verticals = if m.lines != 0 {
-        vertical(m.lines, f)
+        let mut v = vertical(m.lines, f);
+        v.retain(ready);
+        v
     } else {
         vec![none()]
     };
     // Vertical motions keep the column, so no horizontal part is needed
     // when it didn't change.
     let h = if m.cols != 0 {
-        cheapest_part(horizontal(m.lines, m.cols, f))
+        cheapest_part(
+            horizontal(m.lines, m.cols, f)
+                .into_iter()
+                .filter(ready)
+                .collect(),
+        )
     } else {
         Some(none())
     };
@@ -425,7 +485,7 @@ pub fn plans(m: &Motion) -> Vec<Plan> {
             });
         }
     }
-    plans.retain(|p| p.cost > 0);
+    plans.retain(|p| p.cost > 0 && known.ready(p.skill()));
     plans.sort_by(|a, b| {
         if better(a.cost, a.category, b.cost, b.category) {
             std::cmp::Ordering::Greater
@@ -465,7 +525,7 @@ pub fn is_motion(c: &Command) -> bool {
 const VIM: &[ContextKind] = &[ContextKind::VsCodeVim, ContextKind::TerminalVim];
 
 /// A plan's keys with each command marked: `Ctrl-d`×10 then `7k`.
-fn marked(keys: &str) -> String {
+pub fn marked(keys: &str) -> String {
     keys.split(' ')
         .map(|word| {
             if matches!(word, "then" | "") {
@@ -489,6 +549,7 @@ fn marked(keys: &str) -> String {
 pub struct MotionRule {
     category: Category,
     min_saving: u32,
+    known: Known,
 }
 
 impl MotionRule {
@@ -496,6 +557,7 @@ impl MotionRule {
         MotionRule {
             category,
             min_saving: 3,
+            known: Known::everything(),
         }
     }
 }
@@ -535,7 +597,9 @@ impl Rule for MotionRule {
         if ev.keys_used == 0 {
             return;
         }
-        let all = plans(&ev.motion);
+        // Only what you're ready for: a plan a step too far gives way to
+        // the next best.
+        let all = plans_for(&ev.motion, &self.known);
         let Some(plan) = all.first() else {
             return;
         };
@@ -577,6 +641,10 @@ impl Rule for MotionRule {
                 at_ms,
             });
         }
+    }
+
+    fn set_known(&mut self, known: &Known) {
+        self.known = known.clone();
     }
 
     fn reset(&mut self) {}
@@ -739,7 +807,9 @@ fn ordinal(n: u32) -> String {
 
 /// Positioning and then operating where a text object does both.
 #[derive(Default)]
-pub struct TextObjectRule;
+pub struct TextObjectRule {
+    known: Known,
+}
 
 impl TextObjectRule {
     const ID: &'static str = "motion.text-object";
@@ -782,7 +852,12 @@ impl Rule for TextObjectRule {
     }
 
     fn on_operator(&mut self, ev: &OperatorEvent, out: &mut Vec<RuleEvent>) {
-        let Some(object) = ev.report.objects.first() else {
+        let Some(object) = ev
+            .report
+            .objects
+            .iter()
+            .find(|o| self.known.ready(crate::curriculum::object_skill(o.keys())))
+        else {
             return;
         };
         let cost = 1 + object.keys().len() as u32;
@@ -803,7 +878,166 @@ impl Rule for TextObjectRule {
         }));
     }
 
+    fn set_known(&mut self, known: &Known) {
+        self.known = known.clone();
+    }
+
     fn reset(&mut self) {}
+}
+
+/// An operator whose motion took more keys than one that covers the same
+/// range exactly: `d4l` where `de` does it. Needs `[text] shapes`.
+#[derive(Default)]
+pub struct OperatorMotionRule {
+    known: Known,
+}
+
+impl OperatorMotionRule {
+    const ID: &'static str = "motion.operator";
+    const MIN_SAVING: u32 = 2;
+}
+
+/// Ways to cover an operator's range, as (keys, cost, skill), best first.
+pub fn range_plans(
+    op: crate::editor::Operator,
+    range: &crate::editor::OperatorRange,
+) -> Vec<(String, u32, &'static str)> {
+    use crate::editor::Operator;
+    let o = op.key();
+    let f = &range.facts;
+    // `motion` takes `cost` keys (`t<char>`: 2), plus a count if n > 1.
+    let counted = |n: u32, motion: &str, cost: u32| {
+        if n == 1 {
+            (format!("{o}{motion}"), 1 + cost)
+        } else {
+            (format!("{o}{n}{motion}"), 1 + digits(n) + cost)
+        }
+    };
+    let mut out = Vec::new();
+    if f.line_end {
+        match op {
+            Operator::Delete => out.push(("D".to_string(), 1, "d-to-end")),
+            Operator::Change => out.push(("C".to_string(), 1, "d-to-end")),
+            Operator::Yank => out.push((format!("{o}$"), 2, "line-ends")),
+        }
+    }
+    // `cw` works like `ce`, so for a change the word-start count is left out.
+    if let Some(n) = range
+        .words
+        .filter(|n| *n <= GLANCE && op != Operator::Change)
+    {
+        let (k, c) = counted(n, "w", 1);
+        out.push((k, c, "word"));
+    }
+    if let Some(n) = f.word_end_hops.filter(|n| *n <= GLANCE) {
+        let (k, c) = counted(n, "e", 1);
+        out.push((k, c, "word-end"));
+    }
+    if let Some(n) = f.till_hops.filter(|n| *n <= GLANCE) {
+        let (k, c) = counted(n, "t<char>", 2);
+        out.push((k, c, "till"));
+    }
+    if let Some(n) = f.find_hops.filter(|n| *n <= GLANCE) {
+        let (k, c) = counted(n, "f<char>", 2);
+        out.push((k, c, "find"));
+    }
+    // Cheapest first; on a tie the earlier (simpler) one.
+    out.sort_by_key(|(_, c, _)| *c);
+    out
+}
+
+impl Rule for OperatorMotionRule {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "An operator with a longer motion than one that covers the same text (d4l for de)"
+    }
+
+    fn title(&self) -> &'static str {
+        "A shorter motion"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn needs_editor(&self) -> bool {
+        true
+    }
+
+    fn on_step(&mut self, _step: &Step, _out: &mut Vec<RuleEvent>) {}
+
+    fn on_operator(&mut self, ev: &OperatorEvent, out: &mut Vec<RuleEvent>) {
+        let Some(range) = &ev.report.range else {
+            return;
+        };
+        let used = ev.op_keys;
+        let Some((keys, cost, _)) = range_plans(ev.report.op, range)
+            .into_iter()
+            .find(|(_, _, skill)| self.known.ready(skill))
+        else {
+            return;
+        };
+        if used == 0 || used < cost + Self::MIN_SAVING {
+            return;
+        }
+        out.push(RuleEvent::Finding(Finding {
+            rule_id: Self::ID,
+            title: "A shorter motion",
+            text: format!(
+                "That took {used} keys. {} covers the same text in {cost}.",
+                crate::glossary::mark(&keys)
+            ),
+            shape: Shape::repeat("keys for an operator's motion", used),
+            mode: VimMode::Normal,
+            at_ms: ev.report.at_ms,
+        }));
+    }
+
+    fn set_known(&mut self, known: &Known) {
+        self.known = known.clone();
+    }
+
+    fn reset(&mut self) {}
+}
+
+/// The best ways to make a movement or an edit, for `flowbuddy explain
+/// --last`: (keys, cost), best first, only ones you're ready for.
+pub fn best_for_motion(ev: &MotionEvent, known: &Known) -> Vec<(String, u32)> {
+    plans_for(&ev.motion, known)
+        .into_iter()
+        .map(|p| (p.keys, p.cost))
+        .collect()
+}
+
+/// For an edit: a text object from anywhere inside it (against all the
+/// keys used), and the operator's motions from where it started.
+pub fn best_for_edit(ev: &OperatorEvent, known: &Known) -> Vec<(String, u32)> {
+    let mut out: Vec<(String, u32)> = ev
+        .report
+        .objects
+        .iter()
+        .filter(|o| known.ready(crate::curriculum::object_skill(o.keys())))
+        .map(|o| {
+            (
+                format!("{}{}", ev.report.op.key(), o.keys()),
+                1 + o.keys().len() as u32,
+            )
+        })
+        .take(1)
+        .collect();
+    if let Some(range) = &ev.report.range {
+        out.extend(
+            range_plans(ev.report.op, range)
+                .into_iter()
+                .filter(|(_, _, skill)| known.ready(skill))
+                .map(|(k, c, _)| (k, c)),
+        );
+    }
+    out.sort_by_key(|(_, c)| *c);
+    out
 }
 
 pub fn all() -> Vec<Box<dyn Rule>> {
@@ -813,7 +1047,8 @@ pub fn all() -> Vec<Box<dyn Rule>> {
         .collect();
     rules.push(Box::new(ScrollRule::default()));
     rules.push(Box::new(MarkRule));
-    rules.push(Box::new(TextObjectRule));
+    rules.push(Box::new(TextObjectRule::default()));
+    rules.push(Box::new(OperatorMotionRule::default()));
     rules
 }
 
@@ -1101,15 +1336,17 @@ mod tests {
     fn text_objects_instead_of_positioning() {
         use crate::editor::{Operator, TextObject};
         let ev = |keys_used, objects: Vec<TextObject>| OperatorEvent {
+            op_keys: 2,
             report: OperatorReport {
                 op: Operator::Delete,
                 at_ms: 9,
                 objects,
+                range: None,
             },
             keys_used,
         };
         let mut out = Vec::new();
-        TextObjectRule.on_operator(
+        TextObjectRule::default().on_operator(
             &ev(6, vec![TextObject::InnerParen, TextObject::AParen]),
             &mut out,
         );
@@ -1122,9 +1359,58 @@ mod tests {
         );
         // Already short, or no text object matched.
         let mut out = Vec::new();
-        TextObjectRule.on_operator(&ev(3, vec![TextObject::InnerParen]), &mut out);
-        TextObjectRule.on_operator(&ev(9, vec![]), &mut out);
+        TextObjectRule::default().on_operator(&ev(3, vec![TextObject::InnerParen]), &mut out);
+        TextObjectRule::default().on_operator(&ev(9, vec![]), &mut out);
         assert!(out.is_empty());
+
+        // Not `di(` to someone who doesn't use `ciw` yet; `diw` is fine
+        // once `cw` is known.
+        let mut r = TextObjectRule::default();
+        r.set_known(&Known::of(["change-word"]));
+        let mut out = Vec::new();
+        r.on_operator(&ev(6, vec![TextObject::InnerParen]), &mut out);
+        assert!(out.is_empty());
+        r.on_operator(
+            &ev(6, vec![TextObject::InnerParen, TextObject::InnerWord]),
+            &mut out,
+        );
+        let RuleEvent::Finding(f) = &out[0] else {
+            panic!("{out:?}")
+        };
+        assert!(f.text.contains("`diw`"), "{}", f.text);
+    }
+
+    #[test]
+    fn plans_wait_for_what_they_build_on() {
+        // `t` is one step past `f`: with `f` unknown, `t` gives way.
+        let facts = MotionFacts {
+            till_hops: Some(1),
+            word_hops: Some(12),
+            ..Default::default()
+        };
+        let ev = MotionEvent {
+            motion: motion(0, 20, facts),
+            keys_used: 20,
+        };
+        let fire = |known: Known| {
+            let mut out = Vec::new();
+            for mut r in all() {
+                r.set_known(&known);
+                r.on_motion(&ev, &mut out);
+            }
+            crate::rules::testing::findings(&out)
+                .iter()
+                .map(|f| (f.rule_id, f.text.clone()))
+                .collect::<Vec<_>>()
+        };
+        let f = fire(Known::everything());
+        assert_eq!(f.len(), 1);
+        assert!(f[0].1.contains("`t<char>`"), "{f:?}");
+        let f = fire(Known::of([]));
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].0, "motion.word");
+        assert!(!f[0].1.contains("`t"), "{f:?}");
+        assert!(fire(Known::of(["find"]))[0].1.contains("`t<char>`"));
     }
 
     #[test]
@@ -1199,5 +1485,79 @@ mod tests {
             kinds,
             [(true, 2), (false, 2), (true, 2), (true, 1), (true, 2)]
         );
+    }
+
+    #[test]
+    fn back_to_the_last_change() {
+        let f = MotionFacts {
+            last_change: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            plan(-40, 0, f.clone()),
+            (Category::LastChange, "g;".into(), 2)
+        );
+        // On the same line it's just a move along it.
+        assert_ne!(plan(0, 5, f).0, Category::LastChange);
+    }
+
+    #[test]
+    fn shorter_motions_for_an_operator() {
+        use crate::editor::{Operator, OperatorRange};
+        let ev = |op, op_keys, range| OperatorEvent {
+            report: OperatorReport {
+                op,
+                at_ms: 9,
+                objects: vec![],
+                range: Some(range),
+            },
+            keys_used: op_keys,
+            op_keys,
+        };
+        // d6l over a word: de.
+        let word = OperatorRange {
+            cols: 5,
+            facts: MotionFacts {
+                word_end_hops: Some(1),
+                ..Default::default()
+            },
+            words: None,
+        };
+        let mut out = Vec::new();
+        OperatorMotionRule::default().on_operator(&ev(Operator::Delete, 3, word.clone()), &mut out);
+        assert!(out.is_empty(), "d6l is 3 keys, de is 2: not enough");
+        OperatorMotionRule::default().on_operator(&ev(Operator::Delete, 5, word), &mut out);
+        let f = crate::rules::testing::findings(&out);
+        assert_eq!(
+            crate::glossary::plain(&f[0].text),
+            "That took 5 keys. de covers the same text in 2."
+        );
+        // To the end of the line: D, or C for a change.
+        let to_end = OperatorRange {
+            cols: 20,
+            facts: MotionFacts {
+                line_end: true,
+                till_hops: Some(3),
+                ..Default::default()
+            },
+            words: Some(4),
+        };
+        let plans = range_plans(Operator::Change, &to_end);
+        assert_eq!(plans[0].0, "C");
+        assert!(
+            plans.iter().all(|p| !p.0.contains('w')),
+            "cw is ce: {plans:?}"
+        );
+        let keys: Vec<_> = range_plans(Operator::Delete, &to_end)
+            .into_iter()
+            .map(|p| p.0)
+            .collect();
+        assert_eq!(keys, ["D", "d4w", "d3t<char>"]);
+        // Without range facts ([text] shapes off), nothing.
+        let mut out = Vec::new();
+        let mut plain = ev(Operator::Delete, 9, OperatorRange::default());
+        plain.report.range = None;
+        OperatorMotionRule::default().on_operator(&plain, &mut out);
+        assert!(out.is_empty());
     }
 }

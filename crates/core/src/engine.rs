@@ -59,6 +59,12 @@ impl Engine {
         }
     }
 
+    /// A rule's place in the tie-break order: lower wins (see
+    /// `rules::PRECEDENCE`).
+    pub fn rank_of(&self, rule_id: &str) -> usize {
+        self.rank.get(rule_id).copied().unwrap_or(usize::MAX)
+    }
+
     pub fn known(&self) -> &Known {
         &self.known
     }

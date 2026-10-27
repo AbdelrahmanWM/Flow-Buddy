@@ -48,6 +48,11 @@ struct SnippetWait {
     deadline_ms: u64,
 }
 
+/// How long a finding waits for a better one about the same keys.
+const HOLD_MS: u64 = 800;
+/// Findings this close together are about the same keys.
+const SAME_GESTURE_MS: u64 = 2000;
+
 /// Recent tips kept for snippets: this many, at most.
 const RECENT_TIPS: usize = 8;
 /// How long editors get to answer.
@@ -89,6 +94,10 @@ pub struct App {
     recent_tips: VecDeque<(&'static str, String, u64)>,
     snippet_waits: Vec<SnippetWait>,
     snippet_seq: u64,
+    /// Findings waiting a moment for a better one about the same keys:
+    /// (finding, context, when it came).
+    holding: Vec<(Finding, ContextKind, u64)>,
+    hold_ms: u64,
     /// When `gv` was last typed, to tell it from reselecting by hand.
     last_gv_ms: Option<u64>,
     /// The last movement or edit that could have been shorter.
@@ -248,6 +257,8 @@ impl App {
             mode_guess: ModeGuess::default(),
             last_slow: None,
             last_gv_ms: None,
+            holding: Vec::new(),
+            hold_ms: HOLD_MS,
             recent_tips: VecDeque::new(),
             snippet_waits: Vec::new(),
             snippet_seq: 0,
@@ -756,8 +767,6 @@ impl App {
         now_ms: u64,
         keyed: bool,
     ) {
-        let gate = self.gate(now_ms);
-        let muted = self.state.muted();
         for ev in events {
             match ev {
                 // VS Code: wait for editor activity after the keys (#110).
@@ -778,28 +787,66 @@ impl App {
                     );
                 }
                 RuleEvent::Adoption { at_ms, .. } if keyed && !self.editor_saw(*at_ms) => {}
-                RuleEvent::Finding(f) => {
-                    tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
-                    self.memory.hit(f, ctx, now_ms);
-                    if self.resolved.editor.is_some() {
-                        if self.recent_tips.len() == RECENT_TIPS {
-                            self.recent_tips.pop_front();
-                        }
-                        self.recent_tips
-                            .push_back((f.rule_id, f.text.clone(), f.at_ms));
-                    }
-                    let facts = RuleFacts {
-                        muted: muted.contains(f.rule_id),
-                        stage: self.memory.stage(f.rule_id, ctx),
-                        focus: self.memory.is_focus(f.rule_id),
-                        check_in: self.memory.check_in_due(f.rule_id, ctx),
-                    };
-                    if let Some(f) = self.coach.on_finding(f, facts, &gate, now_ms) {
-                        self.deliver(&f, now_ms);
-                    }
-                }
+                RuleEvent::Finding(f) => self.hold(f.clone(), ctx, now_ms),
                 RuleEvent::Adoption { rule_id, .. } => self.memory.adoption(rule_id, ctx, now_ms),
             }
+        }
+    }
+
+    /// Hold a finding a moment: rules that see the same keys can fire a
+    /// little apart (`.` on the third repeat, a macro on the fourth), and
+    /// only the better-ranked one should become a tip.
+    fn hold(&mut self, f: Finding, ctx: ContextKind, now_ms: u64) {
+        if self.hold_ms == 0 {
+            return self.take(&f, ctx, now_ms);
+        }
+        let rank = self.engine.rank_of(f.rule_id);
+        if let Some(p) = self
+            .holding
+            .iter_mut()
+            .find(|(h, _, _)| h.at_ms.abs_diff(f.at_ms) <= SAME_GESTURE_MS)
+        {
+            if rank < self.engine.rank_of(p.0.rule_id) {
+                tracing::debug!(kept = f.rule_id, dropped = p.0.rule_id, "same gesture");
+                *p = (f, ctx, now_ms);
+            } else {
+                tracing::debug!(kept = p.0.rule_id, dropped = f.rule_id, "same gesture");
+            }
+            return;
+        }
+        self.holding.push((f, ctx, now_ms));
+    }
+
+    /// Findings held long enough become tips (or don't, by the policy).
+    fn release(&mut self, now_ms: u64) {
+        let (ready, wait): (Vec<_>, Vec<_>) = std::mem::take(&mut self.holding)
+            .into_iter()
+            .partition(|(_, _, at)| now_ms.saturating_sub(*at) >= self.hold_ms);
+        self.holding = wait;
+        for (f, ctx, _) in ready {
+            self.take(&f, ctx, now_ms);
+        }
+    }
+
+    fn take(&mut self, f: &Finding, ctx: ContextKind, now_ms: u64) {
+        tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
+        self.memory.hit(f, ctx, now_ms);
+        if self.resolved.editor.is_some() {
+            if self.recent_tips.len() == RECENT_TIPS {
+                self.recent_tips.pop_front();
+            }
+            self.recent_tips
+                .push_back((f.rule_id, f.text.clone(), f.at_ms));
+        }
+        let gate = self.gate(now_ms);
+        let facts = RuleFacts {
+            muted: self.state.muted().contains(f.rule_id),
+            stage: self.memory.stage(f.rule_id, ctx),
+            focus: self.memory.is_focus(f.rule_id),
+            check_in: self.memory.check_in_due(f.rule_id, ctx),
+        };
+        if let Some(f) = self.coach.on_finding(f, facts, &gate, now_ms) {
+            self.deliver(&f, now_ms);
         }
     }
 
@@ -994,6 +1041,7 @@ impl App {
         }
         self.something_new(now_ms);
         self.answer_snippets(now_ms);
+        self.release(now_ms);
         let events = self.engine.tick(self.resolved.kind, now_ms);
         self.on_rule_events(&events, now_ms);
         let gate = self.gate(now_ms);
@@ -1646,6 +1694,8 @@ pub(crate) mod tests {
             Box::new(crate::notify::fake::Recorder::default()),
         );
         app.claude_probe = || false;
+        // Tips straight away, as most tests expect; the hold has its own.
+        app.hold_ms = 0;
         app
     }
 
@@ -1982,6 +2032,7 @@ pub(crate) mod tests {
             Box::new(recorder.clone()),
         );
         app.claude_probe = || false;
+        app.hold_ms = 0;
         let _cli = connect(&mut app, 1);
         focus(&mut app, "code_code", 500);
         keys(&mut app, "<Esc>xxxxxw");
@@ -2054,6 +2105,7 @@ pub(crate) mod tests {
         )
         .with_store(store);
         app.claude_probe = || false;
+        app.hold_ms = 0;
         (app, recorder)
     }
 
@@ -3276,5 +3328,43 @@ pub(crate) mod tests {
         // A click in the middle: the keys didn't make the whole move.
         app.on_pointer_click(300);
         assert_eq!(app.keys_for(&motion(7), 2), 0);
+    }
+
+    #[test]
+    fn one_tip_when_two_rules_fire_a_moment_apart() {
+        let mut app = test_app(CoachingMode::Active);
+        app.hold_ms = HOLD_MS;
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "org.gnome.Terminal", 100);
+        ctx(&mut app, CtxEvent::Fg, Some("vim"), 200);
+        let finding = |rule_id, at_ms| Finding {
+            rule_id,
+            title: "t",
+            text: "Use `.`".into(),
+            shape: flowbuddy_core::rule::Shape::fixed("x"),
+            mode: VimMode::Normal,
+            at_ms,
+        };
+        // The dot-repeat tip, then the macro tip a second later: the macro
+        // ranks higher and is the one shown.
+        app.on_rule_events_in(
+            ContextKind::TerminalVim,
+            &[RuleEvent::Finding(finding("vim.dot-repeat", 1_000))],
+            1_000,
+            false,
+        );
+        app.on_rule_events_in(
+            ContextKind::TerminalVim,
+            &[RuleEvent::Finding(finding("vim.macro", 1_900))],
+            1_900,
+            false,
+        );
+        assert!(nudges(&mut ext).is_empty(), "held");
+        app.tick(3_000);
+        let n = nudges(&mut ext);
+        assert_eq!(
+            n.iter().map(|n| n.rule_id.as_str()).collect::<Vec<_>>(),
+            ["vim.macro"]
+        );
     }
 }

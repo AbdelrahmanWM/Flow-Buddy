@@ -387,7 +387,10 @@ pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<Str
         .iter()
         .filter(|(_, s)| **s == flowbuddy_core::learning::Stage::Mastered)
         .map(|((rule, _), _)| rule.as_str());
-    let tree = Known::from_progress(&progress, mastered).with_levels(known_levels);
+    let overrides = store.known_overrides()?;
+    let tree = Known::from_progress(&progress, mastered)
+        .with_levels(known_levels)
+        .with_overrides(&overrides);
     let known = |id: &str| tree.knows(id);
     let mut out = String::new();
     if let Some(row) = rows.values().max_by_key(|r| r.last_shown)

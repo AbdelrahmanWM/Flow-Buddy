@@ -43,7 +43,20 @@ enum Cmd {
     /// The one habit worth working on now.
     Next,
     /// Your daily "something new" and your progress through Vim's features.
-    Learn,
+    Learn {
+        /// Say you know these (ids from --list), so tips build on them.
+        #[arg(long, value_delimiter = ',')]
+        know: Vec<String>,
+        /// Say you don't know these, so they're taught.
+        #[arg(long, value_delimiter = ',')]
+        forget: Vec<String>,
+        /// Back to judging these from your use.
+        #[arg(long, value_delimiter = ',')]
+        reset: Vec<String>,
+        /// Every item: its id, level and commands.
+        #[arg(long)]
+        list: bool,
+    },
     /// Check everything Flow Buddy needs, and say how to fix what's missing.
     Doctor,
     /// A few questions about how you'd like to be coached, saved to the
@@ -238,7 +251,37 @@ fn main() {
         Cmd::Mode { mode } => set_mode(mode),
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),
-        Cmd::Learn => learn(),
+        Cmd::Learn {
+            know,
+            forget,
+            reset,
+            list,
+        } => {
+            if list {
+                for i in flowbuddy_core::curriculum::CURRICULUM {
+                    println!(
+                        "{:<16} level {}  {}",
+                        i.id,
+                        i.level,
+                        flowbuddy_core::glossary::plain(i.keys)
+                    );
+                }
+                Ok(())
+            } else if know.is_empty() && forget.is_empty() && reset.is_empty() {
+                learn()
+            } else {
+                Client::connect(ClientKind::Cli).and_then(|mut c| {
+                    for (items, known) in [(know, Some(true)), (forget, Some(false)), (reset, None)]
+                    {
+                        if !items.is_empty() {
+                            c.command(Command::KnowItems { items, known })?;
+                        }
+                    }
+                    println!("Noted.");
+                    Ok(())
+                })
+            }
+        }
         Cmd::Watch => watch(),
         Cmd::Setup => run_setup(),
         Cmd::Doctor => {

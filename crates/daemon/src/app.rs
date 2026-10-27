@@ -1675,6 +1675,25 @@ impl App {
                 id,
                 data: json!([]),
             },
+            Command::KnowItems { items, known } => {
+                let unknown: Vec<&String> = items
+                    .iter()
+                    .filter(|i| flowbuddy_core::curriculum::find(i).is_none())
+                    .collect();
+                if !unknown.is_empty() {
+                    return ServerMsg::Error {
+                        id,
+                        code: ErrorCode::BadRequest,
+                        message: format!(
+                            "not curriculum items: {unknown:?} (see flowbuddy learn --list)"
+                        ),
+                    };
+                }
+                self.memory.set_known(&items, known);
+                self.engine
+                    .set_known(self.memory.known(Some(self.resolved.kind), now_ms));
+                ServerMsg::Ack { id }
+            }
             Command::RecentTips { limit } => {
                 let limit = limit.unwrap_or(10).clamp(1, 50) as usize;
                 let tips: Vec<flowbuddy_core::ipc::RecentTip> = self
@@ -3629,5 +3648,34 @@ pub(crate) mod tests {
                 .knows("ciw")
         );
         assert!(app.memory.known(None, now).knows("ciw"));
+    }
+
+    #[test]
+    fn saying_what_you_know() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let mut cli = connect(&mut app, 1);
+        let know = |app: &mut App, items: &[&str], known| {
+            send(
+                app,
+                1,
+                ClientMsg::Command {
+                    id: Some(1),
+                    command: Command::KnowItems {
+                        items: items.iter().map(|s| s.to_string()).collect(),
+                        known,
+                    },
+                },
+                1_000,
+            )
+        };
+        know(&mut app, &["ci-paren"], Some(true));
+        assert!(app.engine.known().knows("ciw"));
+        know(&mut app, &["ciw"], Some(false));
+        assert!(!app.engine.known().knows("ciw"));
+        know(&mut app, &["ciw", "ci-paren"], None);
+        assert!(!app.engine.known().knows("ci-paren"));
+        while cli.try_recv().is_ok() {}
+        know(&mut app, &["nonsense"], Some(true));
+        assert!(matches!(cli.try_recv().unwrap(), ServerMsg::Error { .. }));
     }
 }

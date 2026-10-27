@@ -129,6 +129,13 @@ pub enum Command {
     /// The last movement or edit that took more keys than it needed, with
     /// the best ways to do it. Answers with `Option<LastSlow>`.
     LastSlow,
+    /// Say these curriculum items are known (`Some(true)`), not known, or
+    /// back to what use shows (`None`).
+    KnowItems {
+        items: Vec<String>,
+        #[serde(default)]
+        known: Option<bool>,
+    },
     /// The latest tips, newest first. Answers with `Vec<RecentTip>`.
     RecentTips {
         #[serde(default)]

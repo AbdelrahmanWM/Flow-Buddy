@@ -21,6 +21,8 @@ pub use flowbuddy_store::days::day;
 struct ProgressCache {
     /// The day it was read: "recent" moves on with the days.
     day: String,
+    /// What you said you know or don't (`flowbuddy learn --know`).
+    overrides: HashMap<String, bool>,
     /// Per environment (`None`: all of them), read when first wanted.
     uses: HashMap<Option<ContextKind>, HashMap<String, flowbuddy_store::ItemUse>>,
     items: HashMap<String, flowbuddy_store::LearnRow>,
@@ -449,6 +451,7 @@ impl Memory {
         if cache.as_ref().is_none_or(|c| c.day != today) {
             *cache = Some(ProgressCache {
                 day: today.clone(),
+                overrides: store.known_overrides().unwrap_or_default(),
                 uses: HashMap::new(),
                 items: store
                     .learn_items()
@@ -486,6 +489,15 @@ impl Memory {
 
     /// What you already use, for the skill tree; everything when there's
     /// no memory to tell.
+    /// Say items are known, not known, or back to what use shows.
+    pub fn set_known(&self, items: &[String], known: Option<bool>) {
+        let Some(store) = &self.store else { return };
+        for item in items {
+            let _ = store.set_known_override(item, known);
+        }
+        self.progress_cache.replace(None);
+    }
+
     pub fn known(&self, ctx: Option<ContextKind>, now_ms: u64) -> curriculum::Known {
         let Some(progress) = self.progress(ctx, now_ms) else {
             return curriculum::Known::everything();
@@ -495,7 +507,15 @@ impl Memory {
             .iter()
             .filter(|(_, s)| **s == Stage::Mastered)
             .map(|((rule, _), _)| rule.as_str());
-        curriculum::Known::from_progress(&progress, mastered).with_levels(self.known_levels)
+        let overrides = self
+            .progress_cache
+            .borrow()
+            .as_ref()
+            .map(|c| c.overrides.clone())
+            .unwrap_or_default();
+        curriculum::Known::from_progress(&progress, mastered)
+            .with_levels(self.known_levels)
+            .with_overrides(&overrides)
     }
 
     /// The day's "something new", if anything's left to learn.

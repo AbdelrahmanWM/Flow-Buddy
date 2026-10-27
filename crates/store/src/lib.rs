@@ -139,6 +139,13 @@ const MIGRATIONS: &[&str] = &[
     DROP TABLE commands_used;
     ALTER TABLE commands_used_ctx RENAME TO commands_used;
 "#,
+    r#"
+    -- What you said you know (1) or don't (0), over what use shows.
+    CREATE TABLE known_overrides (
+        item_id TEXT    PRIMARY KEY,
+        known   INTEGER NOT NULL
+    );
+"#,
 ];
 
 /// One tip as it was shown.
@@ -603,7 +610,7 @@ impl Store {
             "DELETE FROM daily_stats; DELETE FROM activity; DELETE FROM patterns;
              DELETE FROM episodes; DELETE FROM typing; DELETE FROM typo_pairs;
              DELETE FROM tip_outcomes; DELETE FROM commands_used; DELETE FROM learn_items;
-             DELETE FROM tip_history;",
+             DELETE FROM tip_history; DELETE FROM known_overrides;",
         )?;
         self.conn.execute_batch("VACUUM")?;
         let _ = self.conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
@@ -660,6 +667,31 @@ impl Store {
                 },
             ))
         })?;
+        rows.collect()
+    }
+
+    /// Say an item is known (`Some(true)`), not known, or back to what use
+    /// shows (`None`).
+    pub fn set_known_override(&self, item_id: &str, known: Option<bool>) -> Result<()> {
+        match known {
+            Some(k) => self.conn.execute(
+                "INSERT INTO known_overrides (item_id, known) VALUES (?1, ?2)
+                 ON CONFLICT (item_id) DO UPDATE SET known = ?2",
+                params![item_id, k],
+            )?,
+            None => self.conn.execute(
+                "DELETE FROM known_overrides WHERE item_id = ?1",
+                params![item_id],
+            )?,
+        };
+        Ok(())
+    }
+
+    pub fn known_overrides(&self) -> Result<HashMap<String, bool>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT item_id, known FROM known_overrides")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
         rows.collect()
     }
 
@@ -879,6 +911,7 @@ impl Store {
             ("commands_used", "day, context, item_id"),
             ("learn_items", "item_id"),
             ("tip_history", "rule_id, title, text"),
+            ("known_overrides", "item_id"),
         ] {
             let mut stmt = self.conn.prepare(&format!("SELECT {cols} FROM {table}"))?;
             let n = stmt.column_count();

@@ -932,6 +932,26 @@ impl Known {
         self.closed()
     }
 
+    /// With what you said: known items added (and what they build on),
+    /// then not-known ones taken out.
+    pub fn with_overrides(mut self, overrides: &std::collections::HashMap<String, bool>) -> Self {
+        if self.everything {
+            return self;
+        }
+        for item in CURRICULUM {
+            if overrides.get(item.id) == Some(&true) {
+                self.ids.insert(item.id);
+            }
+        }
+        let mut k = self.closed();
+        for item in CURRICULUM {
+            if overrides.get(item.id) == Some(&false) {
+                k.ids.remove(item.id);
+            }
+        }
+        k
+    }
+
     pub fn knows(&self, id: &str) -> bool {
         self.everything || self.ids.contains(id)
     }
@@ -1216,6 +1236,20 @@ mod tests {
         assert!(k.ready_for_command("ciw") && !k.ready_for_command("ci("));
         assert!(!k.ready_for_command("zz"), "zz builds on Ctrl-d");
         assert!(k.ready_for_command("Ctrl-e"), "not a tree item");
+    }
+
+    #[test]
+    fn what_you_say_you_know() {
+        let said = std::collections::HashMap::from([
+            ("ci-paren".to_string(), true),
+            ("word".to_string(), false),
+        ]);
+        let k = Known::of(["word"]).with_overrides(&said);
+        assert!(
+            k.knows("ci-paren") && k.knows("ciw"),
+            "and what it builds on"
+        );
+        assert!(!k.knows("word"));
     }
 
     #[test]

@@ -318,6 +318,7 @@ mod tests {
             layout_note: None,
             tip_filter: None,
             mode_guess: None,
+            timing: None,
             keyboards,
             clients,
         }

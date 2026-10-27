@@ -110,6 +110,8 @@ pub struct App {
     last_slow: Option<flowbuddy_core::ipc::LastSlow>,
     /// How the mode guessed from keys compares with editors' reports.
     mode_guess: ModeGuess,
+    /// How long keys and messages take to handle.
+    timings: crate::timing::Timings,
     /// A session being recorded (`flowbuddy record`), and where to.
     recorder: Option<crate::recorder::Recorder>,
     recordings: PathBuf,
@@ -265,6 +267,7 @@ impl App {
             last_click_ms: None,
             last_shortcut: None,
             mode_guess: ModeGuess::default(),
+            timings: Default::default(),
             last_slow: None,
             last_gv_ms: None,
             last_key_ms: None,
@@ -423,6 +426,11 @@ impl App {
             keys_used,
             best,
         });
+    }
+
+    /// A key or message took this long to handle.
+    pub fn took(&mut self, d: std::time::Duration) {
+        self.timings.record(d);
     }
 
     fn with_memory_config(mut self) -> Self {
@@ -1723,6 +1731,7 @@ impl App {
                 .is_some(),
             confident: self.tracker.confident(),
             mode_guess: (self.mode_guess != ModeGuess::default()).then_some(self.mode_guess),
+            timing: self.timings.summary(),
             keyboards: self.keyboards,
             clients,
         }

@@ -428,6 +428,9 @@ pub struct Status {
     /// since the daemon started; `None` before any report.
     #[serde(default)]
     pub mode_guess: Option<ModeGuess>,
+    /// How long the daemon takes per key and message.
+    #[serde(default)]
+    pub timing: Option<String>,
     pub keyboards: usize,
     pub clients: Vec<ClientKind>,
 }

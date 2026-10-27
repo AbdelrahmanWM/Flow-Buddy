@@ -10,9 +10,10 @@ mod memory;
 mod notify;
 mod recorder;
 mod resolver;
+mod timing;
 mod typing;
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use std::time::Duration;
@@ -116,14 +117,18 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("key {key}");
                     }
                     let stroke = KeyStroke { key, repeat: raw.value == 2, at_ms: raw.at_ms };
+                    let started = Instant::now();
                     app.on_key(stroke, now_ms());
+                    app.took(started.elapsed());
                 }
                 Some(CaptureEvent::PointerClick) => app.on_pointer_click(now_ms()),
                 Some(CaptureEvent::Keyboards(n)) => app.set_keyboards(n),
                 None => break,
             },
             Some(ev) = conn_rx.recv() => {
+                let started = Instant::now();
                 app.on_conn(ev, now_ms());
+                app.took(started.elapsed());
                 // GNOME switched layouts: follow it.
                 if let Some((l, v)) = app.take_layout() {
                     let (k, layout, note) =

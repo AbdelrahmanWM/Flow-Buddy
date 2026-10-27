@@ -167,6 +167,8 @@ fn phrase(keys: &str) -> Option<&'static str> {
         "Ctrl-w k" => "go to the window above",
         "Ctrl-w l" => "go to the window on the right",
         "Ctrl-w w" => "go to the next window",
+        "Ctrl-w v" => "split this editor side by side",
+        ":vsplit" => "split this editor side by side",
         ":b" => "switch to a buffer by typing part of its name",
         ":bn" => "switch to the next buffer",
         ":e #" => "open the file you had open before",

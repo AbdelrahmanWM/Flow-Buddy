@@ -26,6 +26,7 @@ pub enum UiWhat {
     /// The same Visual selection as the last one: `How::Shortcut` when it
     /// came from `gv`.
     Reselected,
+    SplitOpened,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,6 +161,20 @@ pub fn tab_switch() -> Box<dyn Rule> {
     })
 }
 
+pub fn split() -> Box<dyn Rule> {
+    Box::new(ClickHabit {
+        id: "vscode.split",
+        what: UiWhat::SplitOpened,
+        count: 2,
+        window_ms: 30 * 60_000,
+        clicks: Vec::new(),
+        title: "Split from the keyboard",
+        text: "You opened a split with the mouse twice. `Ctrl-w v` (or `:vsplit`) opens one beside this editor. `Ctrl-w h` and `Ctrl-w l` move between them.",
+        shape: "splits opened by clicking",
+        description: "Opening a side-by-side editor with the mouse instead of Ctrl-w v",
+    })
+}
+
 /// Selecting the same text again by hand where `gv` does it.
 #[derive(Default)]
 pub struct Reselect {
@@ -231,6 +246,7 @@ pub fn all() -> Vec<Box<dyn Rule>> {
         quick_open(),
         terminal_toggle(),
         tab_switch(),
+        split(),
         Box::new(Reselect::default()),
     ]
 }
@@ -316,5 +332,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn splits_by_mouse() {
+        use How::*;
+        use UiWhat::SplitOpened as S;
+        assert_eq!(
+            run(&mut *split(), &[(S, Click, 0), (S, Click, 60_000)]).len(),
+            1
+        );
+        let ev = run(&mut *split(), &[(S, Shortcut, 0)]);
+        assert!(matches!(ev[0], RuleEvent::Adoption { .. }));
     }
 }

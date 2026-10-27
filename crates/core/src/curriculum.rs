@@ -692,6 +692,7 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("vscode.terminal-toggle", &[]),
     ("vscode.tab-switch", &[]),
     ("vim.reselect", &["gv"]),
+    ("vscode.split", &[]),
 ];
 
 /// The skills `rule_id` teaches, or `None` for a rule not in the tree.

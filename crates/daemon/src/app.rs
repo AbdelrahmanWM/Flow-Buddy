@@ -202,7 +202,10 @@ fn is_vscode_ui_shortcut(key: &Key) -> bool {
         Sym::F(1) => true,
         Sym::Tab => m.ctrl,
         Sym::Char(c) if m.ctrl && !m.alt => {
-            matches!(c, 'P' | 'p' | 'E' | 'F' | 'G' | 'X' | 'D' | '`' | '~' | 'k')
+            matches!(
+                c,
+                'P' | 'p' | 'E' | 'F' | 'G' | 'X' | 'D' | '`' | '~' | 'k' | '\\'
+            )
         }
         _ => false,
     }
@@ -1280,6 +1283,10 @@ impl App {
                 let events = self.engine.on_ui_in(self.resolved.kind, &action);
                 self.on_rule_events_in(self.resolved.kind, &events, now_ms, false);
             }
+            // Ctrl-\ splits from the keyboard.
+            ClientMsg::EditorEvent {
+                event: UiEvent::SplitOpened,
+            } if self.is_vscode(conn) => self.on_ui(UiWhat::SplitOpened, '\\', now_ms),
             // `gt` isn't a Ctrl shortcut: only clicks are told apart.
             ClientMsg::EditorEvent {
                 event: UiEvent::TabSwitched,

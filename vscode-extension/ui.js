@@ -47,6 +47,10 @@ class UiReporter {
     }
 
     enable(subscriptions) {
+        subscriptions.push(vscode.window.tabGroups.onDidChangeTabGroups(e => {
+            if (e.opened.length)
+                this._link.send({type: 'editor_event', event: 'split_opened'});
+        }));
         subscriptions.push(vscode.window.onDidChangeTextEditorSelection(e => this._selectionChanged(e.textEditor)));
         const first = vscode.window.tabGroups.activeTabGroup.activeTab;
         this._active = first?.input instanceof vscode.TabInputText ? first.input.uri.toString() : null;

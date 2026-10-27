@@ -429,4 +429,29 @@ mod tests {
         assert!(text(ContextKind::ClaudeVim, "xihi<Esc>").is_empty());
         assert_eq!(text(ContextKind::TerminalVim, "xihi<Esc>").len(), 1);
     }
+
+    #[test]
+    fn line_rules_in_a_vi_mode_shell() {
+        let mut e = Engine::standard();
+        let mut t = Tracker::new(Flavor::Readline);
+        let mut out = Vec::new();
+        for s in strokes("echo hello world<Esc>0llllllxxxxx", 0) {
+            let step = t.feed(s);
+            out.extend(e.on_step(ContextKind::BashVi, &step));
+        }
+        out.extend(e.tick(ContextKind::BashVi, 1_000_000));
+        let tips: Vec<_> = out
+            .iter()
+            .filter_map(|e| match e {
+                RuleEvent::Finding(f) => Some((f.rule_id, f.text.clone())),
+                _ => None,
+            })
+            .collect();
+        let ids: Vec<_> = tips.iter().map(|t| t.0).collect();
+        assert!(ids.contains(&"vim.repeat-hl") && ids.contains(&"vim.repeat-x"), "{tips:?}");
+        for (_, text) in &tips {
+            assert!(crate::support::supports_all(ContextKind::BashVi, text), "{text}");
+        }
+    }
 }
+

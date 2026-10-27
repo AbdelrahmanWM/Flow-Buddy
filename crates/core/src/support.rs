@@ -36,6 +36,34 @@ const CLAUDE_OBJECTS: &[&str] = &[
     "a[", "i]", "a]", "i{", "a{", "i}", "a}", "iB", "aB",
 ];
 
+/// The vi-modes of bash (readline), zsh and fish share this much: no text
+/// objects (bash and fish lack them), Visual mode, registers, marks, `o`,
+/// or `:` commands.
+const SHELL_COMMANDS: &[&str] = &[
+    "x", "X", "dd", "D", "cc", "C", "S", "s", "yy", "p", "P", ".", "u", "~", "i", "I", "a", "A",
+    "R", "Esc", "Ctrl-w", "Ctrl-u", "Ctrl-r", "Ctrl-l", "%", "/", "Up",
+];
+
+fn shell_supports(cmd: &str) -> bool {
+    let cmd = cmd.trim_start_matches(|c: char| c.is_ascii_digit());
+    if SHELL_COMMANDS.contains(&cmd)
+        || (CLAUDE_MOTIONS.contains(&cmd) && !matches!(cmd, "gg" | "G"))
+    {
+        return true;
+    }
+    if cmd.strip_prefix(['f', 'F', 't', 'T', 'r']) == Some("<char>") {
+        return true;
+    }
+    let Some(rest) = cmd.strip_prefix(['d', 'c', 'y']) else {
+        return false;
+    };
+    let rest = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+    matches!(rest, "w" | "e" | "b" | "W" | "E" | "B" | "$" | "0" | "^")
+        || rest
+            .strip_prefix(['f', 'F', 't', 'T'])
+            .is_some_and(|r| r == "<char>")
+}
+
 fn claude_supports(cmd: &str) -> bool {
     let cmd = cmd.trim_start_matches(|c: char| c.is_ascii_digit());
     if CLAUDE_COMMANDS.contains(&cmd) || CLAUDE_MOTIONS.contains(&cmd) {
@@ -73,13 +101,16 @@ pub fn supports(ctx: ContextKind, cmd: &str) -> bool {
             })
         }
         // A tip's command may name several presses: `Ctrl-d` then `5j`.
-        ContextKind::ClaudeVim => cmd
-            .split_whitespace()
-            .filter(|w| !matches!(*w, "then" | "or" | "and"))
-            .map(|w| w.split('×').next().unwrap_or(w).trim_end_matches(','))
-            .all(claude_supports),
+        ContextKind::ClaudeVim => presses(cmd).all(claude_supports),
+        ContextKind::BashVi => presses(cmd).all(shell_supports),
         _ => true,
     }
+}
+
+fn presses(cmd: &str) -> impl Iterator<Item = &str> {
+    cmd.split_whitespace()
+        .filter(|w| !matches!(*w, "then" | "or" | "and"))
+        .map(|w| w.split('×').next().unwrap_or(w).trim_end_matches(','))
 }
 
 /// Whether every command marked in `text` works in `ctx`.
@@ -174,6 +205,29 @@ mod tests {
             ":s/old/new/",
         ] {
             assert!(!supports(c, no), "{no}");
+        }
+    }
+
+    #[test]
+    fn vi_mode_shells() {
+        let b = ContextKind::BashVi;
+        for ok in [
+            "3w", "f<char>", "dw", "cw", "D", "C", "x", "s", "r<char>", "~", ".", "A", "Ctrl-r",
+        ] {
+            assert!(supports(b, ok), "{ok}");
+        }
+        for no in [
+            "ciw",
+            "di(",
+            "o",
+            "O",
+            "gI",
+            "Ctrl-v",
+            "\"0p",
+            ":s/old/new/",
+            "gg",
+        ] {
+            assert!(!supports(b, no), "{no}");
         }
     }
 

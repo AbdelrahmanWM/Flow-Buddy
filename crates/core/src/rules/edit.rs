@@ -9,16 +9,10 @@ use crate::glossary;
 use crate::key::Key;
 use crate::rule::{Finding, Rule, RuleEvent, Shape};
 use crate::rules::repeat::{RepeatRule, RepeatSpec};
-use crate::rules::vim::{command, insert_key};
+use crate::rules::vim::{LINE_AND_SHELL, command, insert_key};
 use crate::vim::{Command, InsertKey, Step, VimEvent};
 
 const VIM: &[ContextKind] = &[ContextKind::TerminalVim, ContextKind::VsCodeVim];
-/// Also Claude Code's prompt, which edits one line the Vim way.
-const LINE: &[ContextKind] = &[
-    ContextKind::TerminalVim,
-    ContextKind::VsCodeVim,
-    ContextKind::ClaudeVim,
-];
 
 /// Two commands this close together count as one gesture.
 const GESTURE_MS: u64 = 1500;
@@ -124,7 +118,7 @@ impl Rule for DeleteThenInsert {
     }
 
     fn contexts(&self) -> &'static [ContextKind] {
-        LINE
+        LINE_AND_SHELL
     }
 
     fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
@@ -274,7 +268,7 @@ impl Rule for Shorthand {
     }
 
     fn contexts(&self) -> &'static [ContextKind] {
-        LINE
+        LINE_AND_SHELL
     }
 
     fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
@@ -1177,7 +1171,7 @@ pub fn case_run() -> RepeatRule {
         id: "vim.case-run",
         description: "Switching case one character at a time with ~",
         title: "Change case by word",
-        contexts: LINE,
+        contexts: LINE_AND_SHELL,
         threshold: 4,
         unit: |s| uncounted_is(s, &["~"]),
         adopted: |s| {

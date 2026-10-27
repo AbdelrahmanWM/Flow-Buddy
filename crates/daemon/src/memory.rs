@@ -217,7 +217,12 @@ impl Memory {
         };
         let shown = self.shown.get(rule_id).copied().unwrap_or(0);
         let skipped = self.skipped.get(rule_id).copied().unwrap_or(0);
-        if tipfilter::should_show(self.filter.as_ref(), &f, shown, skipped) {
+        let unhelpful = if self.filter.is_none() {
+            self.unhelpful_in_a_row(rule_id, now_ms)
+        } else {
+            0
+        };
+        if tipfilter::should_show(self.filter.as_ref(), &f, shown, skipped, unhelpful) {
             return true;
         }
         *self.skipped.entry(rule_id).or_default() += 1;
@@ -227,6 +232,27 @@ impl Memory {
         self.skipped_today.1 += 1;
         tracing::debug!(rule = rule_id, "tip skipped by the learned filter");
         false
+    }
+
+    /// How many of this rule's latest tips (last 30 days) were dismissed,
+    /// marked not helpful or ignored, counting back from the newest that
+    /// has an outcome.
+    fn unhelpful_in_a_row(&self, rule_id: &str, now_ms: u64) -> u32 {
+        use flowbuddy_store::Outcome;
+        let Some(store) = &self.store else { return 0 };
+        let since = (now_ms / 1000).saturating_sub(30 * 86_400);
+        let rows = store.tips(since).unwrap_or_default();
+        rows.iter()
+            .rev()
+            .filter(|r| r.rule_id == rule_id)
+            .filter_map(|r| r.outcome)
+            .take_while(|o| {
+                matches!(
+                    o,
+                    Outcome::Dismissed | Outcome::NotHelpful | Outcome::Ignored
+                )
+            })
+            .count() as u32
     }
 
     /// What the filter is doing, for `flowbuddy status`.
@@ -565,5 +591,50 @@ impl Memory {
             describe,
             self.focus.as_deref(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flowbuddy_store::{Outcome, TipShown};
+
+    #[test]
+    fn backs_off_a_rule_nobody_heeds_before_the_filter_learns() {
+        let store = Store::open_in_memory().unwrap();
+        let tip = |at| TipShown {
+            shown_at: at,
+            rule_id: "vim.repeat-jk",
+            context: "terminal-vim",
+            stage: "nudged",
+            hour: 10,
+            mode: "active",
+            prior_today: 0,
+        };
+        for (i, outcome) in [
+            Outcome::Adopted,
+            Outcome::Dismissed,
+            Outcome::Ignored,
+            Outcome::NotHelpful,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = store.tip_shown(&tip(1_000 + i as u64)).unwrap();
+            store.close_tip(id, outcome).unwrap();
+        }
+        let mut m = Memory::new(Some(store), &Config::default());
+        assert_eq!(m.unhelpful_in_a_row("vim.repeat-jk", 2_000_000), 3);
+        assert_eq!(m.unhelpful_in_a_row("vim.repeat-x", 2_000_000), 0);
+        let f = Finding {
+            rule_id: "vim.repeat-jk",
+            title: "t",
+            text: "x".into(),
+            shape: flowbuddy_core::rule::Shape::fixed("x"),
+            mode: flowbuddy_core::context::VimMode::Normal,
+            at_ms: 0,
+        };
+        m.hit(&f, ContextKind::TerminalVim, 2_000_000);
+        assert!(!m.filter_allows("vim.repeat-jk", "active", 10, 2_000_000));
     }
 }

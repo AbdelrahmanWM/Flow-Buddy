@@ -19,6 +19,8 @@ pub enum ClientKind {
     BashHook,
     /// An editor plugin: the VS Code companion or the Vim/Neovim plugin.
     Editor,
+    /// `flowbuddy watch`: gets every tip as it's shown.
+    Watch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

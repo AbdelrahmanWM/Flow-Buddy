@@ -601,9 +601,10 @@ impl App {
             }),
             explain: glossary::explain(text, insert),
         };
-        if self.extension_connected() {
-            self.broadcast(ServerMsg::Nudge(nudge.clone()));
-        } else {
+        // To the extension and anyone watching; a notification if there's
+        // no extension to show it.
+        self.broadcast(ServerMsg::Nudge(nudge.clone()));
+        if !self.extension_connected() {
             // Plain notifications show no markup: drop the markers and put
             // the explanation underneath.
             let mut body = glossary::plain(&nudge.text);
@@ -1274,10 +1275,11 @@ impl App {
         }
     }
 
-    /// Send to every client that stays connected (the extension).
+    /// Send to every client that stays connected to show things: the
+    /// extension and `flowbuddy watch`.
     fn broadcast(&self, msg: ServerMsg) {
         for c in self.clients.values() {
-            if c.kind == Some(ClientKind::GnomeExtension) {
+            if matches!(c.kind, Some(ClientKind::GnomeExtension | ClientKind::Watch)) {
                 let _ = c.tx.send(msg.clone());
             }
         }
@@ -3433,5 +3435,22 @@ pub(crate) mod tests {
                 .any(|n| n.rule_id == "motion.operator" && n.text.contains("`d}`")),
             "{n:?}"
         );
+    }
+
+    #[test]
+    fn watchers_get_tips_too() {
+        let (mut app, notes) = app_with_store(CoachingMode::Active);
+        let mut watch = connect(&mut app, 2);
+        send(&mut app, 2, hello(ClientKind::Watch), 0);
+        // Without the extension: a notification, and the watcher too.
+        app.show("vim.repeat-jk", "Try a count", "Try `7j`.", false, 1_000);
+        assert_eq!(nudges(&mut watch).len(), 1);
+        assert_eq!(notes.0.borrow().len(), 1);
+        // With it: the extension and the watcher, no notification.
+        let mut ext = ext_hello(&mut app, 1);
+        app.show("vim.repeat-jk", "Try a count", "Try `7j`.", false, 2_000);
+        assert_eq!(nudges(&mut ext).len(), 1);
+        assert_eq!(nudges(&mut watch).len(), 1);
+        assert_eq!(notes.0.borrow().len(), 1);
     }
 }

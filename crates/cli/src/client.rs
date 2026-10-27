@@ -86,6 +86,12 @@ impl Client {
         }
     }
 
+    /// Wait as long as it takes for the daemon's next message.
+    pub fn next(&mut self) -> anyhow::Result<ServerMsg> {
+        self.writer.set_read_timeout(None)?;
+        self.read()
+    }
+
     /// Like [`Client::command`], returning the `data` of a `result`.
     pub fn query(&mut self, command: Command) -> anyhow::Result<serde_json::Value> {
         match self.command(command)? {

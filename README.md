@@ -125,6 +125,7 @@ flowbuddy pause 1h                # or 30m, until-tomorrow; `flowbuddy resume`
 flowbuddy summary [--week]        # how you're doing vs. before
 flowbuddy next                    # the one habit worth working on now
 flowbuddy learn                   # today's "something new" and your progress through Vim
+flowbuddy watch                   # tips as they come, with what they mean, in a terminal you keep open
 flowbuddy tips [words] [-e]       # your recent tips, or those that match; -e says what each command does
 flowbuddy explain 'ci"'            # what keys do, piece by piece; `explain --last`: your last slow move, done better
 flowbuddy coach [question]        # advice from your AI ([ai]; --prompt shows what it's sent)

@@ -45,6 +45,9 @@ enum Cmd {
     Learn,
     /// Check everything Flow Buddy needs, and say how to fix what's missing.
     Doctor,
+    /// Show tips here as they come, with what their commands do: keep it
+    /// open in a terminal beside your work. Ctrl-C to stop.
+    Watch,
     /// Your recent tips, newest first; with words, only those that match:
     /// `flowbuddy tips undo`.
     Tips {
@@ -228,6 +231,7 @@ fn main() {
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),
         Cmd::Learn => learn(),
+        Cmd::Watch => watch(),
         Cmd::Doctor => {
             let status = Client::connect(ClientKind::Cli)
                 .and_then(|mut c| c.query(Command::Status))
@@ -1064,6 +1068,64 @@ fn parent_pid() -> u32 {
     std::os::unix::process::parent_id()
 }
 
+fn watch() -> anyhow::Result<()> {
+    use flowbuddy_core::ipc::{RecentTip, ServerMsg};
+    let mut said_waiting = false;
+    loop {
+        let mut client = match Client::connect(ClientKind::Watch) {
+            Ok(c) => c,
+            Err(_) => {
+                if !said_waiting {
+                    println!("Waiting for flowbuddyd…");
+                    said_waiting = true;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                continue;
+            }
+        };
+        said_waiting = false;
+        let recent: Vec<RecentTip> = client
+            .query(Command::RecentTips { limit: Some(3) })
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        if !recent.is_empty() {
+            println!("Recent tips:\n");
+            for t in recent.iter().rev() {
+                print!("{}", watch_text(t.shown_at, &t.title, &t.text, &t.explain));
+            }
+        }
+        println!("Watching for tips (Ctrl-C to stop).\n");
+        loop {
+            match client.next() {
+                Ok(ServerMsg::Nudge(n)) => {
+                    print!(
+                        "{}",
+                        watch_text(now_ms() / 1000, &n.title, &n.text, &n.explain)
+                    );
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    println!("The daemon went away; waiting for it…");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// One tip for `flowbuddy watch`: time and title, the tip, what its
+/// commands do.
+fn watch_text(at_s: u64, title: &str, text: &str, explain: &[String]) -> String {
+    use flowbuddy_core::glossary::plain;
+    let mut out = format!("{}  {title}\n  {}\n", format_time(at_s), plain(text));
+    for line in explain {
+        out.push_str(&format!("    {}\n", plain(line)));
+    }
+    out.push('\n');
+    out
+}
+
 fn tips_history(search: &str, limit: usize, explain: bool) -> anyhow::Result<()> {
     let Some(store) = open_db()? else {
         println!("No tips yet.");
@@ -1239,6 +1301,15 @@ mod status_tests {
         assert_eq!(
             history_text(&[], "undo", false, &when),
             "No tips match \"undo\".\n"
+        );
+    }
+
+    #[test]
+    fn watch_lines() {
+        let text = watch_text(0, "Try a count", "Try `7j`.", &["`7j`: a count".into()]);
+        assert!(
+            text.ends_with("  Try a count\n  Try 7j.\n    7j: a count\n\n"),
+            "{text}"
         );
     }
 }

@@ -351,7 +351,10 @@ pub fn next(store: &Store, now_ms: u64, skip: &BTreeSet<String>) -> anyhow::Resu
 pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<String> {
     use flowbuddy_core::curriculum::{self, CURRICULUM, Known, Progress};
     use flowbuddy_core::glossary::plain;
-    let uses = store.command_uses("0000-00-00")?;
+    let today = flowbuddy_store::days::day(now_ms);
+    let recent_from =
+        flowbuddy_store::days::day(now_ms.saturating_sub(curriculum::RECENT_DAYS * 86_400_000));
+    let uses = store.item_uses(&today, &recent_from)?;
     let rows: BTreeMap<String, flowbuddy_store::LearnRow> = store
         .learn_items()?
         .into_iter()
@@ -359,8 +362,11 @@ pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<Str
         .collect();
     let progress = |id: &str| {
         let row = rows.get(id);
+        let u = uses.get(id).copied().unwrap_or_default();
         Progress {
-            uses: uses.get(id).copied().unwrap_or(0),
+            uses: u.total,
+            recent_uses: u.recent,
+            days_idle: uses.contains_key(id).then_some(u.days_idle),
             times_shown: row.map_or(0, |r| r.times_shown),
             last_shown: row.map(|r| r.last_shown),
             learned: row.is_some_and(|r| r.learned_at.is_some()),

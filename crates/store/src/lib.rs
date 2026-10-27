@@ -137,6 +137,14 @@ pub struct HistoryTip {
     pub insert: bool,
 }
 
+/// How much a curriculum item was used: see [`Store::item_uses`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ItemUse {
+    pub total: u64,
+    pub recent: u64,
+    pub days_idle: u64,
+}
+
 /// Progress on one curriculum item.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LearnRow {
@@ -602,6 +610,28 @@ impl Store {
             "SELECT item_id, SUM(count) FROM commands_used WHERE day >= ?1 GROUP BY item_id",
         )?;
         let rows = stmt.query_map(params![from_day], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    /// For each curriculum item: uses ever, uses since `recent_from`, and
+    /// days from its last use to `today` (ISO dates).
+    pub fn item_uses(&self, today: &str, recent_from: &str) -> Result<HashMap<String, ItemUse>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT item_id, SUM(count),
+                    SUM(CASE WHEN day >= ?2 THEN count ELSE 0 END),
+                    CAST(julianday(?1) - julianday(MAX(day)) AS INTEGER)
+             FROM commands_used GROUP BY item_id",
+        )?;
+        let rows = stmt.query_map(params![today, recent_from], |r| {
+            Ok((
+                r.get(0)?,
+                ItemUse {
+                    total: r.get(1)?,
+                    recent: r.get(2)?,
+                    days_idle: r.get::<_, i64>(3)?.max(0) as u64,
+                },
+            ))
+        })?;
         rows.collect()
     }
 
@@ -1072,6 +1102,25 @@ mod tests {
         );
         s.forget_all().unwrap();
         assert_eq!(s.typing("2026-10-24", "2026-10-25").unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn recent_and_idle_uses() {
+        let s = Store::open_in_memory().unwrap();
+        s.add_command_use("2026-06-01", "marks", 9).unwrap();
+        s.add_command_use("2026-10-20", "ciw", 2).unwrap();
+        s.add_command_use("2026-10-26", "ciw", 1).unwrap();
+        let u = s.item_uses("2026-10-27", "2026-09-27").unwrap();
+        assert_eq!(
+            u["ciw"],
+            ItemUse {
+                total: 3,
+                recent: 3,
+                days_idle: 1
+            }
+        );
+        assert_eq!(u["marks"].recent, 0);
+        assert!(u["marks"].days_idle > 140);
     }
 
     #[test]

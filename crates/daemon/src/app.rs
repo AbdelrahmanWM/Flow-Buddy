@@ -219,6 +219,13 @@ fn flavor(kind: ContextKind) -> Flavor {
 
 /// VS Code shortcuts that move focus away from the editor (palette,
 /// sidebar, terminal panel). Until the next Esc we can't know where keys go.
+/// The time now, for the few places not handed one.
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
 fn is_vscode_ui_shortcut(key: &Key) -> bool {
     let m = key.mods;
     match key.sym {
@@ -472,7 +479,7 @@ impl App {
     /// Record stats and the mistake memory in `store`.
     pub fn with_store(mut self, store: flowbuddy_store::Store) -> Self {
         self.memory = Memory::new(Some(store), &self.config);
-        self.engine.set_known(self.memory.known());
+        self.engine.set_known(self.memory.known(wall_ms()));
         self
     }
 
@@ -801,7 +808,7 @@ impl App {
         self.resolver.set_ids(app_ids(&config));
         self.coach.set_config(PolicyConfig::from(&config.coaching));
         self.memory.set_config(&config);
-        self.engine.set_known(self.memory.known());
+        self.engine.set_known(self.memory.known(wall_ms()));
         let text_changed = config.text != self.config.text;
         self.config = config;
         if text_changed {
@@ -1120,7 +1127,7 @@ impl App {
             self.memory.typing(counts, now_ms);
             let usage = std::mem::take(&mut self.usage);
             self.memory.command_uses(usage, now_ms);
-            self.engine.set_known(self.memory.known());
+            self.engine.set_known(self.memory.known(now_ms));
             if let Some(r) = self.recorder.as_mut() {
                 r.flush();
             }

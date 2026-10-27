@@ -842,10 +842,7 @@ impl Known {
     ) -> Self {
         let mut ids: HashSet<&'static str> = CURRICULUM
             .iter()
-            .filter(|i| {
-                let p = progress(i.id);
-                p.learned || p.uses >= KNOWN_USES
-            })
+            .filter(|i| progress(i.id).known())
             .map(|i| i.id)
             .collect();
         for rule in mastered_rules {
@@ -883,8 +880,25 @@ impl Known {
     }
 }
 
-/// Used this many times, an item counts as known.
+/// Used this many times lately, an item counts as known.
 pub const KNOWN_USES: u64 = 3;
+/// "Lately".
+pub const RECENT_DAYS: u64 = 30;
+/// Or used this many times overall, and not long ago.
+pub const REGULAR_USES: u64 = 9;
+/// Unused this long, it's no longer known: it may have been forgotten.
+pub const FADE_DAYS: u64 = 90;
+
+impl Progress {
+    /// Known: used a few times lately, or regularly and not too long ago,
+    /// or learned from a daily tip and not left unused for long.
+    pub fn known(&self) -> bool {
+        let fresh = self.days_idle.is_none_or(|d| d <= FADE_DAYS);
+        self.recent_uses >= KNOWN_USES
+            || (fresh && self.uses >= REGULAR_USES)
+            || (fresh && self.learned)
+    }
+}
 /// An item is shown at most this many times.
 pub const MAX_SHOWINGS: u32 = 3;
 /// And not again within this many days.
@@ -895,6 +909,10 @@ pub const AGAIN_AFTER_DAYS: u64 = 7;
 pub struct Progress {
     /// Times used, ever.
     pub uses: u64,
+    /// Times used in the last [`RECENT_DAYS`].
+    pub recent_uses: u64,
+    /// Days since it was last used; `None` if not known.
+    pub days_idle: Option<u64>,
     pub times_shown: u32,
     /// Unix seconds.
     pub last_shown: Option<u64>,
@@ -927,8 +945,8 @@ pub fn pick_for(
         let p = progress(item.id);
         known.ready(item.id)
             && crate::support::supports_all(ctx, &tip_text(item))
-            && p.uses < KNOWN_USES
-            && !p.learned
+            // Not known now: learned and since forgotten comes back.
+            && !known.knows(item.id)
             && p.times_shown < MAX_SHOWINGS
             && p.last_shown
                 .is_none_or(|t| now_s.saturating_sub(t) >= AGAIN_AFTER_DAYS * 86_400)
@@ -1099,6 +1117,40 @@ mod tests {
         assert!(k.knows("find") && k.ready("till"));
         assert!(!none.ready_for_rule("motion.text-object"));
         assert!(none.ready_for_rule("motion.count") && none.ready_for_rule("shell.cd-up"));
+    }
+
+    #[test]
+    fn known_means_lately_and_often() {
+        let p = |uses, recent_uses, idle| Progress {
+            uses,
+            recent_uses,
+            days_idle: Some(idle),
+            ..Default::default()
+        };
+        assert!(p(3, 3, 1).known(), "three times this month");
+        assert!(!p(3, 1, 20).known(), "three times ever, mostly long ago");
+        assert!(p(12, 0, 40).known(), "regular use, not long ago");
+        assert!(!p(50, 0, 200).known(), "not used for half a year: faded");
+        let learned = |idle| Progress {
+            learned: true,
+            days_idle: Some(idle),
+            ..Default::default()
+        };
+        assert!(learned(10).known() && !learned(120).known());
+        // A macro replays its keys without typing them: only `@q` counts.
+        let mut t = Tracker::new(Flavor::Vim);
+        t.reset_known(VimMode::Normal);
+        let ids: Vec<_> = strokes("@q", 0)
+            .into_iter()
+            .map(|k| t.feed(k))
+            .flat_map(|s| {
+                CURRICULUM
+                    .iter()
+                    .filter(move |i| i.used_in(&s))
+                    .map(|i| i.id)
+            })
+            .collect();
+        assert_eq!(ids, ["macro"]);
     }
 
     #[test]

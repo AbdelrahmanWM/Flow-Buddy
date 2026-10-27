@@ -19,7 +19,9 @@ pub use flowbuddy_store::days::day;
 /// What [`Memory::progress`] reads from the database.
 #[derive(Clone)]
 struct ProgressCache {
-    uses: HashMap<String, u64>,
+    /// The day it was read: "recent" moves on with the days.
+    day: String,
+    uses: HashMap<String, flowbuddy_store::ItemUse>,
     items: HashMap<String, flowbuddy_store::LearnRow>,
 }
 
@@ -404,7 +406,10 @@ impl Memory {
         }
         if let Some(c) = self.progress_cache.borrow_mut().as_mut() {
             for (id, n) in &usage {
-                *c.uses.entry(id.to_string()).or_default() += n;
+                let u = c.uses.entry(id.to_string()).or_default();
+                u.total += n;
+                u.recent += n;
+                u.days_idle = 0;
             }
         }
         for row in store.learn_items().unwrap_or_default() {
@@ -425,12 +430,15 @@ impl Memory {
     }
 
     /// Uses and daily-tip rows per curriculum item.
-    fn progress(&self) -> Option<impl Fn(&str) -> curriculum::Progress + use<>> {
+    fn progress(&self, now_ms: u64) -> Option<impl Fn(&str) -> curriculum::Progress + use<>> {
         let store = self.store.as_ref()?;
         let mut cache = self.progress_cache.borrow_mut();
-        if cache.is_none() {
+        let today = day(now_ms);
+        if cache.as_ref().is_none_or(|c| c.day != today) {
+            let recent_from = day(now_ms.saturating_sub(curriculum::RECENT_DAYS * 86_400_000));
             *cache = Some(ProgressCache {
-                uses: store.command_uses("0000-00-00").ok()?,
+                day: today.clone(),
+                uses: store.item_uses(&today, &recent_from).ok()?,
                 items: store
                     .learn_items()
                     .ok()?
@@ -439,11 +447,14 @@ impl Memory {
                     .collect(),
             });
         }
-        let ProgressCache { uses, items } = cache.clone()?;
+        let ProgressCache { uses, items, .. } = cache.clone()?;
         Some(move |id: &str| {
             let row = items.get(id);
+            let u = uses.get(id).copied().unwrap_or_default();
             curriculum::Progress {
-                uses: uses.get(id).copied().unwrap_or(0),
+                uses: u.total,
+                recent_uses: u.recent,
+                days_idle: uses.contains_key(id).then_some(u.days_idle),
                 times_shown: row.map_or(0, |r| r.times_shown),
                 last_shown: row.map(|r| r.last_shown),
                 learned: row.is_some_and(|r| r.learned_at.is_some()),
@@ -453,8 +464,8 @@ impl Memory {
 
     /// What you already use, for the skill tree; everything when there's
     /// no memory to tell.
-    pub fn known(&self) -> curriculum::Known {
-        let Some(progress) = self.progress() else {
+    pub fn known(&self, now_ms: u64) -> curriculum::Known {
+        let Some(progress) = self.progress(now_ms) else {
             return curriculum::Known::everything();
         };
         let mastered = self
@@ -471,8 +482,8 @@ impl Memory {
         ctx: ContextKind,
         now_ms: u64,
     ) -> Option<&'static curriculum::Item> {
-        let progress = self.progress()?;
-        curriculum::pick_for(&progress, &self.known(), now_ms / 1000, ctx)
+        let progress = self.progress(now_ms)?;
+        curriculum::pick_for(&progress, &self.known(now_ms), now_ms / 1000, ctx)
     }
 
     pub fn learn_shown(&self, item_id: &str, now_ms: u64) {

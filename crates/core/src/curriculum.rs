@@ -8,9 +8,11 @@
 
 use std::collections::HashSet;
 
-use crate::context::VimMode;
+use crate::context::{ContextKind, VimMode};
+use crate::ipc::CommandShape;
 use crate::key::Sym;
 use crate::rules::vim::command;
+use crate::rules::vscode::UiWhat;
 use crate::vim::{Command, Step, VimEvent};
 
 pub struct Item {
@@ -25,12 +27,43 @@ pub struct Item {
     /// When it helps.
     pub example: &'static str,
     recognise: fn(&Step) -> bool,
+    /// Where it's taught and counted.
+    pub places: &'static [ContextKind],
+    /// Seen as a command the shell hook reports, rather than as keys.
+    pub shape: Option<CommandShape>,
+    /// Seen as a VS Code action done with its shortcut.
+    pub ui: Option<UiWhat>,
 }
+
+/// Editing in Vim's ways: Vim, VS Code, Claude Code, vi-mode shells (each
+/// where it supports the item; see `crate::support`).
+const EDITING: &[ContextKind] = &[
+    ContextKind::TerminalVim,
+    ContextKind::VsCodeVim,
+    ContextKind::ClaudeVim,
+    ContextKind::BashVi,
+];
+const IN_VSCODE: &[ContextKind] = &[ContextKind::VsCodeVim];
+const IN_SHELL: &[ContextKind] = &[ContextKind::BashVi, ContextKind::Shell];
 
 impl Item {
     pub fn used_in(&self, step: &Step) -> bool {
         (self.recognise)(step)
     }
+
+    pub fn applies_in(&self, ctx: ContextKind) -> bool {
+        self.places.contains(&ctx)
+    }
+}
+
+/// Items the shell hook's `shape` shows you used.
+pub fn used_by_shape(shape: CommandShape) -> impl Iterator<Item = &'static Item> {
+    CURRICULUM.iter().filter(move |i| i.shape == Some(shape))
+}
+
+/// Items a VS Code action done with its shortcut shows you used.
+pub fn used_by_ui(what: UiWhat) -> impl Iterator<Item = &'static Item> {
+    CURRICULUM.iter().filter(move |i| i.ui == Some(what))
 }
 
 fn cmd(step: &Step) -> Option<&Command> {
@@ -107,6 +140,23 @@ macro_rules! item {
             what: $what,
             example: $example,
             recognise: $rec,
+            places: EDITING,
+            shape: None,
+            ui: None,
+        }
+    };
+    ($id:literal, $level:literal, $keys:literal, $what:literal, $example:literal, $rec:expr,
+     $places:expr, $shape:expr, $ui:expr) => {
+        Item {
+            id: $id,
+            level: $level,
+            keys: $keys,
+            what: $what,
+            example: $example,
+            recognise: $rec,
+            places: $places,
+            shape: $shape,
+            ui: $ui,
         }
     };
 }
@@ -229,6 +279,32 @@ pub static CURRICULUM: &[Item] = &[
         |s| is(s, &["."])
     ),
     // Level 2: bigger moves and text objects.
+    item!(
+        "history-search",
+        1,
+        "`Ctrl-r`",
+        "search your shell history as you type",
+        "Find last week's long docker command by a word in it.",
+        |s| s.before == VimMode::Insert
+            && matches!(
+                crate::rules::vim::insert_key(s),
+                Some(crate::vim::InsertKey::CtrlR)
+            ),
+        IN_SHELL,
+        None,
+        None
+    ),
+    item!(
+        "quick-open",
+        1,
+        "`Ctrl-P`",
+        "open a file by typing part of its name",
+        "Jump to a file without clicking through the explorer.",
+        |_| false,
+        IN_VSCODE,
+        None,
+        Some(UiWhat::FileOpened)
+    ),
     item!(
         "paragraph",
         2,
@@ -402,6 +478,50 @@ pub static CURRICULUM: &[Item] = &[
         |s| object(s, "dcy", "p")
     ),
     // Level 3: power tools.
+    item!(
+        "cd-back",
+        2,
+        "`cd -`",
+        "back to the folder you were in before",
+        "Hop between two project folders.",
+        |_| false,
+        IN_SHELL,
+        Some(CommandShape::CdBack),
+        None
+    ),
+    item!(
+        "last-arg",
+        2,
+        "`Alt-.`",
+        "insert the previous command's last argument",
+        "mkdir a folder, then cd into it without typing its name again.",
+        |_| false,
+        IN_SHELL,
+        None,
+        None
+    ),
+    item!(
+        "tabs",
+        2,
+        "`gt` and `gT`",
+        "the next or previous editor tab",
+        "Flip between two files you're working on.",
+        |s| is(s, &["gt", "gT"]),
+        IN_VSCODE,
+        None,
+        None
+    ),
+    item!(
+        "terminal-toggle",
+        2,
+        "`` Ctrl-` ``",
+        "to the terminal and back",
+        "Run the tests, then straight back to the code.",
+        |_| false,
+        IN_VSCODE,
+        None,
+        Some(UiWhat::TerminalFocused)
+    ),
     item!(
         "marks",
         3,
@@ -597,6 +717,30 @@ pub static CURRICULUM: &[Item] = &[
     ),
     // Level 4: the command line.
     item!(
+        "quick-sub",
+        3,
+        "`^old^new`",
+        "run the last command again with one word swapped",
+        "Rerun a test with another file name.",
+        |_| false,
+        IN_SHELL,
+        None,
+        None
+    ),
+    item!(
+        "split",
+        3,
+        "`Ctrl-w v`",
+        "a second editor side by side",
+        "Read the test while you write the code.",
+        |s| cmd(s).is_some_and(|c| {
+            c.keys.len() == 2 && c.keys[0].is_ctrl('w') && c.keys[1].plain_char() == Some('v')
+        }),
+        &[ContextKind::VsCodeVim, ContextKind::TerminalVim],
+        None,
+        None
+    ),
+    item!(
         "substitute-cmd",
         4,
         "`:s/old/new/`",
@@ -756,18 +900,18 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("motion.mark", &["marks"]),
     ("motion.text-object", &["ciw"]),
     ("motion.operator", &["word-end", "till", "d-to-end"]),
-    ("bash.up-history", &[]),
+    ("bash.up-history", &["history-search"]),
     ("bash.backspace-clear", &[]),
     ("bash.left-streak", &[]),
-    ("shell.cd-up", &[]),
-    ("shell.reused-arg", &[]),
-    ("shell.one-word-changed", &[]),
-    ("shell.keys", &[]),
-    ("vscode.quick-open", &[]),
-    ("vscode.terminal-toggle", &[]),
-    ("vscode.tab-switch", &[]),
+    ("shell.cd-up", &["cd-back"]),
+    ("shell.reused-arg", &["last-arg"]),
+    ("shell.one-word-changed", &["quick-sub"]),
+    ("shell.keys", &["history-search"]),
+    ("vscode.quick-open", &["quick-open"]),
+    ("vscode.terminal-toggle", &["terminal-toggle"]),
+    ("vscode.tab-switch", &["tabs"]),
     ("vim.reselect", &["gv"]),
-    ("vscode.split", &[]),
+    ("vscode.split", &["split"]),
 ];
 
 /// The skills `rule_id` teaches, or `None` for a rule not in the tree.
@@ -1039,6 +1183,7 @@ pub fn pick_for(
     CURRICULUM.iter().find(|item| {
         let p = progress(item.id);
         known.ready(item.id)
+            && item.applies_in(ctx)
             && crate::support::supports_all(ctx, &tip_text(item))
             // Not known now: learned and since forgotten comes back.
             && !known.knows(item.id)
@@ -1250,6 +1395,38 @@ mod tests {
             "and what it builds on"
         );
         assert!(!k.knows("word"));
+    }
+
+    #[test]
+    fn each_place_has_its_own_lessons() {
+        let nothing = |_: &str| Progress::default();
+        let known = Known::of([]);
+        let first = |ctx| pick_for(&nothing, &known, 0, ctx).map(|i| i.id);
+        assert_eq!(first(ContextKind::Shell), Some("history-search"));
+        assert_eq!(first(ContextKind::TerminalVim), Some("word"));
+        // Shell and VS Code items stay in their place.
+        let shell_only: Vec<_> = CURRICULUM
+            .iter()
+            .filter(|i| i.applies_in(ContextKind::Shell))
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(
+            shell_only,
+            ["history-search", "cd-back", "last-arg", "quick-sub"]
+        );
+        assert!(!find("tabs").unwrap().applies_in(ContextKind::TerminalVim));
+        assert_eq!(
+            used_by_shape(CommandShape::CdBack)
+                .map(|i| i.id)
+                .collect::<Vec<_>>(),
+            ["cd-back"]
+        );
+        assert_eq!(
+            used_by_ui(UiWhat::FileOpened)
+                .map(|i| i.id)
+                .collect::<Vec<_>>(),
+            ["quick-open"]
+        );
     }
 
     #[test]

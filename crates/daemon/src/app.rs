@@ -701,9 +701,13 @@ impl App {
             .as_deref()
             .and_then(config::parse_range)
             .is_some_and(|q| q.contains(self.gate(now_ms).local_minute));
+        // Wherever there's something to teach: each place has its own.
         let editing = matches!(
             self.resolved.kind,
-            ContextKind::VsCodeVim | ContextKind::TerminalVim
+            ContextKind::VsCodeVim
+                | ContextKind::TerminalVim
+                | ContextKind::ClaudeVim
+                | ContextKind::BashVi
         );
         if !self.config.learn.daily
             || self.mode == CoachingMode::Off
@@ -963,6 +967,14 @@ impl App {
         } else {
             How::Other
         };
+        if how == How::Shortcut {
+            for item in flowbuddy_core::curriculum::used_by_ui(what) {
+                *self
+                    .usage
+                    .entry((ContextKind::VsCodeVim, item.id))
+                    .or_default() += 1;
+            }
+        }
         let action = UiAction {
             what,
             how,
@@ -1204,7 +1216,7 @@ impl App {
             )
         {
             for item in flowbuddy_core::curriculum::CURRICULUM {
-                if item.used_in(&step) {
+                if item.applies_in(kind) && item.used_in(&step) {
                     *self.usage.entry((kind, item.id)).or_default() += 1;
                 }
             }
@@ -1442,6 +1454,11 @@ impl App {
                     (CtxEvent::Fg, Some("history")) => Some(CommandShape::History),
                     _ => None,
                 };
+                if let Some(shape) = shape.filter(|_| self.capturing(now_ms)) {
+                    for item in flowbuddy_core::curriculum::used_by_shape(shape) {
+                        *self.usage.entry((ContextKind::Shell, item.id)).or_default() += 1;
+                    }
+                }
                 if let Some(shape) = shape.or(named).filter(|_| self.capturing(now_ms)) {
                     let ev = flowbuddy_core::rules::shell::ShellEvent {
                         shape,

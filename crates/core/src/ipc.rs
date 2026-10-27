@@ -70,6 +70,8 @@ pub enum CommandShape {
     ReusedArg,
     /// The previous command with one word changed.
     OneWordChanged,
+    /// Exactly `cd -`: back to the folder before.
+    CdBack,
     /// `clear`, from the command's name (the hooks don't send these).
     Clear,
     /// `history`, usually piped to grep.

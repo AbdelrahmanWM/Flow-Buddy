@@ -46,6 +46,8 @@ function __flowbuddy_shape
         echo cd-up
     else if test $n -eq 2; and test "$now[1]" = cd; and string match -qr '^\.\.(/\.\.)+/?$' -- $now[2]
         echo cd-up-many
+    else if test $n -eq 2; and test "$now[1]" = cd; and test "$now[2]" = -
+        echo cd-back
     else if test $n -gt 1 -a $p -gt 1; and test "$now[1]" != "$prev[1]"; and test "$now[-1]" = "$prev[-1]"; and test (string length -- $now[-1]) -ge 12
         echo reused-arg
     else if test $n -eq $p -a $n -ge 3; and test (string length -- $argv[1]) -ge 20

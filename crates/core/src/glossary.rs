@@ -374,6 +374,8 @@ fn parse(word: &str, out: &mut Vec<(String, &'static str)>) {
                 ('g', 'i') => Some("start typing where you last stopped typing"),
                 ('g', 'I') => Some("start typing at the very start of the line"),
                 ('g', '~') => Some("switch case over a motion"),
+                ('g', 't') => Some("to the next tab"),
+                ('g', 'T') => Some("to the previous tab"),
                 ('g', '&') => Some("repeat the last :s on every line"),
                 ('"', _) => {
                     Some("use that register for the next command (\"0 holds the last yank)")

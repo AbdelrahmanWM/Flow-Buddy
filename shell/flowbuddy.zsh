@@ -37,6 +37,8 @@ __flowbuddy_shape() {
         print cd-up
     elif (( n == 2 )) && [[ $now[1] == cd && $now[2] =~ '^\.\.(/\.\.)+/?$' ]]; then
         print cd-up-many
+    elif (( n == 2 )) && [[ $now[1] == cd && $now[2] == - ]]; then
+        print cd-back
     elif (( n > 1 && p > 1 )) && [[ $now[1] != $prev[1] && $now[n] == $prev[p] ]] &&
         (( ${#now[n]} >= 12 )); then
         print reused-arg

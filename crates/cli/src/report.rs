@@ -636,7 +636,7 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("(learned)"), "{out}");
-        assert!(out.contains("level 1  ██○○○○○○○○○○○○  2 of 14"), "{out}");
+        assert!(out.contains("level 1  ██○○○○○○○○○○○○○○  2 of 16"), "{out}");
         assert!(out.contains("Later: # after *; N after n"), "{out}");
         assert!(out.contains("Up next: $: the end of the line"), "{out}");
     }

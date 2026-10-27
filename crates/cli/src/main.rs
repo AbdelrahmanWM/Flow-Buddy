@@ -1140,8 +1140,14 @@ fn ctx(event: CtxCmd, shell_pid: Option<u32>, tty: Option<String>) -> anyhow::Re
     let msg = match event {
         CtxCmd::Fg { command, shape } => ClientMsg::Ctx {
             event: CtxEvent::Fg,
-            // Defence in depth: only ever send a basename.
-            command: Some(command.rsplit('/').next().unwrap_or_default().to_string()),
+            // Defence in depth: only ever send a basename, and only a plain
+            // program name (never `^old^new` or anything else typed).
+            command: Some(command.rsplit('/').next().unwrap_or_default().to_string()).filter(|c| {
+                !c.is_empty()
+                    && c.len() <= 64
+                    && c.chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || "._+-".contains(ch))
+            }),
             vi_mode: None,
             shell_pid,
             tty,

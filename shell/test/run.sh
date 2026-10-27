@@ -46,6 +46,7 @@ true
 cd ..
 cd ..
 cd ../..
+cd -
 ls $secret
 cat $secret
 echo one two three four
@@ -71,6 +72,7 @@ exit
     check '^ctx fg true( |$)' "command names"
     check '^ctx fg cd --shape cd-up( |$)' "cd .. shape"
     check '^ctx fg cd --shape cd-up-many' "cd ../.. shape"
+    check '^ctx fg cd --shape cd-back' "cd - shape"
     check '^ctx fg cat --shape reused-arg' "reused argument shape"
     check '^ctx fg echo --shape one-word-changed' "one word changed shape"
     # bash can't say when its vi-mode switches; zsh and fish do.

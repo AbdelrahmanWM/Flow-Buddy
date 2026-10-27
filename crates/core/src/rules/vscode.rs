@@ -22,6 +22,7 @@ pub struct UiAction {
 pub enum UiWhat {
     FileOpened,
     TerminalFocused,
+    TabSwitched,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,8 +143,22 @@ pub fn terminal_toggle() -> Box<dyn Rule> {
     })
 }
 
+pub fn tab_switch() -> Box<dyn Rule> {
+    Box::new(ClickHabit {
+        id: "vscode.tab-switch",
+        what: UiWhat::TabSwitched,
+        count: 5,
+        window_ms: 10 * 60_000,
+        clicks: Vec::new(),
+        title: "Switch tabs from the keyboard",
+        text: "You clicked between tabs 5 times. `gt` and `gT` go to the next and previous tab. `Ctrl-P` opens one by name.",
+        shape: "tabs switched by clicking",
+        description: "Clicking between editor tabs instead of gt or Ctrl-P",
+    })
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
-    vec![quick_open(), terminal_toggle()]
+    vec![quick_open(), terminal_toggle(), tab_switch()]
 }
 
 #[cfg(test)]

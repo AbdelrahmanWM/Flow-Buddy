@@ -132,6 +132,11 @@ pub(crate) mod testing {
                 "ihi<Esc>pahi<Esc>pahi<Esc>pa<Esc><C-w>w<C-w>w<C-w>w:bn<CR>:bn<CR>:bn<CR>:e #<CR>",
             ),
             (
+                Flavor::Vim,
+                VimMode::Normal,
+                "dwdwdw<Esc><C-e><C-e><C-e><C-e><C-e><C-e><C-e><C-e><C-e><Esc>/foo<CR>/foo<CR>:s/a/b/<CR>:s/a/b/<CR>:q!<CR>",
+            ),
+            (
                 Flavor::Readline,
                 VimMode::Insert,
                 "<Up><Up><Up><Up><Up><BS><BS><BS><BS><BS><BS><BS><BS><BS><BS><BS><Left><Left><Left><Left><Left><Left><Left><Left><Left>",

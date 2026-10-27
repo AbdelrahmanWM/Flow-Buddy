@@ -41,6 +41,17 @@ enum Cmd {
     Next,
     /// Your daily "something new" and your progress through Vim's features.
     Learn,
+    /// Your recent tips, newest first; with words, only those that match:
+    /// `flowbuddy tips undo`.
+    Tips {
+        search: Vec<String>,
+        /// How many to show.
+        #[arg(short = 'n', long, default_value_t = 10)]
+        limit: usize,
+        /// Also say what each command in them does.
+        #[arg(long, short)]
+        explain: bool,
+    },
     /// Ask a local model about your habits (set `[ai] command` first).
     Coach {
         /// A question, e.g. "how do I move faster in big files?"
@@ -211,6 +222,11 @@ fn main() {
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),
         Cmd::Learn => learn(),
+        Cmd::Tips {
+            search,
+            limit,
+            explain,
+        } => tips_history(&search.join(" "), limit, explain),
         Cmd::Record { action } => record(action),
         Cmd::SshConfig { host } => {
             print!("{}", ssh_config(&host, &flowbuddy_core::paths::socket()));
@@ -1007,6 +1023,58 @@ fn parent_pid() -> u32 {
 }
 
 /// Local HH:MM for a unix timestamp, via `date` to avoid a timezone dependency.
+fn tips_history(search: &str, limit: usize, explain: bool) -> anyhow::Result<()> {
+    let Some(store) = open_db()? else {
+        println!("No tips yet.");
+        return Ok(());
+    };
+    let tips = store.history(search, limit)?;
+    print!("{}", history_text(&tips, search, explain, &format_day_time));
+    Ok(())
+}
+
+fn history_text(
+    tips: &[flowbuddy_store::HistoryTip],
+    search: &str,
+    explain: bool,
+    when: &dyn Fn(u64) -> String,
+) -> String {
+    use flowbuddy_core::glossary::plain;
+    if tips.is_empty() {
+        return if search.is_empty() {
+            "No tips yet.\n".into()
+        } else {
+            format!("No tips match \"{search}\".\n")
+        };
+    }
+    let mut out = String::new();
+    for t in tips {
+        out.push_str(&format!(
+            "{}  {}\n    {}\n",
+            when(t.shown_at),
+            t.title,
+            plain(&t.text)
+        ));
+        if explain {
+            for line in flowbuddy_core::glossary::explain(&t.text, t.insert) {
+                out.push_str(&format!("      {}\n", plain(&line)));
+            }
+        }
+    }
+    out
+}
+
+/// `Oct 27 14:05`.
+fn format_day_time(unix: u64) -> String {
+    std::process::Command::new("date")
+        .args(["-d", &format!("@{unix}"), "+%b %d %H:%M"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| unix.to_string())
+}
+
 fn format_time(unix: u64) -> String {
     std::process::Command::new("date")
         .args(["-d", &format!("@{unix}"), "+%H:%M"])
@@ -1107,6 +1175,28 @@ mod status_tests {
         assert_eq!(
             last_slow_text(&last, 121_000),
             "Your last slow edit (2 min ago) took 9 keys.\n  Best: di(  (3 keys)\n  Or:   dt<char>  (3 keys)\n"
+        );
+    }
+
+    #[test]
+    fn tip_history_lines() {
+        let tip = flowbuddy_store::HistoryTip {
+            shown_at: 5,
+            rule_id: "vim.undo-run".into(),
+            title: "Undo further at once".into(),
+            text: "`u` 7 times. `7u` undoes that many at once.".into(),
+            insert: false,
+        };
+        let when = |t: u64| format!("t{t}");
+        assert_eq!(
+            history_text(std::slice::from_ref(&tip), "", false, &when),
+            "t5  Undo further at once\n    u 7 times. 7u undoes that many at once.\n"
+        );
+        let explained = history_text(&[tip], "", true, &when);
+        assert!(explained.contains("      7: a count"), "{explained}");
+        assert_eq!(
+            history_text(&[], "undo", false, &when),
+            "No tips match \"undo\".\n"
         );
     }
 }

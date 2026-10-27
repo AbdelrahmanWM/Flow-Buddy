@@ -60,7 +60,7 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh
 | `:w` then `:q` | `:wq` or `ZZ` |
 | `↑↑↑↑` hunting shell history | `Ctrl-r` |
 
-`flowbuddy rules` lists all of them. Tips move one step at a time: Flow Buddy notices which commands you already use, and won't suggest `ci(` before you use `ciw`, or `t` before `f` (`flowbuddy learn` shows where you are). Motion coaching (the first three rows) compares each movement with the cheapest motion that lands in the same place. It needs the editor plugins, which tell Flow Buddy where a movement ended without sending any text: [vim-plugin/](vim-plugin/README.md) and [vscode-extension/](vscode-extension/README.md). Without them, the simpler rules that count repeated keys take over.
+`flowbuddy rules` lists all of them, and [docs/coverage.md](docs/coverage.md) shows what's coached in each place. Tips move one step at a time: Flow Buddy notices which commands you already use, and won't suggest `ci(` before you use `ciw`, or `t` before `f` (`flowbuddy learn` shows where you are). Motion coaching (the first three rows) compares each movement with the cheapest motion that lands in the same place. It needs the editor plugins, which tell Flow Buddy where a movement ended without sending any text: [vim-plugin/](vim-plugin/README.md) and [vscode-extension/](vscode-extension/README.md). Without them, the simpler rules that count repeated keys take over.
 
 `flowbuddy coach` asks an AI of your choice (your Claude subscription, an API key, or a local model) for advice based on the mistake memory. It's off until you set it up, and `--prompt` shows exactly what would be sent:
 
@@ -123,6 +123,7 @@ flowbuddy pause 1h                # or 30m, until-tomorrow; `flowbuddy resume`
 flowbuddy summary [--week]        # how you're doing vs. before
 flowbuddy next                    # the one habit worth working on now
 flowbuddy learn                   # today's "something new" and your progress through Vim
+flowbuddy tips [words] [-e]       # your recent tips, or those that match; -e says what each command does
 flowbuddy explain 'ci"'            # what keys do, piece by piece; `explain --last`: your last slow move, done better
 flowbuddy coach [question]        # advice from your AI ([ai]; --prompt shows what it's sent)
 flowbuddy review [--apply 1 2]    # your AI proposes tuning the tips; apply what you agree with

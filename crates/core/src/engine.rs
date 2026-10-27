@@ -75,10 +75,17 @@ impl Engine {
     /// findings whose main skill builds on something you don't use yet;
     /// of findings about the same keys, keep the best-ranked and add the
     /// runner-up to it as another way, if both are short enough.
-    fn settle(&self, out: &mut Vec<RuleEvent>) {
+    fn settle(&self, context: ContextKind, out: &mut Vec<RuleEvent>) {
         let rank = |f: &Finding| self.rank.get(f.rule_id).copied().unwrap_or(usize::MAX);
-        out.retain(|e| match e {
-            RuleEvent::Finding(f) => self.known.ready_for_rule(f.rule_id),
+        out.retain_mut(|e| match e {
+            RuleEvent::Finding(f) => {
+                // Only what works here: vscodevim has no `:earlier`.
+                match crate::support::fit(context, &f.text) {
+                    Some(text) => f.text = text,
+                    None => return false,
+                }
+                self.known.ready_for_rule(f.rule_id)
+            }
             _ => true,
         });
         if out
@@ -188,7 +195,7 @@ impl Engine {
             rule.on_ui(ev, &mut out);
         }
         self.editor_motions = editor;
-        self.settle(&mut out);
+        self.settle(ContextKind::VsCodeVim, &mut out);
         out
     }
 
@@ -198,7 +205,7 @@ impl Engine {
         for rule in self.active(ContextKind::Shell) {
             rule.on_shell(ev, &mut out);
         }
-        self.settle(&mut out);
+        self.settle(ContextKind::Shell, &mut out);
         out
     }
 
@@ -208,7 +215,7 @@ impl Engine {
         for rule in self.active(context) {
             rule.on_operator(ev, &mut out);
         }
-        self.settle(&mut out);
+        self.settle(context, &mut out);
         out
     }
 
@@ -218,7 +225,7 @@ impl Engine {
         for rule in self.active(context) {
             rule.on_motion(ev, &mut out);
         }
-        self.settle(&mut out);
+        self.settle(context, &mut out);
         out
     }
 
@@ -233,7 +240,7 @@ impl Engine {
         for rule in self.active(context) {
             rule.on_step(step, &mut out);
         }
-        self.settle(&mut out);
+        self.settle(context, &mut out);
         out
     }
 
@@ -244,7 +251,7 @@ impl Engine {
         for rule in self.active(context) {
             rule.tick(now_ms, &mut out);
         }
-        self.settle(&mut out);
+        self.settle(context, &mut out);
         out
     }
 
@@ -400,5 +407,56 @@ mod tests {
             "{beginner:?}"
         );
         assert_eq!(rules(Known::of(["dot"])), all);
+    }
+
+    #[test]
+    fn tips_only_suggest_what_works_there() {
+        let text = |ctx, keys| {
+            let mut e = Engine::standard();
+            feed(&mut e, ctx, keys)
+                .into_iter()
+                .filter_map(|e| match e {
+                    RuleEvent::Finding(f) => Some(f.text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let vscode = text(ContextKind::VsCodeVim, "uuuuuuu<Esc>");
+        assert_eq!(vscode, ["`u` 7 times. `7u` undoes that many at once."]);
+        let vim = text(ContextKind::TerminalVim, "uuuuuuu<Esc>");
+        assert!(vim[0].contains(":earlier"), "{vim:?}");
+        // Claude Code's Vim mode has no `s`: no tip rather than a wrong one.
+        assert!(text(ContextKind::ClaudeVim, "xihi<Esc>").is_empty());
+        assert_eq!(text(ContextKind::TerminalVim, "xihi<Esc>").len(), 1);
+    }
+
+    #[test]
+    fn line_rules_in_a_vi_mode_shell() {
+        let mut e = Engine::standard();
+        let mut t = Tracker::new(Flavor::Readline);
+        let mut out = Vec::new();
+        for s in strokes("echo hello world<Esc>0llllllxxxxx", 0) {
+            let step = t.feed(s);
+            out.extend(e.on_step(ContextKind::BashVi, &step));
+        }
+        out.extend(e.tick(ContextKind::BashVi, 1_000_000));
+        let tips: Vec<_> = out
+            .iter()
+            .filter_map(|e| match e {
+                RuleEvent::Finding(f) => Some((f.rule_id, f.text.clone())),
+                _ => None,
+            })
+            .collect();
+        let ids: Vec<_> = tips.iter().map(|t| t.0).collect();
+        assert!(
+            ids.contains(&"vim.repeat-hl") && ids.contains(&"vim.repeat-x"),
+            "{tips:?}"
+        );
+        for (_, text) in &tips {
+            assert!(
+                crate::support::supports_all(ContextKind::BashVi, text),
+                "{text}"
+            );
+        }
     }
 }

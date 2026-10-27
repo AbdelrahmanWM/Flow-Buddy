@@ -178,11 +178,77 @@ impl Rule for OneWordChanged {
     fn reset(&mut self) {}
 }
 
+/// Typing `clear` or `history` where a key does it.
+#[derive(Default)]
+pub struct ShellKeys {
+    /// When each was last typed.
+    clear: Option<u64>,
+    history: Option<u64>,
+}
+
+impl ShellKeys {
+    const ID: &'static str = "shell.keys";
+    /// Twice within this long is a habit.
+    const WINDOW_MS: u64 = 60 * 60_000;
+}
+
+impl Rule for ShellKeys {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Typing clear or history where Ctrl-l or Ctrl-r does it"
+    }
+
+    fn title(&self) -> &'static str {
+        "A key does it"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        SHELL
+    }
+
+    fn on_step(&mut self, _step: &Step, _out: &mut Vec<RuleEvent>) {}
+
+    fn on_shell(&mut self, ev: &ShellEvent, out: &mut Vec<RuleEvent>) {
+        let (slot, text, shape) = match ev.shape {
+            CommandShape::Clear => (
+                &mut self.clear,
+                "You typed `clear` again. `Ctrl-l` clears the screen and keeps what you've typed so far.",
+                "clear typed",
+            ),
+            CommandShape::History => (
+                &mut self.history,
+                "Looking through `history` again? `Ctrl-r` searches it as you type. Press it again for older matches.",
+                "history typed",
+            ),
+            _ => return,
+        };
+        let again = slot.is_some_and(|t| ev.at_ms.saturating_sub(t) <= Self::WINDOW_MS);
+        *slot = Some(ev.at_ms);
+        if again {
+            *slot = None;
+            out.push(finding(
+                Self::ID,
+                "A key does it",
+                text.into(),
+                Shape::fixed(shape),
+                ev.at_ms,
+            ));
+        }
+    }
+
+    // Habits over minutes: kept across context changes.
+    fn reset(&mut self) {}
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
     vec![
         Box::new(CdUp::default()),
         Box::new(ReusedArg),
         Box::new(OneWordChanged),
+        Box::new(ShellKeys::default()),
     ]
 }
 
@@ -250,5 +316,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn clear_and_history_twice() {
+        use CommandShape::{Clear, History};
+        let ev = feed(&mut ShellKeys::default(), &[(Clear, 0), (Clear, 600_000)]);
+        assert_eq!(ev.len(), 1);
+        assert!(feed(&mut ShellKeys::default(), &[(Clear, 0), (Clear, 7_200_000)]).is_empty());
+        let ev = feed(
+            &mut ShellKeys::default(),
+            &[(History, 0), (Clear, 1), (History, 2)],
+        );
+        let RuleEvent::Finding(f) = &ev[0] else {
+            panic!()
+        };
+        assert!(f.text.contains("`Ctrl-r`"));
+        assert!(!crate::glossary::explain(&f.text, true).is_empty());
     }
 }

@@ -649,6 +649,9 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("vim.increment", &["increment"]),
     ("vim.insert-keys", &["insert-keys"]),
     ("vim.windows", &["windows"]),
+    ("vim.operator-run", &["count"]),
+    ("vim.scroll-run", &["half-page", "center"]),
+    ("vim.search-again", &["search-next"]),
     ("vim.change-matches", &["cgn", "substitute-all"]),
     ("vim.shorthand", &["append", "open-line", "d-to-end"]),
     ("vim.visual-operator", &["ciw", "visual-object"]),
@@ -675,8 +678,10 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("shell.cd-up", &[]),
     ("shell.reused-arg", &[]),
     ("shell.one-word-changed", &[]),
+    ("shell.keys", &[]),
     ("vscode.quick-open", &[]),
     ("vscode.terminal-toggle", &[]),
+    ("vscode.tab-switch", &[]),
 ];
 
 /// The skills `rule_id` teaches, or `None` for a rule not in the tree.
@@ -794,9 +799,25 @@ pub fn pick(
     known: &Known,
     now_s: u64,
 ) -> Option<&'static Item> {
+    pick_for(
+        progress,
+        known,
+        now_s,
+        crate::context::ContextKind::TerminalVim,
+    )
+}
+
+/// [`pick`], skipping what doesn't work in `ctx` (no `:g` in vscodevim).
+pub fn pick_for(
+    progress: &dyn Fn(&str) -> Progress,
+    known: &Known,
+    now_s: u64,
+    ctx: crate::context::ContextKind,
+) -> Option<&'static Item> {
     CURRICULUM.iter().find(|item| {
         let p = progress(item.id);
         known.ready(item.id)
+            && crate::support::supports_all(ctx, &tip_text(item))
             && p.uses < KNOWN_USES
             && !p.learned
             && p.times_shown < MAX_SHOWINGS

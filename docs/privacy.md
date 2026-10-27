@@ -38,6 +38,7 @@ All of this lives in `~/.local/share/flowbuddy/`.
 
 - **Stats:** per day, context and rule, Flow Buddy stores how many times the pattern happened, how many nudges were shown, how many were dismissed, and how many times you used the better command.
 - **Mistake memory:** each pattern has one record holding when it was first and last seen, its counts, and its learning stage. Episode records add a time bucket, rule, context, mode and an abstract shape such as `x×5 then i`. Shapes describe *which commands* you used, never what you typed in Insert mode, file names or window titles.
+- **Tip history:** each tip as shown (its rule, title and text) for 90 days, for `flowbuddy tips` and the menu's recent tips. Tip texts are built from fixed sentences and counts, never from what you typed.
 - **Config:** your settings in `~/.config/flowbuddy/config.toml`.
 
 ## What is never stored

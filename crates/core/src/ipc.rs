@@ -36,6 +36,8 @@ pub enum CtxEvent {
 pub enum UiEvent {
     /// A file opened in a new tab (not which file).
     FileOpened,
+    /// Another open editor tab became the active one (not which).
+    TabSwitched,
 }
 
 /// What has focus inside an editor window when the text editor doesn't.
@@ -60,6 +62,10 @@ pub enum CommandShape {
     ReusedArg,
     /// The previous command with one word changed.
     OneWordChanged,
+    /// `clear`, from the command's name (the hooks don't send these).
+    Clear,
+    /// `history`, usually piped to grep.
+    History,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,10 +121,26 @@ pub enum Command {
     /// The last movement or edit that took more keys than it needed, with
     /// the best ways to do it. Answers with `Option<LastSlow>`.
     LastSlow,
+    /// The latest tips, newest first. Answers with `Vec<RecentTip>`.
+    RecentTips {
+        #[serde(default)]
+        limit: Option<u32>,
+    },
     /// Recent tips with the code around them, from editors that keep
     /// snippets (`[text] ai_snippets`). Answers with `Vec<TipSnippet>`,
     /// after a second at most.
     Snippets,
+}
+
+/// A tip as it was shown, for the menu's recent tips.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentTip {
+    /// Unix seconds.
+    pub shown_at: u64,
+    pub rule_id: String,
+    pub title: String,
+    pub text: String,
+    pub explain: Vec<String>,
 }
 
 /// Data returned by [`Command::LastSlow`]: keys only, never text.

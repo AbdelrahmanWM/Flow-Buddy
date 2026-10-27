@@ -13,6 +13,14 @@ const LINE: &[ContextKind] = &[
     ContextKind::VsCodeVim,
     ContextKind::ClaudeVim,
 ];
+/// Line editing in a vi-mode shell's command line too; the shells' own
+/// rules cover arrows and Backspace there.
+pub(crate) const LINE_AND_SHELL: &[ContextKind] = &[
+    ContextKind::TerminalVim,
+    ContextKind::VsCodeVim,
+    ContextKind::ClaudeVim,
+    ContextKind::BashVi,
+];
 
 /// The command, if this step completed a Normal/Visual-mode command.
 /// Operator commands such as `dw` complete from OpPending.
@@ -96,7 +104,7 @@ pub fn repeat_hl() -> RepeatRule {
         id: "vim.repeat-hl",
         description: "Pressing h or l many times instead of a word or find motion",
         title: "Move by word",
-        contexts: LINE,
+        contexts: LINE_AND_SHELL,
         threshold: 5,
         unit: |s| uncounted(s, &['h', 'l']).and_then(|c| c.head()).map(token),
         adopted: |s| {
@@ -130,7 +138,7 @@ pub fn repeat_x() -> RepeatRule {
         id: "vim.repeat-x",
         description: "Deleting character by character with x",
         title: "Delete by word",
-        contexts: LINE,
+        contexts: LINE_AND_SHELL,
         threshold: 4,
         unit: |s| uncounted(s, &['x']).map(|_| "x"),
         adopted: |s| {
@@ -364,7 +372,8 @@ impl Rule for Windows {
     }
 
     fn contexts(&self) -> &'static [ContextKind] {
-        &[ContextKind::TerminalVim]
+        // vscodevim moves between editor groups with Ctrl-w h/j/k/l.
+        VIM
     }
 
     fn threshold(&self) -> Option<u32> {

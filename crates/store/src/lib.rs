@@ -111,7 +111,31 @@ const MIGRATIONS: &[&str] = &[
         learned_at  INTEGER            -- when you started using it
     );
 "#,
+    r#"
+    -- Tips as shown, for `flowbuddy tips` and the menu's recent tips. The
+    -- text is built from fixed sentences and counts, never from typing.
+    CREATE TABLE tip_history (
+        id       INTEGER PRIMARY KEY,
+        shown_at INTEGER NOT NULL,  -- unix seconds
+        rule_id  TEXT    NOT NULL,
+        title    TEXT    NOT NULL,
+        text     TEXT    NOT NULL,
+        insert_mode INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX tip_history_shown ON tip_history (shown_at);
+"#,
 ];
+
+/// One tip as it was shown.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HistoryTip {
+    pub shown_at: u64,
+    pub rule_id: String,
+    pub title: String,
+    pub text: String,
+    /// Shown for Insert mode: its commands mean their Insert-mode things.
+    pub insert: bool,
+}
 
 /// Progress on one curriculum item.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -555,7 +579,8 @@ impl Store {
         self.conn.execute_batch(
             "DELETE FROM daily_stats; DELETE FROM activity; DELETE FROM patterns;
              DELETE FROM episodes; DELETE FROM typing; DELETE FROM typo_pairs;
-             DELETE FROM tip_outcomes; DELETE FROM commands_used; DELETE FROM learn_items;",
+             DELETE FROM tip_outcomes; DELETE FROM commands_used; DELETE FROM learn_items;
+             DELETE FROM tip_history;",
         )?;
         self.conn.execute_batch("VACUUM")?;
         let _ = self.conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
@@ -669,9 +694,53 @@ impl Store {
     /// Drop tip rows older than `before_s`.
     pub fn prune_tips(&self, before_s: u64) -> Result<usize> {
         self.conn.execute(
+            "DELETE FROM tip_history WHERE shown_at < ?1",
+            params![before_s],
+        )?;
+        self.conn.execute(
             "DELETE FROM tip_outcomes WHERE shown_at < ?1",
             params![before_s],
         )
+    }
+
+    pub fn add_history(&self, tip: &HistoryTip) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO tip_history (shown_at, rule_id, title, text, insert_mode)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![tip.shown_at, tip.rule_id, tip.title, tip.text, tip.insert],
+        )?;
+        Ok(())
+    }
+
+    /// The latest `limit` tips whose title, text or rule contains every
+    /// word of `search` (any case), newest first.
+    pub fn history(&self, search: &str, limit: usize) -> Result<Vec<HistoryTip>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT shown_at, rule_id, title, text, insert_mode FROM tip_history
+             ORDER BY shown_at DESC, id DESC",
+        )?;
+        let words: Vec<String> = search.split_whitespace().map(str::to_lowercase).collect();
+        let rows = stmt.query_map([], |r| {
+            Ok(HistoryTip {
+                shown_at: r.get(0)?,
+                rule_id: r.get(1)?,
+                title: r.get(2)?,
+                text: r.get(3)?,
+                insert: r.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for tip in rows {
+            let tip = tip?;
+            let hay = format!("{} {} {}", tip.rule_id, tip.title, tip.text).to_lowercase();
+            if words.iter().all(|w| hay.contains(w.as_str())) {
+                out.push(tip);
+                if out.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Add typing counts for `day` in `context` (opt-in).
@@ -742,6 +811,7 @@ impl Store {
             ("tip_outcomes", "rule_id, context, stage, mode"),
             ("commands_used", "day, item_id"),
             ("learn_items", "item_id"),
+            ("tip_history", "rule_id, title, text"),
         ] {
             let mut stmt = self.conn.prepare(&format!("SELECT {cols} FROM {table}"))?;
             let n = stmt.column_count();
@@ -1002,6 +1072,34 @@ mod tests {
         );
         s.forget_all().unwrap();
         assert_eq!(s.typing("2026-10-24", "2026-10-25").unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn tip_history_is_searchable() {
+        let s = Store::open_in_memory().unwrap();
+        let tip = |at, rule: &str, text: &str| HistoryTip {
+            shown_at: at,
+            rule_id: rule.into(),
+            title: "Try a count".into(),
+            text: text.into(),
+            insert: false,
+        };
+        s.add_history(&tip(1, "vim.repeat-jk", "Try `7j`."))
+            .unwrap();
+        s.add_history(&tip(2, "vim.undo-run", "`7u` undoes that many."))
+            .unwrap();
+        s.add_history(&tip(3, "vim.repeat-jk", "Try `9j` or `}`."))
+            .unwrap();
+        let all = s.history("", 10).unwrap();
+        assert_eq!(
+            all.iter().map(|t| t.shown_at).collect::<Vec<_>>(),
+            [3, 2, 1]
+        );
+        assert_eq!(s.history("", 2).unwrap().len(), 2);
+        assert_eq!(s.history("UNDOES", 10).unwrap()[0].shown_at, 2);
+        assert_eq!(s.history("repeat-jk 7j", 10).unwrap()[0].shown_at, 1);
+        s.prune_tips(3).unwrap();
+        assert_eq!(s.history("", 10).unwrap().len(), 1);
     }
 
     #[test]

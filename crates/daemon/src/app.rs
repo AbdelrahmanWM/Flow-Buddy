@@ -12,8 +12,8 @@ use flowbuddy_core::editor::{EditorKind, Motion};
 use flowbuddy_core::engine::Engine;
 use flowbuddy_core::glossary;
 use flowbuddy_core::ipc::{
-    ClientKind, ClientMsg, Command, CtxEvent, ErrorCode, Nudge, NudgeAction, NudgeStyle,
-    RuleAction, RuleInfo, ServerMsg, Status,
+    ClientKind, ClientMsg, Command, CommandShape, CtxEvent, ErrorCode, Nudge, NudgeAction,
+    NudgeStyle, RuleAction, RuleInfo, ServerMsg, Status,
 };
 use flowbuddy_core::ipc::{ModeGuess, Panel, Recording, UiEvent};
 use flowbuddy_core::key::{Key, KeyStroke, Sym};
@@ -518,7 +518,17 @@ impl App {
         {
             return;
         }
-        let text = match self.personal_tips.get(f.rule_id) {
+        // The model's sentence too must only name what works where the
+        // habit was seen.
+        let ctx = self
+            .memory
+            .finding_context(f.rule_id)
+            .unwrap_or(self.resolved.kind);
+        let text = match self
+            .personal_tips
+            .get(f.rule_id)
+            .filter(|p| flowbuddy_core::support::supports_all(ctx, p))
+        {
             Some(personal) => format!("{} {personal}", f.text),
             None => f.text.clone(),
         };
@@ -582,6 +592,13 @@ impl App {
             }
             self.notifier.notify(&nudge.title, &body, nudge.ttl_ms);
         }
+        self.memory.add_history(&flowbuddy_store::HistoryTip {
+            shown_at: now_ms / 1000,
+            rule_id: rule_id.into(),
+            title: title.into(),
+            text: text.into(),
+            insert,
+        });
         if self.nudges.len() == NUDGE_HISTORY {
             self.nudges.pop_front();
         }
@@ -618,7 +635,7 @@ impl App {
         {
             return;
         }
-        let Some(item) = self.memory.pick_something_new(now_ms) else {
+        let Some(item) = self.memory.pick_something_new(self.resolved.kind, now_ms) else {
             return;
         };
         self.state.last_learn_day = Some(today);
@@ -1195,7 +1212,13 @@ impl App {
                 shape,
                 tty,
             } => {
-                if let Some(shape) = shape.filter(|_| self.capturing(now_ms)) {
+                // Two habits are plain from the command's name alone.
+                let named = match (event, command.as_deref()) {
+                    (CtxEvent::Fg, Some("clear")) => Some(CommandShape::Clear),
+                    (CtxEvent::Fg, Some("history")) => Some(CommandShape::History),
+                    _ => None,
+                };
+                if let Some(shape) = shape.or(named).filter(|_| self.capturing(now_ms)) {
                     let ev = flowbuddy_core::rules::shell::ShellEvent {
                         shape,
                         at_ms: now_ms,
@@ -1231,6 +1254,10 @@ impl App {
             ClientMsg::EditorEvent {
                 event: UiEvent::FileOpened,
             } if self.is_vscode(conn) => self.on_ui(UiWhat::FileOpened, 'p', now_ms),
+            // `gt` isn't a Ctrl shortcut: only clicks are told apart.
+            ClientMsg::EditorEvent {
+                event: UiEvent::TabSwitched,
+            } if self.is_vscode(conn) => self.on_ui(UiWhat::TabSwitched, '\0', now_ms),
             ClientMsg::EditorEvent { .. } => {}
             ClientMsg::EditorMappings {
                 insert_escapes,
@@ -1400,6 +1427,25 @@ impl App {
                 id,
                 data: json!([]),
             },
+            Command::RecentTips { limit } => {
+                let limit = limit.unwrap_or(10).clamp(1, 50) as usize;
+                let tips: Vec<flowbuddy_core::ipc::RecentTip> = self
+                    .memory
+                    .history(limit)
+                    .into_iter()
+                    .map(|t| flowbuddy_core::ipc::RecentTip {
+                        explain: glossary::explain(&t.text, t.insert),
+                        shown_at: t.shown_at,
+                        rule_id: t.rule_id,
+                        title: t.title,
+                        text: t.text,
+                    })
+                    .collect();
+                ServerMsg::Result {
+                    id,
+                    data: serde_json::to_value(tips).unwrap_or_default(),
+                }
+            }
             Command::LastSlow => ServerMsg::Result {
                 id,
                 data: serde_json::to_value(&self.last_slow).unwrap_or_default(),
@@ -2974,5 +3020,42 @@ pub(crate) mod tests {
             panic!()
         };
         assert_eq!(data, json!([]));
+    }
+
+    #[test]
+    fn recent_tips_from_the_history() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let mut cli = connect(&mut app, 1);
+        app.show(
+            "vim.undo-run",
+            "Undo further at once",
+            "`7u` undoes that many.",
+            false,
+            1_000_000,
+        );
+        app.show(
+            "vim.repeat-jk",
+            "Try a count",
+            "Try `7j`.",
+            false,
+            2_000_000,
+        );
+        while cli.try_recv().is_ok() {}
+        send(
+            &mut app,
+            1,
+            ClientMsg::Command {
+                id: Some(4),
+                command: Command::RecentTips { limit: Some(5) },
+            },
+            3_000_000,
+        );
+        let ServerMsg::Result { data, .. } = cli.try_recv().unwrap() else {
+            panic!()
+        };
+        let tips: Vec<flowbuddy_core::ipc::RecentTip> = serde_json::from_value(data).unwrap();
+        assert_eq!(tips.len(), 2);
+        assert_eq!(tips[0].title, "Try a count");
+        assert!(!tips[1].explain.is_empty());
     }
 }

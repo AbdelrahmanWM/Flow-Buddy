@@ -23,6 +23,10 @@ pub enum UiWhat {
     FileOpened,
     TerminalFocused,
     TabSwitched,
+    /// The same Visual selection as the last one: `How::Shortcut` when it
+    /// came from `gv`.
+    Reselected,
+    SplitOpened,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,8 +161,94 @@ pub fn tab_switch() -> Box<dyn Rule> {
     })
 }
 
+pub fn split() -> Box<dyn Rule> {
+    Box::new(ClickHabit {
+        id: "vscode.split",
+        what: UiWhat::SplitOpened,
+        count: 2,
+        window_ms: 30 * 60_000,
+        clicks: Vec::new(),
+        title: "Split from the keyboard",
+        text: "You opened a split with the mouse twice. `Ctrl-w v` (or `:vsplit`) opens one beside this editor. `Ctrl-w h` and `Ctrl-w l` move between them.",
+        shape: "splits opened by clicking",
+        description: "Opening a side-by-side editor with the mouse instead of Ctrl-w v",
+    })
+}
+
+/// Selecting the same text again by hand where `gv` does it.
+#[derive(Default)]
+pub struct Reselect {
+    times: Vec<u64>,
+}
+
+impl Reselect {
+    const ID: &'static str = "vim.reselect";
+    const TIMES: usize = 2;
+    const WINDOW_MS: u64 = 10 * 60_000;
+}
+
+impl Rule for Reselect {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Making the same Visual selection again by hand where gv does it"
+    }
+
+    fn title(&self) -> &'static str {
+        "Select it again with gv"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        &[ContextKind::VsCodeVim, ContextKind::TerminalVim]
+    }
+
+    fn needs_editor(&self) -> bool {
+        true
+    }
+
+    fn on_step(&mut self, _step: &Step, _out: &mut Vec<RuleEvent>) {}
+
+    fn on_ui(&mut self, ev: &UiAction, out: &mut Vec<RuleEvent>) {
+        if ev.what != UiWhat::Reselected {
+            return;
+        }
+        if ev.how == How::Shortcut {
+            self.times.clear();
+            out.push(RuleEvent::Adoption {
+                rule_id: Self::ID,
+                at_ms: ev.at_ms,
+            });
+            return;
+        }
+        self.times
+            .retain(|t| ev.at_ms.saturating_sub(*t) <= Self::WINDOW_MS);
+        self.times.push(ev.at_ms);
+        if self.times.len() >= Self::TIMES {
+            self.times.clear();
+            out.push(RuleEvent::Finding(Finding {
+                rule_id: Self::ID,
+                title: "Select it again with gv",
+                text: "You made the same selection again by hand. `gv` selects the last selection again.".into(),
+                shape: Shape::fixed("same selection again"),
+                mode: VimMode::Normal,
+                at_ms: ev.at_ms,
+            }));
+        }
+    }
+
+    fn reset(&mut self) {}
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
-    vec![quick_open(), terminal_toggle(), tab_switch()]
+    vec![
+        quick_open(),
+        terminal_toggle(),
+        tab_switch(),
+        split(),
+        Box::new(Reselect::default()),
+    ]
 }
 
 #[cfg(test)]
@@ -242,5 +332,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn splits_by_mouse() {
+        use How::*;
+        use UiWhat::SplitOpened as S;
+        assert_eq!(
+            run(&mut *split(), &[(S, Click, 0), (S, Click, 60_000)]).len(),
+            1
+        );
+        let ev = run(&mut *split(), &[(S, Shortcut, 0)]);
+        assert!(matches!(ev[0], RuleEvent::Adoption { .. }));
     }
 }

@@ -134,6 +134,10 @@ pub struct MotionFacts {
     pub search_hops: Option<u32>,
     /// 'relativenumber' is on, so line counts on screen can be read off.
     pub relative_numbers: bool,
+    /// Absolute line numbers are shown ('number' without
+    /// 'relativenumber'): how many digits the end line's number has, for
+    /// `42G`. Never the number itself.
+    pub line_number_digits: Option<u32>,
     /// How many lines the view scrolled during the movement (the top
     /// visible line's delta; positive is further into the file).
     pub view_scrolled: Option<i64>,

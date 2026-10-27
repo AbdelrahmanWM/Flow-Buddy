@@ -211,6 +211,14 @@ pub static CURRICULUM: &[Item] = &[
         |s| head(s, "{}")
     ),
     item!(
+        "goto-line",
+        2,
+        "`42G` and `:42`",
+        "jump straight to a line by its number",
+        "Go to the line an error message names.",
+        |s| counted(s, "G") || cmdline(s, &["1", "2", "3", "4", "5", "6", "7", "8", "9"])
+    ),
+    item!(
         "half-page",
         2,
         "`Ctrl-d` and `Ctrl-u`",
@@ -668,6 +676,7 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("motion.page", &["half-page"]),
     ("motion.search", &["search-next"]),
     ("motion.last-change", &["change-list"]),
+    ("motion.line-number", &["goto-line"]),
     ("motion.scroll", &["center"]),
     ("motion.mark", &["marks"]),
     ("motion.text-object", &["ciw"]),
@@ -682,6 +691,8 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("vscode.quick-open", &[]),
     ("vscode.terminal-toggle", &[]),
     ("vscode.tab-switch", &[]),
+    ("vim.reselect", &["gv"]),
+    ("vscode.split", &[]),
 ];
 
 /// The skills `rule_id` teaches, or `None` for a rule not in the tree.
@@ -886,6 +897,8 @@ mod tests {
             ("<C-w>l", "windows"),
             ("ia<C-r>", "insert-keys"),
             ("g;", "change-list"),
+            ("42G", "goto-line"),
+            (":120<CR>", "goto-line"),
             (":earlier 1m<CR>", "undo-time"),
             ("gUiw", "case"),
             (">ip", "indent-object"),

@@ -25,6 +25,7 @@ function activate(context) {
     let motions = null;
     let operators = null;
     let mappings = null;
+    let ui = null;
     link = new DaemonLink({
         version,
         onConnected: () => {
@@ -37,6 +38,7 @@ function activate(context) {
     modes = new ModeTracker(link, (previous, mode) => {
         motions?.modeChanged();
         operators?.modeChanged(previous, mode);
+        ui?.modeChanged(previous, mode);
     });
     motions = new MotionTracker(link, modes);
     operators = new OperatorTracker(link, modes);
@@ -44,7 +46,8 @@ function activate(context) {
     modes.enable(context.subscriptions);
     motions.enable(context.subscriptions);
     operators.enable(context.subscriptions);
-    new UiReporter(link).enable(context.subscriptions);
+    ui = new UiReporter(link, modes);
+    ui.enable(context.subscriptions);
     mappings = new MappingReporter(link);
     mappings.enable(context.subscriptions);
     link.start();

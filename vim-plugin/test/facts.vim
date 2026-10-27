@@ -77,6 +77,24 @@ function! Test_file_and_jump() abort
   call assert_false(flowbuddy#facts([5, 1], [3, 1], [2, 1]).jump_back)
 endfunction
 
+function! Test_line_number_digits() abort
+  call s:buf(map(range(1, 200), 'string(v:val)'))
+  setlocal number norelativenumber
+  call assert_equal(3, s:facts([5, 1], [150, 1]).line_number_digits)
+  setlocal relativenumber
+  call assert_false(has_key(s:facts([5, 1], [150, 1]), 'line_number_digits'))
+  setlocal nonumber norelativenumber
+  call assert_false(has_key(s:facts([5, 1], [150, 1]), 'line_number_digits'))
+endfunction
+
+function! Test_same_selection() abort
+  let sel = [1, [2, 3], [4, 5], 'v']
+  call assert_true(flowbuddy#same_selection(sel + [1000], sel, 5000))
+  call assert_false(flowbuddy#same_selection(sel + [1000], sel, 90000), 'too long ago')
+  call assert_false(flowbuddy#same_selection(sel + [1000], [1, [2, 3], [4, 6], 'v'], 5000))
+  call assert_false(flowbuddy#same_selection([], sel, 5000))
+endfunction
+
 function! Test_last_change() abort
   call s:buf(map(range(1, 10), 'string(v:val)'))
   call cursor(3, 1)

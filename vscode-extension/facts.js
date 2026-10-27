@@ -440,8 +440,9 @@ function screenPos(window, line) {
  * @param {{line: number, col: number|null}} end where it rested; a null
  *   column (Visual Line mode) leaves out every within-line fact
  * @param {{window?: {top: number, bottom: number}|null, ignorecase?: boolean,
- *   relativeNumbers?: boolean}} opts the visible lines (one range, no folds),
- *   Vim's 'ignorecase' for `*`, and whether relative line numbers are shown
+ *   relativeNumbers?: boolean, lineNumbers?: boolean}} opts the visible lines
+ *   (one range, no folds), Vim's 'ignorecase' for `*`, and whether relative
+ *   or absolute line numbers are shown
  * @returns {object} only the MotionFacts fields that are known
  */
 function computeFacts(lines, start, end, opts = {}) {
@@ -460,6 +461,9 @@ function computeFacts(lines, start, end, opts = {}) {
         set('paragraph_hops', attempt(() => paragraphHops(lines, start, end, vdir)));
         if (window && window.bottom >= window.top)
             set('screen', screenPos(window, end.line));
+        // The number is in the margin: only how long it is.
+        if (opts.lineNumbers)
+            set('line_number_digits', String(end.line + 1).length);
         set('file_start', end.line === 0);
         set('file_end', end.line === lines.length - 1);
     }

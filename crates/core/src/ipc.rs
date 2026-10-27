@@ -38,6 +38,10 @@ pub enum UiEvent {
     FileOpened,
     /// Another open editor tab became the active one (not which).
     TabSwitched,
+    /// A Visual selection was made that's the same as the last one.
+    Reselected,
+    /// A new editor group opened beside the others (a split).
+    SplitOpened,
 }
 
 /// What has focus inside an editor window when the text editor doesn't.

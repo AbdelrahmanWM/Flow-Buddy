@@ -89,6 +89,8 @@ pub struct App {
     recent_tips: VecDeque<(&'static str, String, u64)>,
     snippet_waits: Vec<SnippetWait>,
     snippet_seq: u64,
+    /// When `gv` was last typed, to tell it from reselecting by hand.
+    last_gv_ms: Option<u64>,
     /// The last movement or edit that could have been shorter.
     last_slow: Option<flowbuddy_core::ipc::LastSlow>,
     /// How the mode guessed from keys compares with editors' reports.
@@ -242,6 +244,7 @@ impl App {
             last_shortcut: None,
             mode_guess: ModeGuess::default(),
             last_slow: None,
+            last_gv_ms: None,
             recent_tips: VecDeque::new(),
             snippet_waits: Vec::new(),
             snippet_seq: 0,
@@ -1037,6 +1040,9 @@ impl App {
         if step.confident
             && let Some(VimEvent::Command(c)) = &step.event
         {
+            if c.is("gv") {
+                self.last_gv_ms = Some(stroke.at_ms);
+            }
             if self.commands.len() == COMMAND_HISTORY {
                 self.commands.pop_front();
             }
@@ -1254,6 +1260,26 @@ impl App {
             ClientMsg::EditorEvent {
                 event: UiEvent::FileOpened,
             } if self.is_vscode(conn) => self.on_ui(UiWhat::FileOpened, 'p', now_ms),
+            ClientMsg::EditorEvent {
+                event: UiEvent::Reselected,
+            } if self.resolved.editor == Some(conn) => {
+                // `gv` itself makes the same selection: that's the better way.
+                let how = if self
+                    .last_gv_ms
+                    .is_some_and(|t| now_ms.saturating_sub(t) <= UI_SHORTCUT_MS)
+                {
+                    How::Shortcut
+                } else {
+                    How::Other
+                };
+                let action = UiAction {
+                    what: UiWhat::Reselected,
+                    how,
+                    at_ms: now_ms,
+                };
+                let events = self.engine.on_ui_in(self.resolved.kind, &action);
+                self.on_rule_events_in(self.resolved.kind, &events, now_ms, false);
+            }
             // `gt` isn't a Ctrl shortcut: only clicks are told apart.
             ClientMsg::EditorEvent {
                 event: UiEvent::TabSwitched,
@@ -3057,5 +3083,42 @@ pub(crate) mod tests {
         assert_eq!(tips.len(), 2);
         assert_eq!(tips[0].title, "Try a count");
         assert!(!tips[1].explain.is_empty());
+    }
+
+    #[test]
+    fn reselecting_by_hand_or_with_gv() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        let reselected = |app: &mut App, at| {
+            send(
+                app,
+                3,
+                ClientMsg::EditorEvent {
+                    event: UiEvent::Reselected,
+                },
+                at,
+            )
+        };
+        // With gv: the better way, no tip.
+        type_at(&mut app, "gv", 1_000);
+        reselected(&mut app, 2_000);
+        reselected(&mut app, 3_000);
+        assert!(nudges(&mut ext).is_empty());
+        // By hand, twice: gv.
+        reselected(&mut app, 100_000);
+        reselected(&mut app, 160_000);
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].rule_id, "vim.reselect");
     }
 }

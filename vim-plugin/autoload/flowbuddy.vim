@@ -174,6 +174,33 @@ function! flowbuddy#on_daemon(line) abort
   endif
 endfunction
 
+" Reselecting ------------------------------------------------------------------
+
+" The last Visual selection as [buffer, start, end, kind, when]. Positions
+" stay here: only "the same again" is sent.
+let s:last_visual = []
+let s:in_visual = 0
+let s:RESELECT_MS = 60000
+
+function! s:visual_ended(new_mode) abort
+  let visual = a:new_mode =~# "^[vV\x16]"
+  if visual || !s:in_visual
+    let s:in_visual = visual
+    return
+  endif
+  let s:in_visual = 0
+  let sel = [bufnr(), getpos("'<")[1:2], getpos("'>")[1:2], visualmode()]
+  if flowbuddy#same_selection(s:last_visual, sel, s:now_ms())
+    call s:send({'type': 'editor_event', 'event': 'reselected'})
+  endif
+  let s:last_visual = sel + [s:now_ms()]
+endfunction
+
+" Whether `sel` is `last` again, soon after it.
+function! flowbuddy#same_selection(last, sel, now) abort
+  return !empty(a:last) && a:last[:3] == a:sel && a:now - a:last[4] <= s:RESELECT_MS
+endfunction
+
 " Text features --------------------------------------------------------------
 
 " Whether `pattern` matches `path`, as crates/core/src/text.rs does: no
@@ -326,6 +353,7 @@ function! flowbuddy#on_mode(new_mode) abort
   if !s:moving_mode(a:new_mode)
     call s:finish()
   endif
+  call s:visual_ended(a:new_mode)
   call s:send({'type': 'editor_mode', 'mode': s:mode_name(a:new_mode)})
 endfunction
 

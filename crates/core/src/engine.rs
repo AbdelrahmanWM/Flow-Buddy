@@ -188,14 +188,23 @@ impl Engine {
 
     /// Something in VS Code's UI.
     pub fn on_ui(&mut self, ev: &crate::rules::vscode::UiAction) -> Vec<RuleEvent> {
+        self.on_ui_in(ContextKind::VsCodeVim, ev)
+    }
+
+    /// Something an editor plugin saw, in `context`.
+    pub fn on_ui_in(
+        &mut self,
+        context: ContextKind,
+        ev: &crate::rules::vscode::UiAction,
+    ) -> Vec<RuleEvent> {
         let mut out = Vec::new();
         // These rules need the companion; it's reporting if this arrives.
         let editor = std::mem::replace(&mut self.editor_motions, true);
-        for rule in self.active(ContextKind::VsCodeVim) {
+        for rule in self.active(context) {
             rule.on_ui(ev, &mut out);
         }
         self.editor_motions = editor;
-        self.settle(ContextKind::VsCodeVim, &mut out);
+        self.settle(context, &mut out);
         out
     }
 

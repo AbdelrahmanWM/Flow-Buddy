@@ -46,10 +46,11 @@ pub enum Category {
     Page,
     Search,
     LastChange,
+    LineNumber,
 }
 
 impl Category {
-    pub const ALL: [Category; 13] = [
+    pub const ALL: [Category; 14] = [
         Category::Count,
         Category::Paragraph,
         Category::Screen,
@@ -63,6 +64,7 @@ impl Category {
         Category::Page,
         Category::Search,
         Category::LastChange,
+        Category::LineNumber,
     ];
 
     pub fn id(self) -> &'static str {
@@ -80,6 +82,7 @@ impl Category {
             Category::Page => "motion.page",
             Category::Search => "motion.search",
             Category::LastChange => "motion.last-change",
+            Category::LineNumber => "motion.line-number",
         }
     }
 
@@ -98,6 +101,7 @@ impl Category {
             Category::Page => "Move by half a page",
             Category::Search => "Repeat the search",
             Category::LastChange => "Jump to the last change",
+            Category::LineNumber => "Jump to the line number",
         }
     }
 
@@ -121,6 +125,7 @@ impl Category {
             Category::Page => "half-page",
             Category::Search => "search-next",
             Category::LastChange => "change-list",
+            Category::LineNumber => "goto-line",
         }
     }
 
@@ -143,6 +148,7 @@ impl Category {
             Category::Page => "Moving many lines where Ctrl-d or Ctrl-u land",
             Category::Search => "Moving to the next search match without n or N",
             Category::LastChange => "Moving back to where you last changed something without g;",
+            Category::LineNumber => "Moving far to a line whose number is on screen without 42G",
         }
     }
 
@@ -162,6 +168,7 @@ impl Category {
             Category::Page => "keys for Ctrl-d/u",
             Category::Search => "keys for n/N",
             Category::LastChange => "keys for g;",
+            Category::LineNumber => "keys for 42G",
         }
     }
 }
@@ -293,6 +300,14 @@ fn vertical(lines: i64, f: &MotionFacts) -> Vec<Part> {
             category: Category::Page,
             keys,
             cost: k + finish.cost,
+        });
+    }
+    // The number is right there in the margin: type it.
+    if let Some(d) = f.line_number_digits.filter(|_| n > GLANCE) {
+        parts.push(Part {
+            category: Category::LineNumber,
+            keys: "<line>G".into(),
+            cost: d + 1,
         });
     }
     if f.file_start && !down {
@@ -473,11 +488,12 @@ pub fn plans_for(m: &Motion, known: &Known) -> Vec<Plan> {
             } else {
                 h.category
             };
-            let joiner = if v.keys.contains(' ') && !h.keys.is_empty() {
-                ", then "
-            } else {
-                ""
-            };
+            let joiner =
+                if (v.keys.contains(' ') || v.keys.contains("<line>")) && !h.keys.is_empty() {
+                    ", then "
+                } else {
+                    ""
+                };
             plans.push(Plan {
                 category,
                 keys: format!("{}{joiner}{}", v.keys, h.keys),
@@ -1559,5 +1575,21 @@ mod tests {
         plain.report.range = None;
         OperatorMotionRule::default().on_operator(&plain, &mut out);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn line_numbers_on_screen() {
+        let f = MotionFacts {
+            line_number_digits: Some(3),
+            window_lines: Some(40),
+            ..Default::default()
+        };
+        // 120 lines down to line 245: `245G` beats paging.
+        assert_eq!(
+            plan(120, 0, f.clone()),
+            (Category::LineNumber, "<line>G".into(), 4)
+        );
+        // Close by, a count or a few presses do.
+        assert_ne!(plan(5, 0, f).0, Category::LineNumber);
     }
 }

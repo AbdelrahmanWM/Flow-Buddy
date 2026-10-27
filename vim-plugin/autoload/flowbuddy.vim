@@ -673,6 +673,10 @@ function! s:facts(start, end, jump) abort
       let f.screen = 'middle'
     endif
     let f.window_lines = winheight(0)
+    " The number is in the margin: send only how long it is.
+    if &number && !&relativenumber
+      let f.line_number_digits = strlen(string(a:end[0]))
+    endif
     let f.file_start = a:end[0] == 1 ? v:true : v:false
     let f.file_end = a:end[0] == line('$') ? v:true : v:false
   endif

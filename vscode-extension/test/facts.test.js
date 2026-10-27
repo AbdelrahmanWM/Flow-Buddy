@@ -24,7 +24,7 @@ const FIELDS = [
     'word_hops', 'word_end_hops', 'bigword_hops', 'find_hops', 'till_hops',
     'line_start', 'first_nonblank', 'line_end', 'bracket_match', 'star_hops',
     'jump_back', 'last_change', 'search_hops', 'relative_numbers', 'view_scrolled',
-    'revisits',
+    'revisits', 'line_number_digits',
 ];
 
 let failed = 0;
@@ -199,6 +199,13 @@ objs('two paragraphs', lineObjects(['a', '', 'b'], true, true), []);
 
 // Nothing at all for a move that goes nowhere.
 facts('no move', words, [0, 3], [0, 3], {}, {});
+
+{
+    const lines = Array.from({length: 200}, (_, i) => `${i}`);
+    const got = computeFacts(lines, {line: 4, col: 0}, {line: 149, col: 0}, {lineNumbers: true});
+    check('line number digits', {d: got.line_number_digits}, {d: 3});
+    check('no numbers shown', {d: computeFacts(lines, {line: 4, col: 0}, {line: 149, col: 0}, {}).line_number_digits}, {d: undefined});
+}
 
 // Operator ranges, as the Vim plugin's tests (0-based here).
 check('dw over call', rangeFacts('call(foo, bar)', 0, 3), {cols: 3, words: 1,

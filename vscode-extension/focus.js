@@ -38,6 +38,8 @@ class FocusReporter {
         this._windowFocused = vscode.window.state.focused;
         this._lastBeat = 0;
         this._trailingId = null;
+        // What had focus inside the window when the editor didn't.
+        this._panel = 'other';
     }
 
     get focused() {
@@ -69,7 +71,10 @@ class FocusReporter {
             this._windowFocused = s.focused;
             if (s.focused && this._inside)
                 this._beat();
-            else if (!s.focused)
+            else if (s.focused)
+                // Back to the panel you left from, such as the terminal.
+                this._report(false, this._panel);
+            else
                 this._report(false);
         }));
         sub(w.onDidChangeActiveTerminal(t => {
@@ -112,6 +117,7 @@ class FocusReporter {
     // Claude Code's Vim mode when it runs in the terminal.
     _left(panel = 'other') {
         this._inside = false;
+        this._panel = panel;
         this._report(false, panel);
     }
 

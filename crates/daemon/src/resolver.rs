@@ -247,24 +247,17 @@ impl Resolver {
         self.claude_vim = on;
     }
 
-    /// The most recent shell under `window_pid` running Claude Code with
-    /// its Vim mode on.
-    fn claude_in(&self, window_pid: Option<u32>) -> Option<Resolved> {
-        if !self.claude_vim {
-            return None;
-        }
-        let (&pid, shell) = self
-            .shells
+    /// Whether a shell or a Vim plugin under `window_pid` reported after
+    /// `since_ms`.
+    fn terminal_spoke_since(&self, window_pid: u32, since_ms: u64) -> bool {
+        self.shells
             .iter()
-            .filter(|(pid, _)| window_pid.is_none_or(|w| self.descends_from(**pid, w)))
-            .max_by_key(|(_, s)| s.updated_ms)?;
-        matches!(&shell.state, ShellState::Fg(cmd) if self.ids.claudes.contains(cmd)).then_some(
-            Resolved {
-                kind: ContextKind::ClaudeVim,
-                shell_pid: Some(pid),
-                editor: None,
-            },
-        )
+            .any(|(pid, s)| s.updated_ms > since_ms && self.descends_from(*pid, window_pid))
+            || self.editors.values().any(|e| {
+                VIMS.contains(&e.kind)
+                    && e.active_ms > since_ms
+                    && e.pid.is_some_and(|p| self.descends_from(p, window_pid))
+            })
     }
 
     pub fn focused_app(&self) -> Option<&str> {
@@ -407,12 +400,27 @@ impl Resolver {
         if contains(&self.ids.vscode, app_id) {
             // The companion knows whether the editor or a panel has focus.
             return match self.editor_in(self.focus.pid, &[EditorKind::Vscode]) {
-                // The integrated terminal: maybe Claude Code's prompt.
+                // The integrated terminal: whatever runs there, as in any
+                // terminal (Vim, a vi-mode shell, Claude Code, tmux).
                 Some((_, e)) if e.focused == Some(false) && e.panel == Some(Panel::Terminal) => {
-                    self.claude_in(self.focus.pid)
-                        .unwrap_or(Resolved::UNSUPPORTED)
+                    self.focus
+                        .pid
+                        .map_or(Resolved::UNSUPPORTED, |w| self.in_terminal(w))
                 }
                 Some((_, e)) if e.focused == Some(false) => Resolved::UNSUPPORTED,
+                // Clicking into a terminal that's already open says nothing,
+                // but if a shell or Vim in its terminal spoke after the
+                // editor last did, that's where you are.
+                Some((_, e))
+                    if self
+                        .focus
+                        .pid
+                        .is_some_and(|w| self.terminal_spoke_since(w, e.focused_ms)) =>
+                {
+                    self.focus
+                        .pid
+                        .map_or(Resolved::UNSUPPORTED, |w| self.in_terminal(w))
+                }
                 editor => Resolved {
                     kind: ContextKind::VsCodeVim,
                     shell_pid: None,
@@ -426,6 +434,11 @@ impl Resolver {
         let Some(window_pid) = self.focus.pid else {
             return Resolved::UNSUPPORTED;
         };
+        self.in_terminal(window_pid)
+    }
+
+    /// What has focus in a terminal window whose process is `window_pid`.
+    fn in_terminal(&self, window_pid: u32) -> Resolved {
         // Terminals like GNOME Terminal serve every window from one process,
         // so several shells may match: take the one that reported last.
         let shell = self
@@ -517,6 +530,7 @@ pub(crate) mod tests {
             (300, 100),
             (500, 1),
             (510, 500),
+            (520, 510),
             (900, 1),
             (940, 1),
             (950, 940),
@@ -681,6 +695,42 @@ pub(crate) mod tests {
         assert_eq!(kind(&r), ContextKind::ClaudeVim);
         r.shell_report_t(510, ShellState::Prompt { vi: false }, 5);
         assert_eq!(kind(&r), ContextKind::Unsupported, "claude exited");
+    }
+
+    #[test]
+    fn vim_and_vi_mode_in_the_vscode_terminal() {
+        let mut r = resolver();
+        r.set_focus(Some("code_code".into()), Some(500));
+        r.editor_hello(7, EditorKind::Vscode, Some(510), 1);
+        r.editor_focus(7, false, Some(Panel::Terminal), 2);
+        // A vi-mode shell in the terminal.
+        r.shell_report_t(510, ShellState::Prompt { vi: true }, 3);
+        assert_eq!(kind(&r), ContextKind::BashVi);
+        // Vim started there, without its plugin: from the shell hook.
+        r.shell_report_t(510, ShellState::Fg("vim".into()), 4);
+        assert_eq!(kind(&r), ContextKind::TerminalVim);
+        // With its plugin, the plugin is the context.
+        r.editor_hello(8, EditorKind::Vim, Some(520), 5);
+        let res = r.resolve();
+        assert_eq!((res.kind, res.editor), (ContextKind::TerminalVim, Some(8)));
+        // Back in the editor: VS Code again.
+        r.editor_focus(7, true, None, 6);
+        assert_eq!(kind(&r), ContextKind::VsCodeVim);
+    }
+
+    #[test]
+    fn typing_in_an_open_vscode_terminal() {
+        let mut r = resolver();
+        r.set_focus(Some("code_code".into()), Some(500));
+        r.editor_hello(7, EditorKind::Vscode, Some(510), 1);
+        r.editor_focus(7, true, None, 2);
+        assert_eq!(kind(&r), ContextKind::VsCodeVim);
+        // You clicked into the terminal (no event) and a prompt came back.
+        r.shell_report_t(510, ShellState::Prompt { vi: true }, 3);
+        assert_eq!(kind(&r), ContextKind::BashVi);
+        // Typing in the editor again sends a heartbeat.
+        r.editor_focus(7, true, None, 4);
+        assert_eq!(kind(&r), ContextKind::VsCodeVim);
     }
 
     impl Resolver {

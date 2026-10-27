@@ -50,6 +50,10 @@ struct SnippetWait {
 
 /// How long a finding waits for a better one about the same keys.
 const HOLD_MS: u64 = 800;
+/// `when = "pause"`: no keys for this long is a pause.
+const PAUSE_MS: u64 = 1500;
+/// A tip still waiting for a pause after this long is stale: dropped.
+const PAUSE_GIVE_UP_MS: u64 = 120_000;
 /// Findings this close together are about the same keys.
 const SAME_GESTURE_MS: u64 = 2000;
 
@@ -98,6 +102,8 @@ pub struct App {
     /// (finding, context, when it came).
     holding: Vec<(Finding, ContextKind, u64)>,
     hold_ms: u64,
+    /// When the last key came, for `when = "pause"`.
+    last_key_ms: Option<u64>,
     /// When `gv` was last typed, to tell it from reselecting by hand.
     last_gv_ms: Option<u64>,
     /// The last movement or edit that could have been shorter.
@@ -261,6 +267,7 @@ impl App {
             mode_guess: ModeGuess::default(),
             last_slow: None,
             last_gv_ms: None,
+            last_key_ms: None,
             holding: Vec::new(),
             hold_ms: HOLD_MS,
             recent_tips: VecDeque::new(),
@@ -803,7 +810,7 @@ impl App {
     /// little apart (`.` on the third repeat, a macro on the fourth), and
     /// only the better-ranked one should become a tip.
     fn hold(&mut self, f: Finding, ctx: ContextKind, now_ms: u64) {
-        if self.hold_ms == 0 {
+        if self.hold_ms == 0 && !self.wait_for_pause() {
             return self.take(&f, ctx, now_ms);
         }
         let rank = self.engine.rank_of(f.rule_id);
@@ -823,11 +830,22 @@ impl App {
         self.holding.push((f, ctx, now_ms));
     }
 
-    /// Findings held long enough become tips (or don't, by the policy).
+    fn wait_for_pause(&self) -> bool {
+        self.config.coaching.when == config::TipTiming::Pause
+    }
+
+    /// Findings held long enough become tips (or don't, by the policy);
+    /// with `when = "pause"`, only once no key came for a moment.
     fn release(&mut self, now_ms: u64) {
+        let paused = !self.wait_for_pause()
+            || self
+                .last_key_ms
+                .is_none_or(|t| now_ms.saturating_sub(t) >= PAUSE_MS);
+        let stale = |at: u64| now_ms.saturating_sub(at) > PAUSE_GIVE_UP_MS;
         let (ready, wait): (Vec<_>, Vec<_>) = std::mem::take(&mut self.holding)
             .into_iter()
-            .partition(|(_, _, at)| now_ms.saturating_sub(*at) >= self.hold_ms);
+            .filter(|(_, _, at)| !stale(*at))
+            .partition(|(_, _, at)| paused && now_ms.saturating_sub(*at) >= self.hold_ms);
         self.holding = wait;
         for (f, ctx, _) in ready {
             self.take(&f, ctx, now_ms);
@@ -1065,9 +1083,16 @@ impl App {
         self.release(now_ms);
         let events = self.engine.tick(self.resolved.kind, now_ms);
         self.on_rule_events(&events, now_ms);
-        let gate = self.gate(now_ms);
-        for f in self.coach.on_tick(&gate, now_ms) {
-            self.deliver(&f, now_ms);
+        // A batch waits for a pause too, if you asked for that.
+        let typing = self.wait_for_pause()
+            && self
+                .last_key_ms
+                .is_some_and(|t| now_ms.saturating_sub(t) < PAUSE_MS);
+        if !typing {
+            let gate = self.gate(now_ms);
+            for f in self.coach.on_tick(&gate, now_ms) {
+                self.deliver(&f, now_ms);
+            }
         }
         self.memory.maintain(now_ms);
         self.end_of_day(now_ms);
@@ -1096,6 +1121,7 @@ impl App {
             return Vec::new();
         }
         self.memory.active(kind, now_ms);
+        self.last_key_ms = Some(stroke.at_ms);
         let step = self.tracker.feed(stroke);
         if !step.confident {
             self.mode_guess.keys_unsure += 1;
@@ -3452,5 +3478,21 @@ pub(crate) mod tests {
         assert_eq!(nudges(&mut ext).len(), 1);
         assert_eq!(nudges(&mut watch).len(), 1);
         assert_eq!(notes.0.borrow().len(), 1);
+    }
+
+    #[test]
+    fn tips_wait_for_a_pause_when_asked() {
+        let mut app = test_app(CoachingMode::Active);
+        app.config.coaching.when = config::TipTiming::Pause;
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "org.gnome.Terminal", 100);
+        ctx(&mut app, CtxEvent::Fg, Some("vim"), 200);
+        // jjjjjjj then more typing: the tip waits.
+        type_at(&mut app, "<Esc>jjjjjjjxw", 10_000);
+        app.tick(11_200);
+        assert!(nudges(&mut ext).is_empty(), "still typing");
+        app.tick(13_000);
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1, "{n:?}");
     }
 }

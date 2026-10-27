@@ -194,6 +194,19 @@ pub struct CoachingConfig {
     pub quiet_hours: Option<String>,
     /// Passive mode: local time of the end-of-day summary notification.
     pub summary_time: String,
+    /// When a live tip shows: right away, or once you pause typing.
+    pub when: TipTiming,
+}
+
+/// When a live tip shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TipTiming {
+    /// As soon as the habit is seen.
+    #[default]
+    Now,
+    /// Once you stop typing for a moment, so it doesn't land mid-flow.
+    Pause,
 }
 
 impl Default for CoachingConfig {
@@ -208,6 +221,7 @@ impl Default for CoachingConfig {
             nudge_style: None,
             quiet_hours: None,
             summary_time: "18:00".into(),
+            when: TipTiming::Now,
         }
     }
 }

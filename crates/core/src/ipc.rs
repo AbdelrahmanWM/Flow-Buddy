@@ -36,6 +36,8 @@ pub enum CtxEvent {
 pub enum UiEvent {
     /// A file opened in a new tab (not which file).
     FileOpened,
+    /// Another open editor tab became the active one (not which).
+    TabSwitched,
 }
 
 /// What has focus inside an editor window when the text editor doesn't.

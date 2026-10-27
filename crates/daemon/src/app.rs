@@ -1248,6 +1248,10 @@ impl App {
             ClientMsg::EditorEvent {
                 event: UiEvent::FileOpened,
             } if self.is_vscode(conn) => self.on_ui(UiWhat::FileOpened, 'p', now_ms),
+            // `gt` isn't a Ctrl shortcut: only clicks are told apart.
+            ClientMsg::EditorEvent {
+                event: UiEvent::TabSwitched,
+            } if self.is_vscode(conn) => self.on_ui(UiWhat::TabSwitched, '\0', now_ms),
             ClientMsg::EditorEvent { .. } => {}
             ClientMsg::EditorMappings {
                 insert_escapes,

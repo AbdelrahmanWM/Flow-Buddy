@@ -680,6 +680,7 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("shell.one-word-changed", &[]),
     ("vscode.quick-open", &[]),
     ("vscode.terminal-toggle", &[]),
+    ("vscode.tab-switch", &[]),
 ];
 
 /// The skills `rule_id` teaches, or `None` for a rule not in the tree.

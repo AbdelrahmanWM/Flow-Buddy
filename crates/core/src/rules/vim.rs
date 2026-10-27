@@ -372,7 +372,8 @@ impl Rule for Windows {
     }
 
     fn contexts(&self) -> &'static [ContextKind] {
-        &[ContextKind::TerminalVim]
+        // vscodevim moves between editor groups with Ctrl-w h/j/k/l.
+        VIM
     }
 
     fn threshold(&self) -> Option<u32> {

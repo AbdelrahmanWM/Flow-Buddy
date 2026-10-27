@@ -8,7 +8,7 @@ Flow Buddy coaches in five places. Each one supports a different part of Vim, so
 | Exact motion tips (`}}w`, `Ctrl-d×3 then 4j`) | ✓ | ✓ with the plugin | | | |
 | Repeated keys (`jjjj`, `xxxx`, `llll`) | ✓ | ✓ | `xxxx`, `llll` | `xxxx`, `llll` | |
 | Arrows, Backspace runs | ✓ | ✓ | history, Backspace, Left arrow | ✓ | |
-| Change instead of delete + insert (`cw`, `s`, `C`) | ✓ | ✓ | ✓ | `cw`, `C`, `cc` | |
+| Change instead of delete + insert (`cw`, `s`, `C`) | ✓ | ✓ | ✓ | ✓ | |
 | One-key forms (`A`, `I`, `D`, `ZQ`) | ✓ | ✓ | `A`, `I`, `D`, `C` | `A`, `I`, `o`, `O`, `D` | |
 | `.`, macros, `cgn`, block edits, registers | ✓ | ✓ | `.` | | |
 | Counts for operators (`3dw`), `>>`, `J`, `p` | ✓ | ✓ | `3dw` | | |
@@ -23,7 +23,7 @@ Flow Buddy coaches in five places. Each one supports a different part of Vim, so
 ## What each one can't do
 
 - **vscodevim** has no `:earlier`/`:later`, `:g`/`:v`, `:wincmd`, `:changes`, `:undolist`, `g-`/`g+` or `g&`. This was checked against vscodevim 1.32.4's command table.
-- **Claude Code's Vim mode** has movement, `x`, `d`/`c`/`y` with motions and text objects, `.`, `>>`, `J` and `p`. It has no Visual mode, search, marks, macros, `s`, `r`, `~` or `:` commands.
+- **Claude Code's Vim mode** (checked against Claude Code 2.1.312's own key tables) has counts, motions including `%`, `gg`, `gj`/`gk`, `f`/`t` with `;`, operators with text objects, Visual and Visual Line mode, `x`, `s`, `r`, `~`, `J`, `p`, `.` and `u`. It has no search (`/` searches the prompt history), `*`/`n`, marks, macros, registers, redo, `:` commands, or other `g` commands (`gv`, `g;`, `gI`, `g~`).
 - **vi-mode shells** edit one line. They have no text objects (bash and fish), Visual mode, registers, `o`/`O` or `:` commands.
 
 ## Not coached yet

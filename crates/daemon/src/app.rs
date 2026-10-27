@@ -732,6 +732,7 @@ impl App {
         self.resolver.set_ids(app_ids(&config));
         self.coach.set_config(PolicyConfig::from(&config.coaching));
         self.memory.set_config(&config);
+        self.engine.set_known(self.memory.known());
         let text_changed = config.text != self.config.text;
         self.config = config;
         if text_changed {

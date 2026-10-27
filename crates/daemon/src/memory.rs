@@ -27,6 +27,8 @@ pub struct Memory {
     last_active_minute: Option<(u64, ContextKind)>,
     last_maintenance_ms: Option<u64>,
     learning: LearningConfig,
+    /// Curriculum levels taken as known (`[learn] level`).
+    known_levels: u8,
     retention_days: u32,
     /// The habit worth working on now (`flowbuddy next`), updated hourly.
     focus: Option<String>,
@@ -64,6 +66,7 @@ impl Memory {
             last_active_minute: None,
             last_maintenance_ms: None,
             learning: config.learning,
+            known_levels: config.learn.level.known_levels(),
             retention_days: config.memory.episode_retention_days,
             focus: None,
             check_ins: HashSet::new(),
@@ -101,6 +104,7 @@ impl Memory {
     pub fn set_config(&mut self, config: &Config) {
         self.learning = config.learning;
         self.retention_days = config.memory.episode_retention_days;
+        self.known_levels = config.learn.level.known_levels();
     }
 
     /// A tip as it was shown, for `flowbuddy tips` and the menu.
@@ -409,7 +413,7 @@ impl Memory {
             .iter()
             .filter(|(_, s)| **s == Stage::Mastered)
             .map(|((rule, _), _)| rule.as_str());
-        curriculum::Known::from_progress(&progress, mastered)
+        curriculum::Known::from_progress(&progress, mastered).with_levels(self.known_levels)
     }
 
     /// The day's "something new", if anything's left to learn.

@@ -792,7 +792,15 @@ fn ssh_config(host: &str, socket: &std::path::Path) -> String {
 
 fn learn() -> anyhow::Result<()> {
     match open_db()? {
-        Some(store) => print!("{}", report::learn(&store, now_ms())?),
+        Some(store) => {
+            let config =
+                flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
+                    .unwrap_or_default();
+            print!(
+                "{}",
+                report::learn(&store, now_ms(), config.learn.level.known_levels())?
+            )
+        }
         None => println!("Nothing recorded yet. Is flowbuddyd running? Try `flowbuddy status`."),
     }
     Ok(())

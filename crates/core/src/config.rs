@@ -59,11 +59,40 @@ pub struct TextConfig {
 pub struct LearnConfig {
     /// One small unused Vim feature a day, in every mode but off.
     pub daily: bool,
+    /// Where you start: tips build on what you're taken to know already.
+    pub level: Level,
 }
 
 impl Default for LearnConfig {
     fn default() -> Self {
-        LearnConfig { daily: true }
+        LearnConfig {
+            daily: true,
+            level: Level::Beginner,
+        }
+    }
+}
+
+/// How much Vim you know to begin with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Level {
+    /// Nothing is assumed: Flow Buddy learns what you use as you go.
+    #[default]
+    Beginner,
+    /// The basics (curriculum level 1) are known.
+    Intermediate,
+    /// Levels 1 and 2 are known.
+    Advanced,
+}
+
+impl Level {
+    /// Curriculum levels taken as known.
+    pub fn known_levels(self) -> u8 {
+        match self {
+            Level::Beginner => 0,
+            Level::Intermediate => 1,
+            Level::Advanced => 2,
+        }
     }
 }
 

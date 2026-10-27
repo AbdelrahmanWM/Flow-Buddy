@@ -67,6 +67,7 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh
 ```toml
 [learn]
 daily = true                                  # one small Vim feature you don't use yet, once a day
+level = "beginner"                            # or "intermediate" / "advanced": skip ahead instead of waiting to see you use the basics
 
 [typing]
 accuracy = false                              # true: count corrections (counts only) for `flowbuddy summary`

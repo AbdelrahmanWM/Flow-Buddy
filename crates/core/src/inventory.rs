@@ -208,6 +208,11 @@ fn ex_name(e: &Entry) -> Option<String> {
 /// Ex commands are typed in many ways (`:s/a/b/`, `:g/x/d`, `:b 2`): try
 /// a few, in both the short and the full spelling.
 fn ex_items(e: &Entry) -> Vec<&'static str> {
+    // `:42`: a line number on its own is the command.
+    if e.tag == ":range" {
+        let keys: Vec<Key> = ":42".chars().map(Key::ch).chain([Key::ENTER]).collect();
+        return items_of_keys(&keys);
+    }
     let full = ex_name(e);
     let short = e
         .keys

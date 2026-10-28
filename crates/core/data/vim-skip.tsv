@@ -30,3 +30,5 @@ tag-stack details	:tNext :tfirst :tlast :trewind :tjump :tselect g_CTRL-] g]
 prefix keys and no-ops: counted by the commands they start	[ ] g z CTRL-W CTRL-\_CTRL-N N<Del> CTRL-W_CTRL-C
 mark versions of ( ) { }: the motions themselves are taught	'( ') '{ '} `( `) `{ `}
 toggling Replace mode from Insert mode: R is taught	i_<Insert> c_<Insert>
+plugin packages, magic-style substitutes and scroll binding: configuration and niche variants	:packadd :packloadall :smagic :snomagic :syncbind
+the command line itself: every : command teaches it	:

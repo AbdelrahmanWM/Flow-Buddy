@@ -364,6 +364,23 @@ pub static CURRICULUM: &[Item] = &[
         |s| head(s, "fF") || is(s, &[";", ","])
     ),
     item!(
+        "save-quit",
+        1,
+        "`:w` and `:q`",
+        "save, and quit (`:wq` or `:x` both at once)",
+        "Save often: `:w` takes a second.",
+        |s| ex(
+            s,
+            &[
+                ("w", "write"),
+                ("q", "quit"),
+                ("wq", "wq"),
+                ("x", "xit"),
+                ("exi", "exit")
+            ]
+        )
+    ),
+    item!(
         "dot",
         1,
         "`.`",
@@ -623,6 +640,44 @@ pub static CURRICULUM: &[Item] = &[
         "bring back an earlier command that starts with those letters",
         "Rerun last hour's `:%s` without retyping it.",
         |s| matches!(cmdline_key(s), Some(InsertKey::Arrow(_)))
+    ),
+    item!(
+        "edit-file",
+        2,
+        "`:e` and `:e!`",
+        "open a file by name, or reload this one throwing away changes",
+        "Open the file next to this one with `:e %:h/other.rs`.",
+        |s| ex(
+            s,
+            &[
+                ("e", "edit"),
+                ("ene", "enew"),
+                ("fin", "find"),
+                ("checkt", "checktime")
+            ]
+        )
+    ),
+    item!(
+        "no-highlight",
+        2,
+        "`:noh`",
+        "clear the search highlighting until the next search",
+        "Get rid of yellow matches all over the screen.",
+        |s| ex(s, &[("noh", "nohlsearch")])
+    ),
+    item!(
+        "help",
+        2,
+        "`:h`",
+        "Vim's own help on any command: `:h ciw`",
+        "Look up what a key does without leaving Vim.",
+        |s| ex(
+            s,
+            &[("h", "help"), ("helpg", "helpgrep"), ("helpf", "helpfind")]
+        ),
+        VIM_ONLY,
+        None,
+        None
     ),
     item!(
         "page",
@@ -958,6 +1013,95 @@ pub static CURRICULUM: &[Item] = &[
         |s| cmdline_ctrl(s, "bewuvkq")
     ),
     item!(
+        "save-more",
+        3,
+        "`:wa` and `:up`",
+        "save every file, or save only if something changed (`:sav` saves as a new name)",
+        "Save everything before running the tests.",
+        |s| ex(
+            s,
+            &[
+                ("wa", "wall"),
+                ("qa", "qall"),
+                ("quita", "quitall"),
+                ("wqa", "wqall"),
+                ("xa", "xall"),
+                ("up", "update"),
+                ("sav", "saveas")
+            ]
+        )
+    ),
+    item!(
+        "buffers",
+        3,
+        "`:ls` and `:b`",
+        "list the files you have open, and switch to one by number or part of its name",
+        "Get back to a file you opened an hour ago with `:b conf`.",
+        |s| ex(
+            s,
+            &[
+                ("ls", "ls"),
+                ("files", "files"),
+                ("buffers", "buffers"),
+                ("b", "buffer"),
+                ("bn", "bnext"),
+                ("bN", "bNext"),
+                ("bp", "bprevious"),
+                ("bf", "bfirst"),
+                ("br", "brewind"),
+                ("bl", "blast"),
+                ("bd", "bdelete"),
+                ("bw", "bwipeout")
+            ]
+        )
+    ),
+    item!(
+        "set-option",
+        3,
+        "`:set`",
+        "change a setting for now: `:set wrap!`, `:set list`, `:set spell`",
+        "Turn line wrapping off to read a wide table.",
+        |s| ex(s, &[("se", "set"), ("setl", "setlocal")])
+    ),
+    item!(
+        "dirs",
+        3,
+        "`:cd` and `:pwd`",
+        "change the folder Vim works in, or show it (`:lcd` for this window)",
+        "Make `:e` and `:grep` work from the project's root.",
+        |s| ex(
+            s,
+            &[
+                ("cd", "cd"),
+                ("chd", "chdir"),
+                ("lc", "lcd"),
+                ("lch", "lchdir"),
+                ("tc", "tcd"),
+                ("tch", "tchdir"),
+                ("pw", "pwd")
+            ]
+        ),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "shell-cmd",
+        3,
+        "`:!` and `:r !`",
+        "run a shell command, or put what it prints into the file",
+        "Insert today's date with `:r !date`, or run `:!make`.",
+        |s| ex(
+            s,
+            &[
+                ("!", "!"),
+                ("sh", "shell"),
+                ("ter", "terminal"),
+                ("r", "read")
+            ]
+        )
+    ),
+    item!(
         "scroll-line",
         3,
         "`Ctrl-e` and `Ctrl-y`",
@@ -1069,7 +1213,9 @@ pub static CURRICULUM: &[Item] = &[
         "`:earlier 1m` and `g-`",
         "go back through undo history by time, or step by step across branches",
         "Get back to how the file was before the last few minutes of edits.",
-        |s| is(s, &["g-", "g+"]) || cmdline(s, &["earlier", "later"])
+        |s| is(s, &["g-", "g+"])
+            || cmdline(s, &["earlier", "later"])
+            || ex(s, &[("u", "undo"), ("red", "redo"), ("undol", "undolist")])
     ),
     item!(
         "case",
@@ -1260,7 +1406,10 @@ pub static CURRICULUM: &[Item] = &[
                 ("tabp", "tabprevious"),
                 ("tabfir", "tabfirst"),
                 ("tabl", "tablast"),
-                ("tabs", "tabs")
+                ("tabs", "tabs"),
+                ("tabf", "tabfind"),
+                ("tabr", "tabrewind"),
+                ("tabN", "tabNext")
             ]
         ),
         VIM_AND_VSCODE,
@@ -1290,6 +1439,22 @@ pub static CURRICULUM: &[Item] = &[
         "to the next or previous error or search result in the quickfix list",
         "After `:make` or `:grep`, walk through the results.",
         |s| cmdline(s, &["cn", "cp", "cnext", "cprev", "copen", "cc"])
+            || ex(
+                s,
+                &[
+                    ("cope", "copen"),
+                    ("ccl", "cclose"),
+                    ("col", "colder"),
+                    ("cnew", "cnewer"),
+                    ("cl", "clist"),
+                    ("cfir", "cfirst"),
+                    ("cla", "clast"),
+                    ("lop", "lopen"),
+                    ("lcl", "lclose"),
+                    ("lne", "lnext"),
+                    ("lp", "lprevious")
+                ]
+            )
     ),
     item!(
         "global",
@@ -1321,7 +1486,7 @@ pub static CURRICULUM: &[Item] = &[
         "`:sort`",
         "sort the selected lines",
         "Sort a list of imports.",
-        |s| cmdline(s, &["sort", "'<,'>sort"])
+        |s| cmdline(s, &["sort", "'<,'>sort"]) || ex(s, &[("sor", "sort"), ("uni", "uniq")])
     ),
     item!(
         "filter",
@@ -1370,7 +1535,8 @@ pub static CURRICULUM: &[Item] = &[
                 ("marks", "marks"),
                 ("ju", "jumps"),
                 ("changes", "changes"),
-                ("delm", "delmarks")
+                ("delm", "delmarks"),
+                ("cle", "clearjumps")
             ]
         )
     ),
@@ -1404,7 +1570,7 @@ pub static CURRICULUM: &[Item] = &[
         "`:put`",
         "paste on a line of its own, whatever was copied",
         "Paste a word as a new line under this one: `:put`.",
-        |s| ex(s, &[("pu", "put")])
+        |s| ex(s, &[("pu", "put"), ("ip", "iput")])
     ),
     item!(
         "repeat-sub",
@@ -1412,7 +1578,7 @@ pub static CURRICULUM: &[Item] = &[
         "`&` and `g&`",
         "repeat the last `:s` on this line, or on every line",
         "Ran a substitute on one line and want it on others too.",
-        |s| is(s, &["&", "g&"]) || ex(s, &[("&", "&"), ("&&", "&&")])
+        |s| is(s, &["&", "g&"]) || ex(s, &[("&", "&"), ("&&", "&&"), ("~", "~")])
     ),
     item!(
         "line-middle",
@@ -1473,7 +1639,16 @@ pub static CURRICULUM: &[Item] = &[
         "`zfap` and `zd`",
         "make a fold over a motion, or remove one (with manual folding)",
         "Fold away a long block you don't need to see.",
-        |s| head(s, "z")
+        |s| ex(
+            s,
+            &[
+                ("fo", "fold"),
+                ("foldc", "foldclose"),
+                ("foldo", "foldopen"),
+                ("foldd", "folddoopen"),
+                ("folddoc", "folddoclosed")
+            ]
+        ) || head(s, "z")
             && cmd(s).is_some_and(|c| c
                 .keys
                 .get(1)
@@ -1669,7 +1844,7 @@ pub static CURRICULUM: &[Item] = &[
         "`Ctrl-v` and `Ctrl-k` while typing",
         "type a key as it is (a real Tab), or a special character (`Ctrl-k e'` is é)",
         "Type a Tab in a file that turns tabs into spaces.",
-        |s| insert_ctrl(s, "vkq")
+        |s| insert_ctrl(s, "vkq") || ex(s, &[("dig", "digraphs")])
     ),
     item!(
         "insert-undo-break",
@@ -1704,6 +1879,142 @@ pub static CURRICULUM: &[Item] = &[
         |s| cmdline_ctrl(s, "gt")
     ),
     item!(
+        "line-cmds",
+        4,
+        "`:m` and `:t`",
+        "move or copy lines somewhere else, without going there: `:t.` copies this one below",
+        "Move a function to the top of the file with `:m 0`.",
+        |s| ex(s, &[("m", "move"), ("t", "t"), ("co", "copy")])
+    ),
+    item!(
+        "line-ex",
+        4,
+        "`:d`, `:y` and `:j` on a range",
+        "delete, copy or join lines by number, without moving there",
+        "Delete lines 10 to 20 with `:10,20d`.",
+        |s| ex(
+            s,
+            &[
+                ("d", "delete"),
+                ("dl", "dl"),
+                ("y", "yank"),
+                ("j", "join"),
+                (">", ">>>>>>>>"),
+                ("<", "<<<<<<<<"),
+                ("ma", "mark"),
+                ("k", "k")
+            ]
+        )
+    ),
+    item!(
+        "batch",
+        4,
+        "`:bufdo` and `:argdo`",
+        "run a command in every open file (or window, tab, or quickfix match)",
+        "Rename something across files: `:argdo %s/old/new/ge | update`.",
+        |s| ex(
+            s,
+            &[
+                ("argdo", "argdo"),
+                ("bufd", "bufdo"),
+                ("wind", "windo"),
+                ("tabd", "tabdo"),
+                ("cdo", "cdo"),
+                ("cfd", "cfdo")
+            ]
+        ),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "arglist",
+        4,
+        "`:args` and `:next`",
+        "a list of files to work through: set it, then step along",
+        "Edit every test file in turn: `:args **/*_test.go`, then `:next`.",
+        |s| ex(
+            s,
+            &[
+                ("ar", "args"),
+                ("n", "next"),
+                ("N", "Next"),
+                ("prev", "previous"),
+                ("fir", "first"),
+                ("la", "last"),
+                ("rew", "rewind")
+            ]
+        ),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "grep",
+        4,
+        "`:vimgrep` and `:grep`",
+        "search many files, with the matches in the quickfix list",
+        "Find every TODO in the project: `:vimgrep /TODO/ **`.",
+        |s| ex(s, &[("vim", "vimgrep"), ("gr", "grep"), ("lv", "lvimgrep")])
+    ),
+    item!(
+        "make",
+        4,
+        "`:make`",
+        "build, and step through the errors with `:cn`",
+        "Fix compile errors one by one without reading the log.",
+        |s| ex(s, &[("mak", "make"), ("comp", "compiler")]),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "session",
+        4,
+        "`:mksession`",
+        "save your windows and files, to open them all again later",
+        "Pick up tomorrow exactly where you stopped: `vim -S`.",
+        |s| ex(s, &[("mks", "mksession"), ("so", "source")]),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "abbreviations",
+        4,
+        "`:iabbrev`",
+        "a short word that expands as you type it",
+        "Make `teh` turn into `the` as you type.",
+        |s| ex(s, &[("ab", "abbreviate"), ("ia", "iabbrev")])
+            || insert_ctrl(s, "]")
+            || cmdline_ctrl(s, "]")
+    ),
+    item!(
+        "ex-lists",
+        4,
+        "`:oldfiles` and `:messages`",
+        "the files you opened recently, or the messages you missed",
+        "Reopen a file from yesterday without remembering its path.",
+        |s| ex(
+            s,
+            &[("ol", "oldfiles"), ("mes", "messages"), ("his", "history")]
+        )
+    ),
+    item!(
+        "vertical",
+        4,
+        "`:vert`",
+        "make the next split side by side: `:vert h motion`",
+        "Read help beside your file instead of above it.",
+        |s| ex(
+            s,
+            &[("vert", "vertical"), ("bo", "botright"), ("to", "topleft")]
+        ),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
         "line-undo",
         4,
         "`U`",
@@ -1732,6 +2043,14 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("bigword", &["word"]),
     ("till", &["find"]),
     ("scroll-line", &["half-page"]),
+    ("save-more", &["save-quit"]),
+    ("buffers", &["edit-file"]),
+    ("line-cmds", &["range"]),
+    ("line-ex", &["range"]),
+    ("batch", &["substitute-all"]),
+    ("arglist", &["edit-file"]),
+    ("grep", &["quickfix"]),
+    ("make", &["quickfix"]),
     ("cmdline-word", &["search"]),
     ("cmdline-edit", &["cmdline-history"]),
     ("cmdline-window", &["cmdline-history"]),
@@ -2505,6 +2824,31 @@ mod tests {
             (":abc<C-b><CR>", "cmdline-edit"),
             ("q:", "cmdline-window"),
             ("/ab<C-g><CR>", "search-step"),
+            (":w<CR>", "save-quit"),
+            (":e!<CR>", "edit-file"),
+            (":noh<CR>", "no-highlight"),
+            (":h ciw<CR>", "help"),
+            (":wa<CR>", "save-more"),
+            (":b 2<CR>", "buffers"),
+            (":ls<CR>", "buffers"),
+            (":set wrap!<CR>", "set-option"),
+            (":cd ..<CR>", "dirs"),
+            (":!make<CR>", "shell-cmd"),
+            (":r !date<CR>", "shell-cmd"),
+            (":m 0<CR>", "line-cmds"),
+            (":t.<CR>", "line-cmds"),
+            (":10,20d<CR>", "line-ex"),
+            (":>><CR>", "line-ex"),
+            (":bufdo e<CR>", "batch"),
+            (":args *.rs<CR>", "arglist"),
+            (":vimgrep /x/ **<CR>", "grep"),
+            (":make<CR>", "make"),
+            (":mks<CR>", "session"),
+            (":iab teh the<CR>", "abbreviations"),
+            (":ol<CR>", "ex-lists"),
+            (":vert sp<CR>", "vertical"),
+            (":copen<CR>", "quickfix"),
+            (":undo 0<CR>", "undo-time"),
         ];
         for (keys, id) in cases {
             assert!(

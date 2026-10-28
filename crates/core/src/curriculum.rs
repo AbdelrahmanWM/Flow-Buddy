@@ -127,6 +127,59 @@ fn cmdline(step: &Step, prefixes: &[&str]) -> bool {
     }
 }
 
+/// The Ex command typed, by name: `names` holds (shortest, full)
+/// spellings, as `:help` writes them (`ri[ght]` is ("ri", "right")); a
+/// range before it is fine.
+fn ex(step: &Step, names: &[(&str, &str)]) -> bool {
+    let Some(VimEvent::Cmdline {
+        kind: ':',
+        text: Some(t),
+    }) = &step.event
+    else {
+        return false;
+    };
+    ex_word(t).is_some_and(|w| {
+        names
+            .iter()
+            .any(|(short, full)| w.starts_with(short) && full.starts_with(w))
+    })
+}
+
+/// The command name in a command line: `:.,+3>` → `>`, `:'<,'>sort` →
+/// `sort`, `:5,10m 0` → `m`.
+fn ex_word(text: &str) -> Option<&str> {
+    let mut rest = text.trim_start();
+    // A range: numbers, . $ %, marks, patterns, offsets.
+    loop {
+        let before = rest.len();
+        rest = rest.trim_start_matches(|c: char| c.is_ascii_digit() || ".$%,;+- ".contains(c));
+        if let Some(r) = rest.strip_prefix('\'') {
+            rest = r.get(1..).unwrap_or("");
+        }
+        for delim in ['/', '?'] {
+            if let Some(r) = rest.strip_prefix(delim) {
+                rest = r.split_once(delim).map_or("", |(_, after)| after);
+            }
+        }
+        if rest.len() == before {
+            break;
+        }
+    }
+    let first = rest.chars().next()?;
+    let end = if first.is_ascii_alphabetic() {
+        rest.find(|c: char| !c.is_ascii_alphabetic())
+            .unwrap_or(rest.len())
+    } else if matches!(first, '<' | '>') {
+        // `:<` and `:>` repeat: `:>>>`.
+        rest.len() - rest.trim_start_matches(first).len()
+    } else if "&!=~#@*".contains(first) {
+        1
+    } else {
+        0
+    };
+    (end > 0).then(|| &rest[..end])
+}
+
 fn visual_then(step: &Step, keys: &str) -> bool {
     step.before.is_visual() && head(step, keys)
 }
@@ -503,6 +556,24 @@ pub static CURRICULUM: &[Item] = &[
         |s| is(s, &["X"]) && !s.before.is_visual()
     ),
     item!(
+        "shift",
+        2,
+        "`>>` and `<<`",
+        "indent or unindent the line (`>` with a motion for more)",
+        "Indent a line one level from anywhere in it.",
+        |s| is(s, &[">>", "<<"]) || op_motion(s, "<>", "wbeWBE$0^{}()GjkLHM%")
+    ),
+    item!(
+        "reindent",
+        2,
+        "`==` and `=ap`",
+        "re-indent the line, or a paragraph, the way the file's indenting says",
+        "Fix a pasted line's indentation in two keys.",
+        |s| is(s, &["=="])
+            || op_motion(s, "=", "wbeWBE$0^{}()GjkLHM%")
+            || object(s, "=", "pwsb(){}B[]")
+    ),
+    item!(
         "join",
         2,
         "`J`",
@@ -642,6 +713,25 @@ pub static CURRICULUM: &[Item] = &[
         "Remove the rest of an argument up to the comma.",
         |s| op_motion(s, "dcy", "tT")
             || (head(s, "tT") && cmd(s).is_some_and(|c| c.keys.len() == 2))
+    ),
+    item!(
+        "format",
+        3,
+        "`gqip` and `gw`",
+        "wrap lines to the text width, over a motion (`gw` keeps the cursor)",
+        "Rewrap a comment paragraph after editing it.",
+        |s| cmd(s).is_some_and(|c| {
+            let k: Vec<char> = c.keys.iter().filter_map(|k| k.plain_char()).collect();
+            k.len() >= 2 && k[0] == 'g' && matches!(k[1], 'q' | 'w')
+        })
+    ),
+    item!(
+        "join-raw",
+        3,
+        "`gJ`",
+        "join the next line on without adding a space",
+        "Glue a split identifier back together.",
+        |s| is(s, &["gJ"])
     ),
     item!(
         "scroll-line",
@@ -952,6 +1042,33 @@ pub static CURRICULUM: &[Item] = &[
         |s| cmdline(s, &["sort", "'<,'>sort"])
     ),
     item!(
+        "filter",
+        4,
+        "`!!` and `!ip`",
+        "run lines through a shell command and put back what it prints",
+        "Sort a paragraph with `!ip sort`, or format JSON with `!!jq .`.",
+        |s| head(s, "!")
+            || cmdline_is(s, |t| t.contains('!')
+                && !t.starts_with('!')
+                && ex_word(t) == Some("!"))
+    ),
+    item!(
+        "retab",
+        4,
+        "`:retab`",
+        "turn tabs into spaces (or back) by the file's settings",
+        "Clean up a file with mixed tabs and spaces.",
+        |s| ex(s, &[("ret", "retab")])
+    ),
+    item!(
+        "align",
+        4,
+        "`:center`, `:right` and `:left`",
+        "line up lines in the middle, on the right or the left",
+        "Center a heading in a plain-text file.",
+        |s| ex(s, &[("ce", "center"), ("ri", "right"), ("le", "left")])
+    ),
+    item!(
         "line-undo",
         4,
         "`U`",
@@ -980,6 +1097,9 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("bigword", &["word"]),
     ("till", &["find"]),
     ("scroll-line", &["half-page"]),
+    ("format", &["dap"]),
+    ("filter", &["range"]),
+    ("indent-object", &["shift"]),
     ("column", &["count"]),
     ("line-undo", &["undo-redo"]),
     ("screen", &["half-page"]),
@@ -1612,6 +1732,30 @@ mod tests {
             (":g/TODO/d<CR>", "global"),
             ("Vj>", "visual-indent"),
             ("ZZ", "write-quit"),
+            ("dw", "operator"),
+            ("y}", "operator"),
+            ("yy", "yank-put"),
+            ("p", "yank-put"),
+            ("rx", "replace-char"),
+            ("cc", "substitute"),
+            ("tx", "till"),
+            ("<C-f>", "page"),
+            ("X", "delete-back"),
+            ("<C-e>", "scroll-line"),
+            ("+", "line-first"),
+            ("<CR>", "line-first"),
+            ("20|", "column"),
+            ("U", "line-undo"),
+            (">>", "shift"),
+            ("<lt><lt>", "shift"),
+            ("==", "reindent"),
+            ("=ap", "reindent"),
+            ("gqip", "format"),
+            ("gJ", "join-raw"),
+            ("!!sort<CR>", "filter"),
+            (":retab<CR>", "retab"),
+            (":ce<CR>", "align"),
+            (":'<lt>,'>right<CR>", "align"),
         ];
         for (keys, id) in cases {
             assert!(
@@ -1628,6 +1772,22 @@ mod tests {
         assert!(!used("\"_dd").contains(&"registers") && used("\"ayy").contains(&"registers"));
         assert!(!used("''").contains(&"marks") && !used("'.").contains(&"marks"));
         assert!(!used("vu").contains(&"undo-redo") && used("u").contains(&"undo-redo"));
+    }
+
+    #[test]
+    fn ex_names_by_vims_abbreviations() {
+        assert_eq!(ex_word("sort"), Some("sort"));
+        assert_eq!(ex_word("'<,'>sort u"), Some("sort"));
+        assert_eq!(ex_word(".,+3>"), Some(">"));
+        assert_eq!(ex_word("5,10m 0"), Some("m"));
+        assert_eq!(ex_word("/foo/,/bar/d"), Some("d"));
+        assert_eq!(ex_word("%!jq ."), Some("!"));
+        assert_eq!(ex_word("42"), None);
+        assert!(
+            !used(":let x = 1<CR>").contains(&"align"),
+            ":le is :left, :let isn't"
+        );
+        assert!(!used(":c<CR>").contains(&"align"), "too short for :center");
     }
 
     #[test]

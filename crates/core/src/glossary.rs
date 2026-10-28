@@ -226,6 +226,10 @@ fn whole(word: &str, insert: bool) -> Option<&'static str> {
         "ZZ" => "save and quit",
         "ZQ" => "quit without saving",
         ":q!" => "quit without saving",
+        ":retab" => "turn tabs into spaces, or back, by the file's settings",
+        ":center" => "center the lines",
+        ":right" => "line the lines up on the right",
+        ":left" => "line the lines up on the left",
         "/" => "search forward for what you type, then Enter",
         "''" => "back to the line you jumped from",
         "@@" => "replay the macro you played last",
@@ -292,6 +296,7 @@ fn operator(c: char) -> Option<&'static str> {
         '>' => "indent",
         '<' => "unindent",
         '=' => "re-indent",
+        '!' => "filter through a shell command",
         _ => return None,
     })
 }
@@ -365,7 +370,7 @@ fn parse(word: &str, out: &mut Vec<(String, &'static str)>) {
         // Doubled operators and line commands.
         if let Some(n) = next
             && n == c
-            && matches!(c, 'd' | 'c' | 'y' | '>' | '<' | 'g' | 'z')
+            && matches!(c, 'd' | 'c' | 'y' | '>' | '<' | '=' | '!' | 'g' | 'z')
         {
             let m = match c {
                 'd' => "delete the whole line",
@@ -373,6 +378,8 @@ fn parse(word: &str, out: &mut Vec<(String, &'static str)>) {
                 'y' => "copy the whole line",
                 '>' => "indent the line",
                 '<' => "unindent the line",
+                '=' => "re-indent the line",
+                '!' => "filter the line through a shell command",
                 'g' => "to the first line",
                 _ => "scroll so this line is in the middle",
             };
@@ -384,6 +391,9 @@ fn parse(word: &str, out: &mut Vec<(String, &'static str)>) {
             let two = match (c, n) {
                 ('g', 'e') => Some("back to the end of the previous word"),
                 ('g', '_') => Some("to the last non-blank character"),
+                ('g', 'q') => Some("wrap lines to the text width over a motion"),
+                ('g', 'w') => Some("wrap lines over a motion, keeping the cursor"),
+                ('g', 'J') => Some("join lines without adding a space"),
                 ('z', 't') => Some("scroll so this line is at the top"),
                 ('z', 'a') => Some("open or close the fold under the cursor"),
                 ('z', 'c') => Some("close the fold under the cursor"),

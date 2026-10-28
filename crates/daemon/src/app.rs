@@ -54,8 +54,6 @@ const HOLD_MS: u64 = 800;
 const PAUSE_MS: u64 = 1500;
 /// A tip still waiting for a pause after this long is stale: dropped.
 const PAUSE_GIVE_UP_MS: u64 = 120_000;
-/// Findings this close together are about the same keys.
-const SAME_GESTURE_MS: u64 = 2000;
 
 /// Recent tips kept for snippets: this many, at most.
 const RECENT_TIPS: usize = 8;
@@ -902,16 +900,16 @@ impl App {
             return self.take(&f, ctx, now_ms);
         }
         let rank = self.engine.rank_of(f.rule_id);
-        if let Some(p) = self
-            .holding
-            .iter_mut()
-            .find(|(h, _, _)| h.at_ms.abs_diff(f.at_ms) <= SAME_GESTURE_MS)
-        {
+        if let Some(p) = self.holding.iter_mut().find(|(h, _, _)| h.overlaps(&f)) {
+            // The better-ranked leads; the other stays in it as another way.
             if rank < self.engine.rank_of(p.0.rule_id) {
-                tracing::debug!(kept = f.rule_id, dropped = p.0.rule_id, "same gesture");
-                *p = (f, ctx, now_ms);
+                tracing::debug!(kept = f.rule_id, joined = p.0.rule_id, "same gesture");
+                let mut best = f;
+                best.absorb(&p.0);
+                *p = (best, ctx, now_ms);
             } else {
-                tracing::debug!(kept = p.0.rule_id, dropped = f.rule_id, "same gesture");
+                tracing::debug!(kept = p.0.rule_id, joined = f.rule_id, "same gesture");
+                p.0.absorb(&f);
             }
             return;
         }
@@ -3534,6 +3532,7 @@ pub(crate) mod tests {
             shape: flowbuddy_core::rule::Shape::fixed("x"),
             mode: VimMode::Normal,
             at_ms,
+            start_ms: at_ms,
         };
         // The dot-repeat tip, then the macro tip a second later: the macro
         // ranks higher and is the one shown.

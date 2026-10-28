@@ -653,6 +653,7 @@ impl Rule for MotionRule {
                 shape: Shape::repeat(self.category.shape_token(), used),
                 mode: ev.motion.mode.vim_mode().unwrap_or(VimMode::Normal),
                 at_ms,
+                start_ms: ev.motion.start_ms,
             }));
         } else if ev.keys_used <= plan.cost && plan.cost >= 2 {
             // As short as it gets for a move that needed more than one key.
@@ -737,6 +738,7 @@ impl Rule for ScrollRule {
             shape: Shape::repeat("keys to scroll", used),
             mode: m.mode.vim_mode().unwrap_or(VimMode::Normal),
             at_ms: m.end_ms,
+            start_ms: m.start_ms,
         }));
     }
 
@@ -808,6 +810,7 @@ impl Rule for MarkRule {
             shape: Shape::repeat("keys back to a line", used),
             mode: m.mode.vim_mode().unwrap_or(VimMode::Normal),
             at_ms: m.end_ms,
+            start_ms: m.start_ms,
         }));
     }
 
@@ -895,6 +898,7 @@ impl Rule for TextObjectRule {
             shape: Shape::repeat("keys for a text object", used),
             mode: VimMode::Normal,
             at_ms: ev.report.at_ms,
+            start_ms: ev.report.at_ms,
         }));
     }
 
@@ -1032,6 +1036,7 @@ impl Rule for OperatorMotionRule {
             shape: Shape::repeat("keys for an operator's motion", used),
             mode: VimMode::Normal,
             at_ms: ev.report.at_ms,
+            start_ms: ev.report.at_ms,
         }));
     }
 

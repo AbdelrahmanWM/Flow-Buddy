@@ -232,6 +232,7 @@ mod tests {
             shape: Shape::repeat("j", 6),
             mode: VimMode::Normal,
             at_ms: 0,
+            start_ms: 0,
         }
     }
 

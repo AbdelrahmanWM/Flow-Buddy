@@ -99,6 +99,7 @@ impl RepeatRule {
             shape: Shape::repeat(s.unit, s.n),
             mode: s.mode,
             at_ms: s.last_ms,
+            start_ms: s.first_ms,
         })
     }
 

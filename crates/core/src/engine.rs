@@ -29,11 +29,6 @@ pub struct Engine {
     rank: HashMap<&'static str, usize>,
 }
 
-/// Findings this close together in one batch are about the same keys.
-const SAME_GESTURE_MS: u64 = 2000;
-/// A runner-up joins the winning tip only if both fit in this.
-const MAX_JOINED: usize = 280;
-
 impl Engine {
     pub fn new(rules: Vec<Box<dyn Rule>>) -> Self {
         let defaults = rules
@@ -112,35 +107,32 @@ impl Engine {
         {
             return;
         }
-        let events = std::mem::take(out);
-        let mut group: Vec<Finding> = Vec::new();
-        let flush = |group: &mut Vec<Finding>, out: &mut Vec<RuleEvent>| {
+        // Gather findings into groups whose key spans overlap; each group
+        // becomes one tip, the best-ranked, with the runner-up in it.
+        let mut others = Vec::new();
+        let mut groups: Vec<Vec<Finding>> = Vec::new();
+        for e in std::mem::take(out) {
+            match e {
+                RuleEvent::Finding(f) => {
+                    match groups.iter_mut().find(|g| g.iter().any(|h| h.overlaps(&f))) {
+                        Some(g) => g.push(f),
+                        None => groups.push(vec![f]),
+                    }
+                }
+                other => others.push(other),
+            }
+        }
+        out.extend(others);
+        for mut group in groups {
             group.sort_by_key(rank);
-            let mut it = group.drain(..);
+            let mut it = group.into_iter();
             if let Some(mut best) = it.next() {
-                if let Some(next) = it.next()
-                    && best.text.len() + next.text.len() < MAX_JOINED
-                {
-                    best.text = format!("{} Also: {}", best.text, next.text);
+                if let Some(next) = it.next() {
+                    best.absorb(&next);
                 }
                 out.push(RuleEvent::Finding(best));
             }
-        };
-        for e in events {
-            match e {
-                RuleEvent::Finding(f) => {
-                    if group
-                        .last()
-                        .is_some_and(|g| f.at_ms.abs_diff(g.at_ms) > SAME_GESTURE_MS)
-                    {
-                        flush(&mut group, out);
-                    }
-                    group.push(f);
-                }
-                other => out.push(other),
-            }
         }
-        flush(&mut group, out);
     }
 
     /// All built-in rules.

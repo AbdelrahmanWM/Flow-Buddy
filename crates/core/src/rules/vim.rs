@@ -313,6 +313,7 @@ impl Rule for WriteThenQuit {
                     shape: Shape::fixed(":w then :q"),
                     mode: VimMode::Cmdline,
                     at_ms: step.at_ms,
+                    start_ms: step.at_ms,
                 }));
                 return;
             }
@@ -407,6 +408,7 @@ impl Rule for Windows {
                 shape: Shape::fixed(":e #"),
                 mode: VimMode::Cmdline,
                 at_ms: step.at_ms,
+                start_ms: step.at_ms,
             }));
             return;
         }
@@ -459,6 +461,7 @@ impl Rule for Windows {
             shape: Shape::fixed(shape),
             mode,
             at_ms: step.at_ms,
+            start_ms: step.at_ms,
         }));
     }
 

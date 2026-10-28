@@ -725,6 +725,7 @@ mod tests {
             shape: flowbuddy_core::rule::Shape::fixed("x"),
             mode: flowbuddy_core::context::VimMode::Normal,
             at_ms: 0,
+            start_ms: 0,
         };
         m.hit(&f, ContextKind::TerminalVim, 2_000_000);
         assert!(!m.filter_allows("vim.repeat-jk", "active", 10, 2_000_000));

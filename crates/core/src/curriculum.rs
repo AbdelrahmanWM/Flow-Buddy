@@ -1443,6 +1443,97 @@ pub static CURRICULUM: &[Item] = &[
         None
     ),
     item!(
+        "diff",
+        4,
+        "`]c`, `do` and `dp`",
+        "to the next change between files being compared; take it from, or give it to, the other",
+        "Merge a conflict side by side with `vimdiff`.",
+        |s| is(s, &["]c", "[c", "do", "dp"])
+            || ex(
+                s,
+                &[
+                    ("diffthis", "diffthis"),
+                    ("diffo", "diffoff"),
+                    ("dif", "diffupdate"),
+                    ("diffs", "diffsplit"),
+                    ("diffg", "diffget"),
+                    ("diffpu", "diffput"),
+                    ("diffp", "diffpatch")
+                ]
+            ),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "method-jump",
+        4,
+        "`]m` and `[m`",
+        "to the start of the next or previous method (`]M`, `[M`: their ends)",
+        "Step through a class's methods.",
+        |s| is(s, &["]m", "[m", "]M", "[M"]),
+        VIM_AND_VSCODE,
+        None,
+        None
+    ),
+    item!(
+        "comment-jump",
+        4,
+        "`[/` and `]/`",
+        "to the start or end of a /* */ comment",
+        "Get past a long block comment.",
+        |s| is(s, &["[/", "]/", "[*", "]*"]),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "word-in-files",
+        4,
+        "`[I`",
+        "list every line with the word under the cursor, here and in included files",
+        "See every use of a constant without searching.",
+        |s| is(s, &["[I", "]I", "[i", "]i"])
+            || cmd(s).is_some_and(|c| c.keys.len() == 2
+                && matches!(c.keys[0].plain_char(), Some('[' | ']'))
+                && c.keys[1].is_ctrl('i')),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "tags",
+        4,
+        "`Ctrl-]` and `Ctrl-t`",
+        "jump to a definition through the tags file, and back again",
+        "Follow a function call into another file and return (run `ctags -R` first).",
+        |s| ctrl(s, "]t")
+            || ex(
+                s,
+                &[
+                    ("ta", "tag"),
+                    ("tn", "tnext"),
+                    ("tp", "tprevious"),
+                    ("ts", "tselect"),
+                    ("po", "pop")
+                ]
+            ),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "keyword-help",
+        4,
+        "`K`",
+        "look up the word under the cursor (its man page, or Vim's help)",
+        "Check what a shell command's flag does from inside a script.",
+        |s| is(s, &["K"]),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
         "line-undo",
         4,
         "`U`",
@@ -2201,6 +2292,15 @@ mod tests {
             ("<C-w>H", "window-move"),
             ("<C-w>f", "window-under"),
             ("g<Tab>", "last-tab"),
+            ("]c", "diff"),
+            ("do", "diff"),
+            (":diffthis<CR>", "diff"),
+            ("]m", "method-jump"),
+            ("[/", "comment-jump"),
+            ("[I", "word-in-files"),
+            ("<C-]>", "tags"),
+            ("<C-t>", "tags"),
+            ("K", "keyword-help"),
         ];
         for (keys, id) in cases {
             assert!(
@@ -2368,7 +2468,11 @@ mod tests {
             shell_only,
             ["history-search", "cd-back", "last-arg", "quick-sub"]
         );
-        assert!(!find("quick-open").unwrap().applies_in(ContextKind::TerminalVim));
+        assert!(
+            !find("quick-open")
+                .unwrap()
+                .applies_in(ContextKind::TerminalVim)
+        );
         assert_eq!(
             used_by_shape(CommandShape::CdBack)
                 .map(|i| i.id)

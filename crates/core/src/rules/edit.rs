@@ -2006,9 +2006,178 @@ impl Rule for FoldFlip {
     }
 }
 
+// Moving lines, and one command from Insert mode ------------------------------
+
+/// `dd` then `p` (or `kP`) again and again to carry a line along: `:m`.
+#[derive(Default)]
+pub struct LineCarry {
+    /// `dd` just came, and when.
+    cut: Option<u64>,
+    /// Moves in a row, the last when.
+    moves: Vec<u64>,
+}
+
+impl LineCarry {
+    const ID: &'static str = "vim.line-carry";
+    const GAP_MS: u64 = 4_000;
+    const RUN: usize = 3;
+}
+
+impl Rule for LineCarry {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Moving a line a step at a time with dd and p"
+    }
+
+    fn title(&self) -> &'static str {
+        "Move it in one go"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if ex_move(step) {
+            out.push(adoption(Self::ID, step));
+            self.moves.clear();
+            return;
+        }
+        let Some(c) = command(step) else {
+            return;
+        };
+        if c.count.is_none() && c.is("dd") {
+            self.cut = Some(step.at_ms);
+            return;
+        }
+        // Between the cut and the put: `k` or `j` to step past a line.
+        if self.cut.is_some() && (c.is("k") || c.is("j")) && c.count.is_none() {
+            return;
+        }
+        let put = c.count.is_none() && (c.is("p") || c.is("P"));
+        match self.cut.take() {
+            Some(at) if put && step.at_ms.saturating_sub(at) <= Self::GAP_MS => {
+                self.moves
+                    .retain(|t| step.at_ms.saturating_sub(*t) <= Self::GAP_MS * 2);
+                self.moves.push(step.at_ms);
+                if self.moves.len() == Self::RUN {
+                    out.push(finding(
+                        Self::ID,
+                        "Move it in one go",
+                        "Carrying a line with `dd` and `p` again and again: `:m +3` moves it three lines down (`:m -4` up, `:m 0` to the top) in one go.".into(),
+                        Shape::fixed("dd then p ×3"),
+                        step,
+                    ));
+                    self.moves.clear();
+                }
+            }
+            _ => self.moves.clear(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.cut = None;
+        self.moves.clear();
+    }
+}
+
+fn ex_move(step: &Step) -> bool {
+    matches!(&step.event, Some(VimEvent::Cmdline { kind: ':', text: Some(t) })
+        if crate::curriculum::ex_word(t).is_some_and(|w| w == "m" || w == "move"))
+}
+
+/// Leaving Insert mode for one command and going straight back, often:
+/// `Ctrl-o` runs one command and stays.
+#[derive(Default)]
+pub struct OneCommandOut {
+    /// Esc from Insert mode just came, and when.
+    escaped: Option<u64>,
+    /// One command came after it, and when.
+    one: Option<u64>,
+    /// Round trips lately.
+    trips: Vec<u64>,
+}
+
+impl OneCommandOut {
+    const ID: &'static str = "vim.one-command-out";
+    const BACK_MS: u64 = 2_500;
+    const WITHIN_MS: u64 = 10 * 60_000;
+    const TRIPS: usize = 3;
+}
+
+impl Rule for OneCommandOut {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Leaving Insert mode for one command and going straight back"
+    }
+
+    fn title(&self) -> &'static str {
+        "One command, then keep typing"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if insert_key(step) == Some(InsertKey::CtrlO) {
+            out.push(adoption(Self::ID, step));
+            return;
+        }
+        if matches!(step.event, Some(VimEvent::Escape)) && step.before == VimMode::Insert {
+            self.escaped = Some(step.at_ms);
+            self.one = None;
+            return;
+        }
+        let Some(c) = command(step).filter(|_| step.before == VimMode::Normal) else {
+            return;
+        };
+        let back_in = step.after == VimMode::Insert && c.count.is_none() && c.single().is_some();
+        match (self.escaped, self.one) {
+            (Some(_), Some(at)) if back_in && step.at_ms.saturating_sub(at) <= Self::BACK_MS => {
+                self.trips
+                    .retain(|t| step.at_ms.saturating_sub(*t) <= Self::WITHIN_MS);
+                self.trips.push(step.at_ms);
+                if self.trips.len() >= Self::TRIPS {
+                    out.push(finding(
+                        Self::ID,
+                        "One command, then keep typing",
+                        "Leaving Insert mode for one command and going straight back: `Ctrl-o` runs one Normal-mode command and keeps you typing.".into(),
+                        Shape::fixed("Esc, one command, back"),
+                        step,
+                    ));
+                    self.trips.clear();
+                }
+                self.escaped = None;
+                self.one = None;
+            }
+            (Some(esc), None) if !back_in && step.at_ms.saturating_sub(esc) <= Self::BACK_MS => {
+                self.one = Some(step.at_ms);
+            }
+            _ => {
+                self.escaped = None;
+                self.one = None;
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.escaped = None;
+        self.one = None;
+    }
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
     vec![
         Box::new(FindBack::default()),
+        Box::new(LineCarry::default()),
+        Box::new(OneCommandOut::default()),
         Box::new(WindowArrows),
         Box::new(FileFlip::default()),
         Box::new(FoldFlip::default()),
@@ -2051,6 +2220,30 @@ mod tests {
             .iter()
             .map(|f| glossary::plain(&f.text))
             .collect()
+    }
+
+    #[test]
+    fn carrying_lines_and_one_command_out() {
+        assert_eq!(findings(&vim(LineCarry::default(), "ddpddpddp")).len(), 1);
+        assert_eq!(
+            findings(&vim(LineCarry::default(), "ddkPddkPddkP")).len(),
+            1
+        );
+        assert!(
+            findings(&vim(LineCarry::default(), "ddpddp")).is_empty(),
+            "twice is fine"
+        );
+        assert_eq!(adoptions(&vim(LineCarry::default(), ":m +3<CR>")), 1);
+        let trip = "ix<Esc>ua";
+        assert_eq!(
+            findings(&vim(OneCommandOut::default(), &trip.repeat(3))).len(),
+            1
+        );
+        assert!(findings(&vim(OneCommandOut::default(), &trip.repeat(2))).is_empty());
+        assert!(
+            findings(&vim(OneCommandOut::default(), &"ix<Esc>jjjja".repeat(3))).is_empty(),
+            "several commands: Normal mode is the right place"
+        );
     }
 
     #[test]

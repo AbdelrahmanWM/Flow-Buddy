@@ -2202,6 +2202,8 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("vim.select-all", &["operator"]),
     ("vim.buffer-walk", &["buffers"]),
     ("vim.window-arrows", &["windows"]),
+    ("vim.line-carry", &["line-cmds"]),
+    ("vim.one-command-out", &["insert-keys"]),
     ("vim.file-flip", &["windows"]),
     ("vim.fold-flip", &["fold"]),
     ("mistake.no-command", &[]),

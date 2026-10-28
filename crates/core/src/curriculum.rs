@@ -209,6 +209,17 @@ fn insert_ctrl(step: &Step, keys: &str) -> bool {
     matches!(insert_key(step), Some(InsertKey::Ctrl(c)) if keys.contains(c))
 }
 
+fn cmdline_key(step: &Step) -> Option<InsertKey> {
+    match step.event {
+        Some(VimEvent::CmdlineKey(k)) => Some(k),
+        _ => None,
+    }
+}
+
+fn cmdline_ctrl(step: &Step, keys: &str) -> bool {
+    matches!(cmdline_key(step), Some(InsertKey::Ctrl(c)) if keys.contains(c))
+}
+
 fn visual_then(step: &Step, keys: &str) -> bool {
     step.before.is_visual() && head(step, keys)
 }
@@ -598,6 +609,22 @@ pub static CURRICULUM: &[Item] = &[
         |s| matches!(insert_key(s), Some(InsertKey::CtrlW | InsertKey::CtrlU))
     ),
     item!(
+        "cmdline-complete",
+        2,
+        "`Tab` on the command line",
+        "complete a command or file name (`Ctrl-d` lists the choices)",
+        "Type `:e src/ma` then `Tab` for the file name.",
+        |s| cmdline_ctrl(s, "idnpla")
+    ),
+    item!(
+        "cmdline-history",
+        2,
+        "`:` then a few letters and `Up`",
+        "bring back an earlier command that starts with those letters",
+        "Rerun last hour's `:%s` without retyping it.",
+        |s| matches!(cmdline_key(s), Some(InsertKey::Arrow(_)))
+    ),
+    item!(
         "page",
         2,
         "`Ctrl-f` and `Ctrl-b`",
@@ -913,6 +940,22 @@ pub static CURRICULUM: &[Item] = &[
         "indent or unindent the line without leaving Insert mode",
         "Fix the indent of the line you're writing as you go.",
         |s| insert_ctrl(s, "td")
+    ),
+    item!(
+        "cmdline-word",
+        3,
+        "`Ctrl-r Ctrl-w` on the command line",
+        "put the word under the cursor into the command you're typing",
+        "Start `:%s/` and pull in the name you're on instead of typing it.",
+        |s| matches!(cmdline_key(s), Some(InsertKey::Then('r', _)))
+    ),
+    item!(
+        "cmdline-edit",
+        3,
+        "`Ctrl-b`, `Ctrl-e` and `Ctrl-w` on the command line",
+        "to the start or end of the command, or delete the word before the cursor",
+        "Fix the start of a long command without arrowing back.",
+        |s| cmdline_ctrl(s, "bewuvkq")
     ),
     item!(
         "scroll-line",
@@ -1645,6 +1688,22 @@ pub static CURRICULUM: &[Item] = &[
         |s| matches!(insert_key(s), Some(InsertKey::Then('r', '=')))
     ),
     item!(
+        "cmdline-window",
+        4,
+        "`q:` and `Ctrl-f`",
+        "edit earlier commands (or searches with `q/`) in a window, with all of Vim",
+        "Change one part of a long command you ran an hour ago.",
+        |s| is(s, &["q:", "q/", "q?"]) || cmdline_ctrl(s, "f")
+    ),
+    item!(
+        "search-step",
+        4,
+        "`Ctrl-g` and `Ctrl-t` while searching",
+        "to the next or previous match before pressing Enter",
+        "Search for a word and step to its third use, then Enter.",
+        |s| cmdline_ctrl(s, "gt")
+    ),
+    item!(
         "line-undo",
         4,
         "`U`",
@@ -1673,6 +1732,10 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("bigword", &["word"]),
     ("till", &["find"]),
     ("scroll-line", &["half-page"]),
+    ("cmdline-word", &["search"]),
+    ("cmdline-edit", &["cmdline-history"]),
+    ("cmdline-window", &["cmdline-history"]),
+    ("search-step", &["search"]),
     ("insert-again", &["insert-keys"]),
     ("insert-copy", &["insert-keys"]),
     ("completion-kinds", &["completion"]),
@@ -2436,6 +2499,12 @@ mod tests {
             ("i<C-v><Tab>", "insert-literal"),
             ("i<C-g>u", "insert-undo-break"),
             ("i<C-r>=", "insert-expr"),
+            (":e<Tab><CR>", "cmdline-complete"),
+            (":s<Up><CR>", "cmdline-history"),
+            (":%s/<C-r><C-w><CR>", "cmdline-word"),
+            (":abc<C-b><CR>", "cmdline-edit"),
+            ("q:", "cmdline-window"),
+            ("/ab<C-g><CR>", "search-step"),
         ];
         for (keys, id) in cases {
             assert!(

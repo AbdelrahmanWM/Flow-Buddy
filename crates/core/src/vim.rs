@@ -93,6 +93,10 @@ pub enum VimEvent {
         kind: char,
         text: Option<String>,
     },
+    /// An editing key on the command line: `Ctrl(…)` for Ctrl keys (Tab is
+    /// `Ctrl('i')`), `Then('r', …)` for `Ctrl-r Ctrl-w`, `Ctrl-r Ctrl-a`,
+    /// `Ctrl-r =` or a register (`"`), arrows for history.
+    CmdlineKey(InsertKey),
     /// Esc (or an equivalent) was pressed.
     Escape,
     /// A key you mapped to something else: it isn't the built-in command.
@@ -175,6 +179,8 @@ pub struct Tracker {
     /// `Ctrl-v`/`Ctrl-k` (the next keys are text, not kept): the prefix and
     /// how many keys it takes.
     insert_prefix: Option<(char, u8)>,
+    /// After `Ctrl-r` (or `Ctrl-v`/`Ctrl-k`, `'v'`/`'k'`) on the command line.
+    cmdline_prefix: Option<(char, u8)>,
     mappings: Mappings,
     /// The last character typed in Insert mode, for two-key mappings.
     last_text: Option<(char, u64)>,
@@ -199,6 +205,7 @@ impl Tracker {
             insert_once: false,
             after_ctrl_r: false,
             insert_prefix: None,
+            cmdline_prefix: None,
             mappings: Mappings::default(),
             last_text: None,
             now_ms: 0,
@@ -237,6 +244,7 @@ impl Tracker {
         self.insert_once = false;
         self.after_ctrl_r = false;
         self.insert_prefix = None;
+        self.cmdline_prefix = None;
     }
 
     pub fn feed(&mut self, stroke: KeyStroke) -> Step {
@@ -378,6 +386,51 @@ impl Tracker {
     }
 
     fn cmdline_key(&mut self, key: Key) -> Option<VimEvent> {
+        if let Some((prefix, left)) = self.cmdline_prefix.take() {
+            if left > 1 {
+                self.cmdline_prefix = Some((prefix, left - 1));
+            }
+            self.cmdline_known = false;
+            return match (prefix, key.sym) {
+                ('r', Sym::Char(c))
+                    if key.mods.ctrl && matches!(c, 'w' | 'a' | 'l' | 'f' | 'p') =>
+                {
+                    Some(VimEvent::CmdlineKey(InsertKey::Then('r', c)))
+                }
+                ('r', Sym::Char('=')) => Some(VimEvent::CmdlineKey(InsertKey::Then('r', '='))),
+                // A register's contents: which register isn't kept.
+                ('r', _) => Some(VimEvent::CmdlineKey(InsertKey::Then('r', '"'))),
+                // What follows Ctrl-v or Ctrl-k is text.
+                _ => None,
+            };
+        }
+        let edit = match key.sym {
+            Sym::Char(c) if key.mods.ctrl && c.is_ascii_alphabetic() => {
+                let c = c.to_ascii_lowercase();
+                self.cmdline_prefix = match c {
+                    'r' => Some(('r', 1)),
+                    'v' | 'q' => Some(('v', 1)),
+                    'k' => Some(('k', 2)),
+                    _ => None,
+                };
+                Some(InsertKey::Ctrl(c))
+            }
+            Sym::Tab => Some(InsertKey::Ctrl('i')),
+            Sym::Up | Sym::Down | Sym::PageUp | Sym::PageDown => {
+                Some(InsertKey::Arrow(match key.sym {
+                    Sym::PageUp => Sym::Up,
+                    Sym::PageDown => Sym::Down,
+                    s => s,
+                }))
+            }
+            _ => None,
+        };
+        if let Some(k) = edit {
+            // Ctrl-w and Ctrl-u edit text we can still follow? Not
+            // exactly: whatever the key, the text is no longer known.
+            self.cmdline_known = false;
+            return Some(VimEvent::CmdlineKey(k));
+        }
         match key.sym {
             Sym::Enter => {
                 let text = self

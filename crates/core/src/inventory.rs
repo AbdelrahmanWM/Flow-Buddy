@@ -146,6 +146,7 @@ fn keys_of(e: &Entry) -> Option<Vec<Key>> {
         "v_:" => ":'<,'>d<CR>",
         "v_!" => "!!",
         // Visual versions of Normal-mode lookups.
+        "c_wildchar" => "<Tab>",
         "v_K" => "K",
         "v_CTRL-]" => "CTRL-]",
         _ => e.keys,

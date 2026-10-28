@@ -92,6 +92,9 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
     },
+    CmdlineKey {
+        key: String,
+    },
     Escape,
     Mapped,
 }
@@ -203,6 +206,9 @@ impl Event {
                     }
                 }),
             },
+            VimEvent::CmdlineKey(k) => Event::CmdlineKey {
+                key: insert_name(*k),
+            },
             VimEvent::Escape => Event::Escape,
             VimEvent::Mapped => Event::Mapped,
         }
@@ -226,6 +232,7 @@ impl Event {
             },
             Event::Escape => VimEvent::Escape,
             Event::Mapped => VimEvent::Mapped,
+            Event::CmdlineKey { key } => VimEvent::CmdlineKey(insert_key(key)),
         })
     }
 }

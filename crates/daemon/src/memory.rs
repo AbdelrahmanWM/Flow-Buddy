@@ -25,8 +25,17 @@ struct ProgressCache {
     overrides: HashMap<String, bool>,
     /// Per environment (`None`: all of them), read when first wanted.
     uses: HashMap<Option<ContextKind>, HashMap<String, flowbuddy_store::ItemUse>>,
+    /// Prerequisite links your order of learning says don't hold.
+    unlinked: Vec<(&'static str, &'static str)>,
+    /// Mastery per skill and the fitted half-life model, likewise.
+    skills: HashMap<Option<ContextKind>, Skills>,
     items: HashMap<String, flowbuddy_store::LearnRow>,
 }
+
+type Skills = (
+    HashMap<String, flowbuddy_core::mastery::Skill>,
+    flowbuddy_core::mastery::Model,
+);
 
 /// A pattern: (rule id, context).
 type PatternKey = (String, String);
@@ -173,6 +182,23 @@ impl Memory {
 
     /// A tip was shown: open a row for what comes of it.
     pub fn tip_shown(&mut self, rule_id: &'static str, mode: &str, local_hour: u32, now_ms: u64) {
+        self.open_tip(rule_id, mode, local_hour, now_ms, false);
+    }
+
+    /// A tip was held back at random: what comes of it anyway is the
+    /// comparison.
+    pub fn tip_held(&mut self, rule_id: &'static str, mode: &str, local_hour: u32, now_ms: u64) {
+        self.open_tip(rule_id, mode, local_hour, now_ms, true);
+    }
+
+    fn open_tip(
+        &mut self,
+        rule_id: &'static str,
+        mode: &str,
+        local_hour: u32,
+        now_ms: u64,
+        held: bool,
+    ) {
         let Some(store) = &self.store else { return };
         let Some(ctx) = self.finding_context(rule_id) else {
             return;
@@ -181,8 +207,10 @@ impl Memory {
         if self.tips_today.0 != today {
             self.tips_today = (today, 0);
         }
-        *self.shown.entry(rule_id.to_string()).or_default() += 1;
-        self.skipped.remove(rule_id);
+        if !held {
+            *self.shown.entry(rule_id.to_string()).or_default() += 1;
+            self.skipped.remove(rule_id);
+        }
         let stage = self.stage(rule_id, ctx);
         let tip = flowbuddy_store::TipShown {
             shown_at: now_ms / 1000,
@@ -192,8 +220,11 @@ impl Memory {
             hour: local_hour,
             mode,
             prior_today: self.tips_today.1,
+            held,
         };
-        self.tips_today.1 += 1;
+        if !held {
+            self.tips_today.1 += 1;
+        }
         match store.tip_shown(&tip) {
             Ok(id) => {
                 // A newer tip for the same rule replaces the open one.
@@ -260,7 +291,7 @@ impl Memory {
         let rows = store.tips(since).unwrap_or_default();
         rows.iter()
             .rev()
-            .filter(|r| r.rule_id == rule_id)
+            .filter(|r| r.rule_id == rule_id && !r.held)
             .filter_map(|r| r.outcome)
             .take_while(|o| {
                 matches!(
@@ -295,9 +326,11 @@ impl Memory {
     /// Retrain the filter from the outcomes kept.
     fn retrain(&mut self, now_ms: u64) {
         let Some(store) = &self.store else { return };
-        let Ok(rows) = store.tips((now_ms / 1000).saturating_sub(TIP_RETENTION_S)) else {
+        let Ok(mut rows) = store.tips((now_ms / 1000).saturating_sub(TIP_RETENTION_S)) else {
             return;
         };
+        // Held tips weren't seen: nothing to learn about showing them.
+        rows.retain(|r| !r.held);
         use flowbuddy_store::Outcome;
         self.shown.clear();
         for r in &rows {
@@ -452,7 +485,12 @@ impl Memory {
             *cache = Some(ProgressCache {
                 day: today.clone(),
                 overrides: store.known_overrides().unwrap_or_default(),
+                unlinked: store
+                    .links()
+                    .map(|l| flowbuddy_core::links::dropped(&l))
+                    .unwrap_or_default(),
                 uses: HashMap::new(),
+                skills: HashMap::new(),
                 items: store
                     .learn_items()
                     .ok()?
@@ -472,10 +510,17 @@ impl Memory {
                 )
                 .clone(),
         };
+        let (skills, model) = match c.skills.entry(ctx) {
+            std::collections::hash_map::Entry::Occupied(e) => e.get().clone(),
+            std::collections::hash_map::Entry::Vacant(e) => e
+                .insert(store.skills(&today, ctx.map(|c| c.as_str())).ok()?)
+                .clone(),
+        };
         let items = c.items.clone();
         Some(move |id: &str| {
             let row = items.get(id);
             let u = uses.get(id).copied().unwrap_or_default();
+            let skill = skills.get(id).map(|s| s.percents(&model));
             curriculum::Progress {
                 uses: u.total,
                 recent_uses: u.recent,
@@ -483,6 +528,8 @@ impl Memory {
                 times_shown: row.map_or(0, |r| r.times_shown),
                 last_shown: row.map(|r| r.last_shown),
                 learned: row.is_some_and(|r| r.learned_at.is_some()),
+                mastery: skill.map(|s| s.0),
+                recall: skill.map(|s| s.1),
             }
         })
     }
@@ -507,23 +554,20 @@ impl Memory {
             .iter()
             .filter(|(_, s)| **s == Stage::Mastered)
             .map(|((rule, _), _)| rule.as_str());
-        let overrides = self
+        let (overrides, unlinked) = self
             .progress_cache
             .borrow()
             .as_ref()
-            .map(|c| c.overrides.clone())
+            .map(|c| (c.overrides.clone(), c.unlinked.clone()))
             .unwrap_or_default();
         curriculum::Known::from_progress(&progress, mastered)
             .with_levels(self.known_levels)
             .with_overrides(&overrides)
+            .with_links(&unlinked)
     }
 
-    /// The day's "something new", if anything's left to learn.
-    pub fn pick_something_new(
-        &self,
-        ctx: ContextKind,
-        now_ms: u64,
-    ) -> Option<&'static curriculum::Item> {
+    /// The day's "something new", or a review, if anything's left.
+    pub fn pick_something_new(&self, ctx: ContextKind, now_ms: u64) -> Option<curriculum::Pick> {
         let progress = self.progress(Some(ctx), now_ms)?;
         // This week's habits, most hits first.
         let (from, to) = flowbuddy_store::days::range(now_ms, 7, 0);
@@ -534,13 +578,21 @@ impl Memory {
         // Rules you tripped, not ones you only did the better way for.
         let mut habits: Vec<(String, u64)> = hits.into_iter().filter(|(_, n)| *n > 0).collect();
         habits.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        curriculum::pick_from_habits(
+        curriculum::choose(
             &progress,
             &self.known(Some(ctx), now_ms),
             now_ms / 1000,
             ctx,
             &habits,
         )
+    }
+
+    /// A challenge ended: `done`, `missed` or `expired`.
+    pub fn challenge_ended(&self, item_id: &str, set_at: u64, outcome: &str, now_ms: u64) {
+        if let Some(store) = &self.store {
+            let _ = store.challenge_ended(item_id, set_at, &day(now_ms), outcome);
+            self.progress_cache.replace(None);
+        }
     }
 
     pub fn learn_shown(&self, item_id: &str, now_ms: u64) {
@@ -702,6 +754,7 @@ mod tests {
             hour: 10,
             mode: "active",
             prior_today: 0,
+            held: false,
         };
         for (i, outcome) in [
             Outcome::Adopted,

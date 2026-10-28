@@ -71,6 +71,12 @@ pub struct LearnConfig {
     pub daily: bool,
     /// Where you start: tips build on what you're taken to know already.
     pub level: Level,
+    /// After a lesson, a challenge: use it the next time it fits. Whether
+    /// you do tells Flow Buddy how well it's sinking in.
+    pub challenges: bool,
+    /// The share of tips held back at random, to measure what tips do
+    /// (`flowbuddy learn --report`); 0 shows them all.
+    pub holdout: f64,
 }
 
 impl Default for LearnConfig {
@@ -78,6 +84,8 @@ impl Default for LearnConfig {
         LearnConfig {
             daily: true,
             level: Level::Beginner,
+            challenges: true,
+            holdout: 0.1,
         }
     }
 }
@@ -354,6 +362,16 @@ pub struct State {
     pub last_weekly_day: Option<String>,
     /// Local date of the last "something new".
     pub last_learn_day: Option<String>,
+    /// The open challenge: use this item the next time it fits.
+    pub challenge: Option<Challenge>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Challenge {
+    /// A curriculum id.
+    pub item: String,
+    /// Unix seconds.
+    pub set_at: u64,
 }
 
 impl State {

@@ -51,6 +51,20 @@ struct SnippetWait {
 /// How long a finding waits for a better one about the same keys.
 const HOLD_MS: u64 = 800;
 /// `when = "pause"`: no keys for this long is a pause.
+/// Whether to hold this tip back: true for a `share` of them, at random.
+fn held_back(share: f64, rule_id: &str, now_ms: u64) -> bool {
+    use std::hash::BuildHasher;
+    if share <= 0.0 {
+        return false;
+    }
+    // A randomly keyed hash: random enough, without a dependency.
+    let h = std::collections::hash_map::RandomState::new().hash_one((rule_id, now_ms));
+    (h as f64 / u64::MAX as f64) < share
+}
+
+/// A challenge is open this long.
+const CHALLENGE_S: u64 = 2 * 86_400;
+const CHALLENGE_RULE: &str = "learn.challenge";
 const PAUSE_MS: u64 = 1500;
 /// A tip still waiting for a pause after this long is stale: dropped.
 const PAUSE_GIVE_UP_MS: u64 = 120_000;
@@ -613,6 +627,13 @@ impl App {
         {
             return;
         }
+        // A few held back at random: comparing them with the ones shown
+        // tells whether tips help.
+        if held_back(self.config.learn.holdout, f.rule_id, now_ms) {
+            self.memory
+                .tip_held(f.rule_id, self.mode.as_str(), hour, now_ms);
+            return;
+        }
         // The model's sentence too must only name what works where the
         // habit was seen.
         let ctx = self
@@ -756,15 +777,82 @@ impl App {
         {
             return;
         }
-        let Some(item) = self.memory.pick_something_new(self.resolved.kind, now_ms) else {
+        let Some(pick) = self.memory.pick_something_new(self.resolved.kind, now_ms) else {
             return;
         };
+        let item = pick.item;
         self.state.last_learn_day = Some(today);
         self.save_state();
-        let text = flowbuddy_core::curriculum::tip_text(item);
-        self.show(RULE, "Something new", &text, false, now_ms);
+        let mut text = flowbuddy_core::curriculum::tip_text(item);
+        // Producing it beats reading about it: a challenge to use it.
+        if self.config.learn.challenges {
+            text.push_str(" Challenge: use it the next time it fits.");
+            if let Some(old) = self.state.challenge.take() {
+                self.memory
+                    .challenge_ended(&old.item, old.set_at, "expired", now_ms);
+            }
+            self.state.challenge = Some(config::Challenge {
+                item: item.id.into(),
+                set_at: now_ms / 1000,
+            });
+            self.save_state();
+        }
+        // A review: you'd mastered it, and it's slipping.
+        let title = if pick.review {
+            "Remember this?"
+        } else {
+            "Something new"
+        };
+        self.show(RULE, title, &text, false, now_ms);
         self.memory.learn_shown(item.id, now_ms);
         self.todays_lesson = Some(item.id);
+    }
+
+    /// The challenge is met when its item is used.
+    fn check_challenge(&mut self, usage: &HashMap<(ContextKind, &'static str), u64>, now_ms: u64) {
+        let Some(c) = self.state.challenge.clone() else {
+            return;
+        };
+        if usage.keys().any(|(_, id)| *id == c.item) {
+            self.state.challenge = None;
+            self.save_state();
+            self.memory
+                .challenge_ended(&c.item, c.set_at, "done", now_ms);
+            if let Some(item) = flowbuddy_core::curriculum::find(&c.item) {
+                let text = format!("You used {}: challenge done.", item.keys);
+                self.show(CHALLENGE_RULE, "Nice", &text, false, now_ms);
+            }
+        } else if now_ms / 1000 >= c.set_at + CHALLENGE_S {
+            self.state.challenge = None;
+            self.save_state();
+            self.memory
+                .challenge_ended(&c.item, c.set_at, "expired", now_ms);
+        }
+    }
+
+    /// Missed: the old habit, where the challenge's item would have done,
+    /// and could have here.
+    fn challenge_missed(&mut self, rule_id: &str, ctx: ContextKind, now_ms: u64) {
+        let Some(c) = self.state.challenge.clone() else {
+            return;
+        };
+        let Some(item) = flowbuddy_core::curriculum::find(&c.item) else {
+            return;
+        };
+        let teaches =
+            flowbuddy_core::curriculum::rule_skills(rule_id).is_some_and(|s| s.contains(&item.id));
+        if teaches
+            && item.applies_in(ctx)
+            && flowbuddy_core::support::supports_all(
+                ctx,
+                &flowbuddy_core::curriculum::tip_text(item),
+            )
+        {
+            self.state.challenge = None;
+            self.save_state();
+            self.memory
+                .challenge_ended(&c.item, c.set_at, "missed", now_ms);
+        }
     }
 
     fn nudge_rule(&self, nudge_id: &str) -> Option<&'static str> {
@@ -960,6 +1048,7 @@ impl App {
     fn take(&mut self, f: &Finding, ctx: ContextKind, now_ms: u64) {
         tracing::debug!(rule = f.rule_id, shape = %f.shape, "finding");
         self.memory.hit(f, ctx, now_ms);
+        self.challenge_missed(f.rule_id, ctx, now_ms);
         if self.resolved.editor.is_some() {
             if self.recent_tips.len() == RECENT_TIPS {
                 self.recent_tips.pop_front();
@@ -1175,6 +1264,7 @@ impl App {
             let counts = self.typing.take();
             self.memory.typing(counts, now_ms);
             let usage = std::mem::take(&mut self.usage);
+            self.check_challenge(&usage, now_ms);
             self.memory.command_uses(usage, now_ms);
             self.engine
                 .set_known(self.memory.known(Some(self.resolved.kind), now_ms));
@@ -1887,13 +1977,20 @@ pub(crate) mod tests {
     use flowbuddy_core::vim::notation::strokes;
     use tokio::sync::mpsc::UnboundedReceiver;
 
+    /// Every tip shown: none held back, so tests see them.
+    pub(crate) fn test_config() -> Config {
+        let mut c = Config::default();
+        c.learn.holdout = 0.0;
+        c
+    }
+
     pub(crate) fn test_app(mode: CoachingMode) -> App {
         let state = State {
             mode: Some(mode),
             ..Default::default()
         };
         let mut app = App::new(
-            Config::default(),
+            test_config(),
             state,
             test_resolver(),
             Box::new(crate::notify::fake::Recorder::default()),
@@ -2237,7 +2334,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let mut app = App::new(
-            Config::default(),
+            test_config(),
             state,
             test_resolver(),
             Box::new(recorder.clone()),
@@ -2309,7 +2406,7 @@ pub(crate) mod tests {
         };
         let store = flowbuddy_store::Store::open_in_memory().unwrap();
         let mut app = App::new(
-            Config::default(),
+            test_config(),
             state,
             test_resolver(),
             Box::new(recorder.clone()),
@@ -3087,6 +3184,7 @@ pub(crate) mod tests {
                             hour: 14,
                             mode: "active",
                             prior_today: (i % 3) as u32,
+                            held: false,
                         })
                         .unwrap();
                     store.close_tip(id, outcome).unwrap();
@@ -3145,10 +3243,20 @@ pub(crate) mod tests {
         app.tick(at(20, 15));
         assert!(nudges(&mut ext).is_empty());
         // You start using it: learned.
+        assert!(
+            n[0].text
+                .ends_with("Challenge: use it the next time it fits.")
+        );
         type_at(&mut app, "<Esc>eee", at(20, 16));
         app.tick(at(20, 16) + 120_000);
         let learned = app.memory.store().unwrap().learn_items().unwrap();
         assert!(learned[0].learned_at.is_some(), "{learned:?}");
+        // The challenge, met.
+        let n = nudges(&mut ext);
+        assert!(n.iter().any(|n| n.rule_id == "learn.challenge"), "{n:?}");
+        assert!(app.state.challenge.is_none());
+        let outcomes = app.memory.store().unwrap().challenge_outcomes().unwrap();
+        assert_eq!(outcomes["word-end"], (1, 0, 0));
         // A habit this week: walking along lines with l. The next day's
         // lesson comes from it (`f` is what that tip teaches next), not
         // from the curriculum's order.
@@ -3690,6 +3798,41 @@ pub(crate) mod tests {
         app.tick(4_000);
         assert!(!app.on_record(None, 4_000).unwrap().recording);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn held_back_tips_are_recorded_not_shown() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        app.config.learn.holdout = 1.0;
+        type_at(&mut app, "<Esc>jjjjjjjjjw", 1_000_000);
+        app.tick(1_000_000 + 61_000);
+        let n = nudges(&mut ext);
+        assert!(n.iter().all(|n| n.rule_id == "learn.daily"), "{n:?}");
+        let rows = app.memory.store().unwrap().tips(0).unwrap();
+        assert!(!rows.is_empty() && rows.iter().all(|r| r.held), "{rows:?}");
+        assert!(!held_back(0.0, "vim.repeat-jk", 1));
+    }
+
+    #[test]
+    fn a_challenge_missed_is_evidence_against() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let _ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        app.state.challenge = Some(config::Challenge {
+            item: "find".into(),
+            set_at: 1_000,
+        });
+        // Walking along the line with l, where f would have done.
+        type_at(&mut app, "<Esc>llllllllll<Esc>", 1_000_000);
+        app.tick(1_000_000 + 61_000);
+        assert!(app.state.challenge.is_none());
+        let store = app.memory.store().unwrap();
+        assert_eq!(store.challenge_outcomes().unwrap()["find"], (0, 1, 0));
+        let today = memory::day(1_000_000);
+        let (skills, _) = store.skills(&today, None).unwrap();
+        assert_eq!(skills["find"].wrong, 1.0, "{:?}", skills["find"]);
     }
 
     #[test]

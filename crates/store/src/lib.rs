@@ -146,6 +146,21 @@ const MIGRATIONS: &[&str] = &[
         known   INTEGER NOT NULL
     );
 "#,
+    r#"
+    -- Challenges after lessons ("use it the next time it fits") and how
+    -- they ended: done, missed (the old habit instead) or expired.
+    CREATE TABLE challenges (
+        id      INTEGER PRIMARY KEY,
+        item_id TEXT    NOT NULL,
+        set_at  INTEGER NOT NULL,  -- unix seconds
+        day     TEXT    NOT NULL,  -- local date it ended
+        outcome TEXT    NOT NULL
+    );
+"#,
+    r#"
+    -- Tips held back at random ([learn] holdout), to measure what tips do.
+    ALTER TABLE tip_outcomes ADD COLUMN held INTEGER NOT NULL DEFAULT 0;
+"#,
 ];
 
 /// One tip as it was shown.
@@ -199,6 +214,9 @@ pub struct TipShown<'a> {
     pub hour: u32,
     pub mode: &'a str,
     pub prior_today: u32,
+    /// Held back at random, not shown: the comparison that tells what
+    /// showing tips does (`[learn] holdout`).
+    pub held: bool,
 }
 
 /// What happened after a tip.
@@ -244,6 +262,8 @@ pub struct TipRow {
     pub prior_today: u32,
     /// `None` while still open, or if the daemon stopped before it closed.
     pub outcome: Option<Outcome>,
+    /// Held back, not shown: see [`TipShown::held`].
+    pub held: bool,
 }
 
 /// What happened, for [`Store::record`].
@@ -610,7 +630,8 @@ impl Store {
             "DELETE FROM daily_stats; DELETE FROM activity; DELETE FROM patterns;
              DELETE FROM episodes; DELETE FROM typing; DELETE FROM typo_pairs;
              DELETE FROM tip_outcomes; DELETE FROM commands_used; DELETE FROM learn_items;
-             DELETE FROM tip_history; DELETE FROM known_overrides;",
+             DELETE FROM tip_history; DELETE FROM known_overrides;
+             DELETE FROM challenges;",
         )?;
         self.conn.execute_batch("VACUUM")?;
         let _ = self.conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
@@ -670,6 +691,86 @@ impl Store {
         rows.collect()
     }
 
+    /// Each skill's mastery and the half-life model, from every day's uses
+    /// and the habits that speak against them: see
+    /// [`flowbuddy_core::mastery`]. In one environment (and uses from before
+    /// they were told apart), or `None` for all.
+    pub fn skills(
+        &self,
+        today: &str,
+        context: Option<&str>,
+    ) -> Result<(
+        HashMap<String, flowbuddy_core::mastery::Skill>,
+        flowbuddy_core::mastery::Model,
+    )> {
+        let rows = |sql: &str| -> Result<Vec<(u64, String, u64)>> {
+            let mut stmt = self.conn.prepare(sql)?;
+            let rows = stmt.query_map(params![today, context], |r| {
+                Ok((r.get::<_, i64>(0)?.max(0) as u64, r.get(1)?, r.get(2)?))
+            })?;
+            rows.collect()
+        };
+        let uses = rows(
+            "SELECT CAST(julianday(?1) - julianday(day) AS INTEGER), item_id, SUM(count)
+             FROM commands_used WHERE ?2 IS NULL OR context = ?2 OR context = 'any'
+             GROUP BY day, item_id",
+        )?;
+        let hits = rows(
+            "SELECT CAST(julianday(?1) - julianday(day) AS INTEGER), rule_id, SUM(hits)
+             FROM daily_stats WHERE ?2 IS NULL OR context = ?2
+             GROUP BY day, rule_id",
+        )?;
+        let mut histories = flowbuddy_core::mastery::histories(
+            uses.iter().map(|(a, i, n)| (*a, i.as_str(), *n)),
+            hits.iter().map(|(a, r, n)| (*a, r.as_str(), *n)),
+            |rule| {
+                flowbuddy_core::curriculum::rule_skills(rule)
+                    .unwrap_or_default()
+                    .to_vec()
+            },
+        );
+        // A missed challenge is about that one skill: a whole miss.
+        let mut stmt = self.conn.prepare(
+            "SELECT CAST(julianday(?1) - julianday(day) AS INTEGER), item_id
+             FROM challenges WHERE outcome = 'missed'",
+        )?;
+        let missed = stmt
+            .query_map(params![today], |r| {
+                Ok((r.get::<_, i64>(0)?.max(0) as u64, r.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>>>()?;
+        for (ago, item) in missed {
+            flowbuddy_core::mastery::missed(histories.entry(item).or_default(), ago);
+        }
+        Ok(flowbuddy_core::mastery::assess(&histories))
+    }
+
+    /// How a challenge ended: `done`, `missed` or `expired`.
+    pub fn challenge_ended(
+        &self,
+        item_id: &str,
+        set_at: u64,
+        day: &str,
+        outcome: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO challenges (item_id, set_at, day, outcome) VALUES (?1, ?2, ?3, ?4)",
+            params![item_id, set_at, day, outcome],
+        )?;
+        Ok(())
+    }
+
+    /// Challenges per item: (done, missed, expired).
+    pub fn challenge_outcomes(&self) -> Result<HashMap<String, (u64, u64, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT item_id, SUM(outcome = 'done'), SUM(outcome = 'missed'),
+                    SUM(outcome = 'expired')
+             FROM challenges GROUP BY item_id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))?;
+        rows.collect()
+    }
+
     /// Say an item is known (`Some(true)`), not known, or back to what use
     /// shows (`None`).
     pub fn set_known_override(&self, item_id: &str, known: Option<bool>) -> Result<()> {
@@ -702,6 +803,30 @@ impl Store {
             .prepare("SELECT item_id, MIN(day) FROM commands_used GROUP BY item_id")?;
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
         rows.collect()
+    }
+
+    /// Per environment (uses from before they were told apart as 'any'),
+    /// the day each curriculum item was first used: the orders
+    /// [`flowbuddy_core::links`] learns from.
+    pub fn first_uses_by_context(&self) -> Result<HashMap<String, HashMap<String, String>>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT context, item_id, MIN(day) FROM commands_used GROUP BY context, item_id",
+        )?;
+        let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?)))?;
+        for row in rows {
+            let (ctx, item, day) = row?;
+            out.entry(ctx).or_default().insert(item, day);
+        }
+        Ok(out)
+    }
+
+    /// The prerequisite links with the evidence from your order of
+    /// learning.
+    pub fn links(&self) -> Result<Vec<flowbuddy_core::links::Link>> {
+        Ok(flowbuddy_core::links::learn(
+            self.first_uses_by_context()?.values(),
+        ))
     }
 
     /// The environments uses were counted in (not 'any').
@@ -751,8 +876,9 @@ impl Store {
     /// A tip was shown; returns its row, for [`Store::close_tip`].
     pub fn tip_shown(&self, tip: &TipShown<'_>) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO tip_outcomes (shown_at, rule_id, context, stage, hour, mode, prior_today)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO tip_outcomes (shown_at, rule_id, context, stage, hour, mode, prior_today,
+                                       held)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 tip.shown_at,
                 tip.rule_id,
@@ -760,7 +886,8 @@ impl Store {
                 tip.stage,
                 tip.hour,
                 tip.mode,
-                tip.prior_today
+                tip.prior_today,
+                tip.held
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -778,7 +905,7 @@ impl Store {
     /// Tips shown since `since_s`, oldest first.
     pub fn tips(&self, since_s: u64) -> Result<Vec<TipRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT shown_at, rule_id, context, stage, hour, mode, prior_today, outcome
+            "SELECT shown_at, rule_id, context, stage, hour, mode, prior_today, outcome, held
              FROM tip_outcomes WHERE shown_at >= ?1 ORDER BY shown_at, id",
         )?;
         let rows = stmt.query_map(params![since_s], |r| {
@@ -794,6 +921,7 @@ impl Store {
                     .get::<_, Option<String>>(7)?
                     .as_deref()
                     .and_then(Outcome::parse),
+                held: r.get(8)?,
             })
         })?;
         rows.collect()
@@ -1249,6 +1377,7 @@ mod tests {
             hour: 14,
             mode: "active",
             prior_today: 2,
+            held: false,
         };
         let a = s.tip_shown(&tip(100)).unwrap();
         s.tip_shown(&tip(200)).unwrap();
@@ -1322,5 +1451,42 @@ mod tests {
         let p = &s.patterns().unwrap()[0];
         assert_eq!(p.adoptions, 56);
         assert!(s.inflated_adoptions("2026-10-26").unwrap().is_empty());
+    }
+
+    #[test]
+    fn skills_come_from_uses_and_habits() {
+        let s = Store::open_in_memory().unwrap();
+        for day in ["2026-10-20", "2026-10-21", "2026-10-22"] {
+            s.add_command_use(day, "vscode-vim", "find", 1).unwrap();
+        }
+        s.add_command_use("2026-10-22", "terminal-vim", "word", 1)
+            .unwrap();
+        // Back on hhhhh three days running: against word and find.
+        for day in ["2026-10-24", "2026-10-25", "2026-10-26"] {
+            s.record(day, "terminal-vim", "vim.repeat-hl", HIT, 0)
+                .unwrap();
+        }
+        let (all, model) = s.skills("2026-10-27", None).unwrap();
+        assert!(all["find"].mastery > all["word"].mastery, "{all:?}");
+        assert_eq!(all["find"].idle, Some(5));
+        assert!(all["find"].recall(&model) > 0.0);
+        let (here, _) = s.skills("2026-10-27", Some("vscode-vim")).unwrap();
+        assert!(!here.contains_key("word"), "{here:?}");
+    }
+
+    #[test]
+    fn links_learn_from_each_places_order() {
+        let s = Store::open_in_memory().unwrap();
+        for ctx in ["vscode-vim", "terminal-vim", "bash-vi"] {
+            s.add_command_use("2026-10-01", ctx, "till", 1).unwrap();
+        }
+        s.add_command_use("2026-10-03", "vscode-vim", "find", 1)
+            .unwrap();
+        let firsts = s.first_uses_by_context().unwrap();
+        assert_eq!(firsts["vscode-vim"]["find"], "2026-10-03");
+        let links = s.links().unwrap();
+        let till = links.iter().find(|l| l.item == "till").unwrap();
+        assert_eq!((till.for_, till.against), (0, 3));
+        assert!(!till.holds());
     }
 }

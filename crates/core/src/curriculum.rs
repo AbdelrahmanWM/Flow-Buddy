@@ -1110,6 +1110,9 @@ pub struct Known {
     /// Nothing is known about you (no memory): everything is ready.
     everything: bool,
     ids: HashSet<&'static str>,
+    /// Links your history says don't hold: (item, what it builds on). See
+    /// [`crate::links`].
+    unlinked: HashSet<(&'static str, &'static str)>,
 }
 
 impl Default for Known {
@@ -1124,6 +1127,7 @@ impl Known {
         Known {
             everything: true,
             ids: HashSet::new(),
+            unlinked: HashSet::new(),
         }
     }
 
@@ -1131,6 +1135,7 @@ impl Known {
         Known {
             everything: false,
             ids: ids.into_iter().collect(),
+            unlinked: HashSet::new(),
         }
         .closed()
     }
@@ -1172,6 +1177,7 @@ impl Known {
         Known {
             everything: false,
             ids,
+            unlinked: HashSet::new(),
         }
         .closed()
     }
@@ -1210,7 +1216,21 @@ impl Known {
 
     /// Worth suggesting: known already, or one step up from what is.
     pub fn ready(&self, id: &str) -> bool {
-        self.knows(id) || requires(id).iter().all(|r| self.knows(r))
+        self.knows(id) || self.builds_on(id).all(|r| self.knows(r))
+    }
+
+    /// What `id` builds on, less the links your history says don't hold.
+    pub fn builds_on<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'static str> + 'a {
+        requires(id)
+            .iter()
+            .copied()
+            .filter(move |r| !self.unlinked.contains(&(id, *r)))
+    }
+
+    /// Drop the links your history says don't hold.
+    pub fn with_links(mut self, dropped: &[(&'static str, &'static str)]) -> Self {
+        self.unlinked.extend(dropped.iter().copied());
+        self
     }
 
     /// Whether a tip's command is something you're ready for: every item
@@ -1237,9 +1257,15 @@ pub const REGULAR_USES: u64 = 9;
 pub const FADE_DAYS: u64 = 90;
 
 impl Progress {
-    /// Known: used a few times lately, or regularly and not too long ago,
-    /// or learned from a daily tip and not left unused for long.
+    /// Known: by the mastery model when there's evidence (likely learned
+    /// and likely still recalled: see [`crate::mastery`]). Without it: used
+    /// a few times lately, or regularly and not too long ago, or learned
+    /// from a daily tip and not left unused for long.
     pub fn known(&self) -> bool {
+        if let (Some(m), Some(r)) = (self.mastery, self.recall) {
+            return f64::from(m) / 100.0 >= crate::mastery::MASTERED
+                && f64::from(r) / 100.0 >= crate::mastery::RECALLED;
+        }
         let fresh = self.days_idle.is_none_or(|d| d <= FADE_DAYS);
         self.recent_uses >= KNOWN_USES
             || (fresh && self.uses >= REGULAR_USES)
@@ -1264,6 +1290,10 @@ pub struct Progress {
     /// Unix seconds.
     pub last_shown: Option<u64>,
     pub learned: bool,
+    /// Percent chance it's learned, and that you'd recall it today, from
+    /// [`crate::mastery`]; `None` without evidence.
+    pub mastery: Option<u8>,
+    pub recall: Option<u8>,
 }
 
 /// The day's "something new": the first item you're ready for but don't
@@ -1293,9 +1323,7 @@ pub fn pick_for(
         .find(|item| worth_teaching(item, progress, known, now_s, ctx))
 }
 
-/// The day's lesson from your habits: of the rules you tripped most this
-/// week (`habits`, most first), the first skill their advice teaches that
-/// you're ready for and don't know yet; else the curriculum's next.
+/// The day's lesson from your habits: see [`choose`]; else nothing.
 pub fn pick_from_habits(
     progress: &dyn Fn(&str) -> Progress,
     known: &Known,
@@ -1303,12 +1331,99 @@ pub fn pick_from_habits(
     ctx: crate::context::ContextKind,
     habits: &[(String, u64)],
 ) -> Option<&'static Item> {
-    habits
+    choose(progress, known, now_s, ctx, habits).map(|p| p.item)
+}
+
+/// The day's pick: something new, or a review of something slipping.
+#[derive(Clone, Copy)]
+pub struct Pick {
+    pub item: &'static Item,
+    pub review: bool,
+}
+
+/// Each level past where you are, a lesson is this much less likely to
+/// stick: one step up lands near the 85% that learning is fastest at
+/// (Wilson et al. 2019, docs/learning.md).
+pub const LEVEL_STEP: f64 = 0.85;
+/// A skill you've mastered comes back for review once you'd recall it
+/// less likely than this: before it's forgotten (below
+/// [`crate::mastery::RECALLED`]), when reviewing does the most.
+pub const REVIEW_AT: f64 = 0.7;
+
+/// The pick worth most: what it saves you, times the chance it sticks.
+///
+/// What it saves: one, plus this week's hits of the rules (`habits`) whose
+/// advice it is, shared among the skills each teaches. The chance it
+/// sticks: for something new, how well you know what it builds on, less
+/// [`LEVEL_STEP`] for each level past the lowest with something left; for a
+/// review, how much of it you've lost since you mastered it. New lessons
+/// and reviews compete in one ranking, so they come mixed. Ties go to the
+/// curriculum's order.
+pub fn choose(
+    progress: &dyn Fn(&str) -> Progress,
+    known: &Known,
+    now_s: u64,
+    ctx: crate::context::ContextKind,
+    habits: &[(String, u64)],
+) -> Option<Pick> {
+    let saves = |id: &str| {
+        1.0 + habits
+            .iter()
+            .filter_map(|(rule, n)| {
+                rule_skills(rule)
+                    .filter(|s| s.contains(&id))
+                    .map(|s| *n as f64 / s.len() as f64)
+            })
+            .sum::<f64>()
+    };
+    let pct = |p: Option<u8>| p.map(|p| f64::from(p) / 100.0);
+    let new: Vec<&Item> = CURRICULUM
         .iter()
-        .flat_map(|(rule, _)| rule_skills(rule).unwrap_or_default())
-        .filter_map(|id| find(id))
-        .find(|item| worth_teaching(item, progress, known, now_s, ctx))
-        .or_else(|| pick_for(progress, known, now_s, ctx))
+        .filter(|item| worth_teaching(item, progress, known, now_s, ctx))
+        .collect();
+    let frontier = new.iter().map(|i| i.level).min().unwrap_or(1);
+    let lessons = new.into_iter().map(|item| {
+        let base: f64 = known
+            .builds_on(item.id)
+            // Mastered counts in full.
+            .map(|r| {
+                pct(progress(r).mastery).map_or(1.0, |m| (m / crate::mastery::MASTERED).min(1.0))
+            })
+            .product();
+        let gap = i32::from(item.level.saturating_sub(frontier));
+        let chance = base * LEVEL_STEP.powi(gap);
+        (
+            saves(item.id) * chance,
+            Pick {
+                item,
+                review: false,
+            },
+        )
+    });
+    let reviews = CURRICULUM
+        .iter()
+        .filter(|item| item.applies_in(ctx) && crate::support::supports_all(ctx, &tip_text(item)))
+        .filter_map(|item| {
+            let p = progress(item.id);
+            let (mastery, recall) = (pct(p.mastery)?, pct(p.recall)?);
+            let due = mastery >= crate::mastery::MASTERED
+                && recall < REVIEW_AT
+                && p.last_shown
+                    .is_none_or(|t| now_s.saturating_sub(t) >= AGAIN_AFTER_DAYS * 86_400);
+            due.then(|| {
+                (
+                    saves(item.id) * mastery * (1.0 - recall),
+                    Pick { item, review: true },
+                )
+            })
+        });
+    let mut best: Option<(f64, Pick)> = None;
+    for (score, pick) in lessons.chain(reviews) {
+        if best.as_ref().is_none_or(|(b, _)| score > *b) {
+            best = Some((score, pick));
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 fn worth_teaching(
@@ -1323,8 +1438,10 @@ fn worth_teaching(
         known.ready(item.id)
             && item.applies_in(ctx)
             && crate::support::supports_all(ctx, &tip_text(item))
-            // Not known now: learned and since forgotten comes back.
+            // Not known now: learned and since forgotten comes back, as a
+            // review if it was mastered.
             && !known.knows(item.id)
+            && p.mastery.is_none_or(|m| f64::from(m) / 100.0 < crate::mastery::MASTERED)
             && p.times_shown < MAX_SHOWINGS
             && p.last_shown
                 .is_none_or(|t| now_s.saturating_sub(t) >= AGAIN_AFTER_DAYS * 86_400)
@@ -1592,6 +1709,45 @@ mod tests {
     }
 
     #[test]
+    fn worth_most_wins_and_reviews_come_mixed_in() {
+        use crate::context::ContextKind::TerminalVim;
+        let known = Known::of(["word", "count", "find"]);
+        let with = |id: &'static str, mastery, recall| {
+            move |i: &str| Progress {
+                mastery: (i == id).then_some(mastery),
+                recall: (i == id).then_some(recall),
+                ..Default::default()
+            }
+        };
+        // Half-learned prerequisites make a lesson less likely to stick.
+        let shaky = |i: &str| Progress {
+            mastery: (i == "word").then_some(40),
+            recall: (i == "word").then_some(90),
+            ..Default::default()
+        };
+        let habits = vec![("vim.repeat-hl".to_string(), 2)];
+        let first = choose(&|_| Progress::default(), &known, 0, TerminalVim, &habits).unwrap();
+        let after = choose(&shaky, &known, 0, TerminalVim, &habits).unwrap();
+        assert_eq!(first.item.id, "word-end");
+        assert_ne!(after.item.id, "word-end", "builds on a shaky w");
+        // Mastered and slipping: a review, ahead of a new lesson.
+        let slipping = with("find", 98, 40);
+        let pick = choose(&slipping, &known, 0, TerminalVim, &habits).unwrap();
+        assert_eq!((pick.item.id, pick.review), ("find", true));
+        // Still well recalled: no review yet.
+        let fresh = with("find", 98, 90);
+        let pick = choose(&fresh, &known, 0, TerminalVim, &habits).unwrap();
+        assert!(!pick.review, "{}", pick.item.id);
+        // Reviewed lately: not again within the week.
+        let shown = |i: &str| Progress {
+            last_shown: (i == "find").then_some(86_400),
+            ..slipping(i)
+        };
+        let pick = choose(&shown, &known, 2 * 86_400, TerminalVim, &habits).unwrap();
+        assert!(!pick.review, "{}", pick.item.id);
+    }
+
+    #[test]
     fn known_means_lately_and_often() {
         let p = |uses, recent_uses, idle| Progress {
             uses,
@@ -1609,6 +1765,16 @@ mod tests {
             ..Default::default()
         };
         assert!(learned(10).known() && !learned(120).known());
+        let modelled = |mastery, recall| Progress {
+            uses: 50,
+            recent_uses: 50,
+            mastery: Some(mastery),
+            recall: Some(recall),
+            ..Default::default()
+        };
+        assert!(modelled(97, 80).known());
+        assert!(!modelled(97, 30).known(), "likely forgotten");
+        assert!(!modelled(60, 90).known(), "not learned yet");
         // A macro replays its keys without typing them: only `@q` counts.
         let mut t = Tracker::new(Flavor::Vim);
         t.reset_known(VimMode::Normal);

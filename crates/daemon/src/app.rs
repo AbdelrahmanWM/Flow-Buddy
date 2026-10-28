@@ -48,8 +48,6 @@ struct SnippetWait {
     deadline_ms: u64,
 }
 
-/// How long a finding waits for a better one about the same keys.
-const HOLD_MS: u64 = 800;
 /// `when = "pause"`: no keys for this long is a pause.
 /// Whether to hold this tip back: true for a `share` of them, at random.
 fn held_back(share: f64, rule_id: &str, now_ms: u64) -> bool {
@@ -62,10 +60,9 @@ fn held_back(share: f64, rule_id: &str, now_ms: u64) -> bool {
     (h as f64 / u64::MAX as f64) < share
 }
 
-/// A challenge is open this long.
-const CHALLENGE_S: u64 = 2 * 86_400;
 const CHALLENGE_RULE: &str = "learn.challenge";
-const PAUSE_MS: u64 = 1500;
+/// "Show me another" gives at most this many more lessons a day.
+const EXTRA_LESSONS: u8 = 3;
 /// A tip still waiting for a pause after this long is stale: dropped.
 const PAUSE_GIVE_UP_MS: u64 = 120_000;
 
@@ -116,6 +113,10 @@ pub struct App {
     hold_ms: u64,
     /// Today's "something new", so a tip that uses it can say so.
     todays_lesson: Option<&'static str>,
+    /// The last `:` command's name and when: see [`App::on_ex_error`].
+    last_ex: Option<(String, u64)>,
+    /// Lessons asked for with "Show me another" today: (day, how many).
+    extra_lessons: (String, u8),
     /// When the last key came, for `when = "pause"`.
     last_key_ms: Option<u64>,
     /// When `gv` was last typed, to tell it from reselecting by hand.
@@ -205,9 +206,6 @@ const UI_CLICK_MS: u64 = 1500;
 /// in the editor a heartbeat follows within about half a second.
 const HELD_MS: u64 = 1000;
 
-/// The daily "something new" waits this long after any other tip.
-const LEARN_GAP_MS: u64 = 5 * 60_000;
-
 /// How often to look at Claude Code's settings for its Vim mode.
 const CLAUDE_CHECK_MS: u64 = 5000;
 
@@ -282,6 +280,7 @@ impl App {
         notifier: Box<dyn Notifier>,
     ) -> Self {
         let resolved = resolver.resolve();
+        let hold_ms = u64::from(config.coaching.hold_ms);
         let mut engine = Engine::standard();
         engine.apply(&config::rule_settings(&config, &state));
         App {
@@ -314,8 +313,10 @@ impl App {
             last_gv_ms: None,
             last_key_ms: None,
             todays_lesson: None,
+            last_ex: None,
+            extra_lessons: (String::new(), 0),
             holding: Vec::new(),
-            hold_ms: HOLD_MS,
+            hold_ms,
             recent_tips: VecDeque::new(),
             snippet_waits: Vec::new(),
             snippet_seq: 0,
@@ -771,18 +772,24 @@ impl App {
             || !editing
             || self.state.last_learn_day.as_deref() == Some(today.as_str())
             || self.state.muted().contains(RULE)
-            || self
-                .last_nudge_ms
-                .is_some_and(|t| now_ms.saturating_sub(t) < LEARN_GAP_MS)
+            || self.last_nudge_ms.is_some_and(|t| {
+                now_ms.saturating_sub(t) < u64::from(self.config.learn.gap_minutes) * 60_000
+            })
         {
             return;
         }
         let Some(pick) = self.memory.pick_something_new(self.resolved.kind, now_ms) else {
             return;
         };
-        let item = pick.item;
         self.state.last_learn_day = Some(today);
         self.save_state();
+        self.show_lesson(pick, now_ms);
+    }
+
+    /// Show a lesson (or a review), with its challenge.
+    fn show_lesson(&mut self, pick: flowbuddy_core::curriculum::Pick, now_ms: u64) {
+        const RULE: &str = "learn.daily";
+        let item = pick.item;
         let mut text = flowbuddy_core::curriculum::tip_text(item);
         // Producing it beats reading about it: a challenge to use it.
         if self.config.learn.challenges {
@@ -808,6 +815,84 @@ impl App {
         self.todays_lesson = Some(item.id);
     }
 
+    /// The editor said the last `:` command doesn't exist. Lower-case
+    /// names were already caught from the keys; upper case (`:W`) only
+    /// the editor can tell from a command of yours.
+    fn on_ex_error(&mut self, now_ms: u64) {
+        use flowbuddy_core::rules::mistake::{UnknownEx, unknown_ex_text};
+        let word = self
+            .last_ex
+            .take()
+            .filter(|(_, at)| now_ms.saturating_sub(*at) <= 3000)
+            .map(|(w, _)| w);
+        if word
+            .as_deref()
+            .is_some_and(|w| w.starts_with(|c: char| c.is_ascii_lowercase()))
+        {
+            return;
+        }
+        let text = match word.as_deref() {
+            Some(w) => unknown_ex_text(w),
+            None => "That isn't a Vim command. `:help ex-cmd-index` lists them all.".into(),
+        };
+        let f = Finding {
+            rule_id: UnknownEx::ID,
+            title: UnknownEx::TITLE,
+            text,
+            shape: flowbuddy_core::rule::Shape::fixed("unknown : command"),
+            mode: VimMode::Normal,
+            at_ms: now_ms,
+            start_ms: now_ms,
+        };
+        self.take(&f, self.resolved.kind, now_ms);
+    }
+
+    /// "I know this" on the daily lesson: known from now on, like
+    /// `flowbuddy learn --know`, and no challenge for it.
+    fn lesson_known(&mut self, now_ms: u64) {
+        let Some(id) = self.todays_lesson.take() else {
+            return;
+        };
+        self.memory.set_known(&[id.to_string()], Some(true));
+        if self.state.challenge.as_ref().is_some_and(|c| c.item == id) {
+            self.state.challenge = None;
+            self.save_state();
+        }
+        self.engine
+            .set_known(self.memory.known(Some(self.resolved.kind), now_ms));
+    }
+
+    /// "Show me another": the next pick, right away, a few times a day.
+    fn another_lesson(&mut self, now_ms: u64) {
+        let today = memory::day(now_ms);
+        if self.extra_lessons.0 != today {
+            self.extra_lessons = (today, 0);
+        }
+        if self.extra_lessons.1 >= EXTRA_LESSONS {
+            return;
+        }
+        // Not this one again soon: it was shown, and isn't picked again
+        // within `again_after_days`.
+        let Some(pick) = self.memory.pick_something_new(self.resolved.kind, now_ms) else {
+            return;
+        };
+        if Some(pick.item.id) == self.todays_lesson {
+            return;
+        }
+        self.extra_lessons.1 += 1;
+        // Its challenge goes with it.
+        if self
+            .state
+            .challenge
+            .as_ref()
+            .is_some_and(|c| Some(c.item.as_str()) == self.todays_lesson)
+        {
+            self.state.challenge = None;
+            self.save_state();
+        }
+        self.show_lesson(pick, now_ms);
+    }
+
     /// The challenge is met when its item is used.
     fn check_challenge(&mut self, usage: &HashMap<(ContextKind, &'static str), u64>, now_ms: u64) {
         let Some(c) = self.state.challenge.clone() else {
@@ -822,7 +907,7 @@ impl App {
                 let text = format!("You used {}: challenge done.", item.keys);
                 self.show(CHALLENGE_RULE, "Nice", &text, false, now_ms);
             }
-        } else if now_ms / 1000 >= c.set_at + CHALLENGE_S {
+        } else if now_ms / 1000 >= c.set_at + u64::from(self.config.learn.challenge_days) * 86_400 {
             self.state.challenge = None;
             self.save_state();
             self.memory
@@ -881,6 +966,13 @@ impl App {
         if action == NudgeAction::MuteRule {
             self.set_rule(rule_id, RuleAction::Mute);
         }
+        if rule_id == "learn.daily" {
+            match action {
+                NudgeAction::KnowIt => self.lesson_known(now_ms),
+                NudgeAction::Another => self.another_lesson(now_ms),
+                _ => {}
+            }
+        }
         if action == NudgeAction::FalsePositive {
             self.raise_threshold(rule_id, now_ms);
         }
@@ -935,6 +1027,7 @@ impl App {
             .apply(&config::rule_settings(&config, &self.state));
         self.resolver.set_ids(app_ids(&config));
         self.coach.set_config(PolicyConfig::from(&config.coaching));
+        self.hold_ms = u64::from(config.coaching.hold_ms);
         self.memory.set_config(&config);
         self.engine
             .set_known(self.memory.known(Some(self.resolved.kind), wall_ms()));
@@ -1023,6 +1116,10 @@ impl App {
         self.holding.push((f, ctx, now_ms));
     }
 
+    fn pause_ms(&self) -> u64 {
+        u64::from(self.config.coaching.pause_ms)
+    }
+
     fn wait_for_pause(&self) -> bool {
         self.config.coaching.when == config::TipTiming::Pause
     }
@@ -1033,7 +1130,7 @@ impl App {
         let paused = !self.wait_for_pause()
             || self
                 .last_key_ms
-                .is_none_or(|t| now_ms.saturating_sub(t) >= PAUSE_MS);
+                .is_none_or(|t| now_ms.saturating_sub(t) >= self.pause_ms());
         let stale = |at: u64| now_ms.saturating_sub(at) > PAUSE_GIVE_UP_MS;
         let (ready, wait): (Vec<_>, Vec<_>) = std::mem::take(&mut self.holding)
             .into_iter()
@@ -1292,7 +1389,7 @@ impl App {
         let typing = self.wait_for_pause()
             && self
                 .last_key_ms
-                .is_some_and(|t| now_ms.saturating_sub(t) < PAUSE_MS);
+                .is_some_and(|t| now_ms.saturating_sub(t) < self.pause_ms());
         if !typing {
             let gate = self.gate(now_ms);
             for f in self.coach.on_tick(&gate, now_ms) {
@@ -1328,6 +1425,16 @@ impl App {
         self.memory.active(kind, now_ms);
         self.last_key_ms = Some(stroke.at_ms);
         let step = self.tracker.feed(stroke);
+        // The last `:` command's name, in memory only, for the editor's
+        // "Not an editor command".
+        if let Some(VimEvent::Cmdline {
+            kind: ':',
+            text: Some(t),
+        }) = &step.event
+        {
+            self.last_ex =
+                flowbuddy_core::curriculum::ex_word(t).map(|w| (w.to_string(), stroke.at_ms));
+        }
         if !step.confident {
             self.mode_guess.keys_unsure += 1;
         }
@@ -1649,6 +1756,9 @@ impl App {
             ClientMsg::EditorEvent {
                 event: UiEvent::TabSwitched,
             } if self.is_vscode(conn) => self.on_ui(UiWhat::TabSwitched, '\0', now_ms),
+            ClientMsg::EditorEvent {
+                event: UiEvent::ExError,
+            } if self.resolved.editor == Some(conn) => self.on_ex_error(now_ms),
             ClientMsg::EditorEvent { .. } => {}
             ClientMsg::EditorMappings {
                 insert_escapes,
@@ -3546,6 +3656,32 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_editor_says_a_command_doesnt_exist() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        focus(&mut app, "org.gnome.Terminal", 100);
+        let error = |app: &mut App, at| {
+            send(
+                app,
+                3,
+                ClientMsg::EditorEvent {
+                    event: UiEvent::ExError,
+                },
+                at,
+            )
+        };
+        // `:W` may be a command of yours: only Vim's error says it isn't.
+        type_at(&mut app, ":W<CR>", 1_000);
+        assert!(nudges(&mut ext).is_empty());
+        error(&mut app, 1_500);
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].rule_id, "mistake.unknown-ex");
+        assert!(n[0].text.contains("`:w`"), "{}", n[0].text);
+    }
+
+    #[test]
     fn shells_say_their_vi_mode() {
         let mut app = test_app(CoachingMode::Active);
         let _rx = connect(&mut app, 1);
@@ -3657,7 +3793,7 @@ pub(crate) mod tests {
     #[test]
     fn one_tip_when_two_rules_fire_a_moment_apart() {
         let mut app = test_app(CoachingMode::Active);
-        app.hold_ms = HOLD_MS;
+        app.hold_ms = u64::from(Config::default().coaching.hold_ms);
         let mut ext = ext_hello(&mut app, 1);
         focus(&mut app, "org.gnome.Terminal", 100);
         ctx(&mut app, CtxEvent::Fg, Some("vim"), 200);
@@ -3813,6 +3949,62 @@ pub(crate) mod tests {
         let rows = app.memory.store().unwrap().tips(0).unwrap();
         assert!(!rows.is_empty() && rows.iter().all(|r| r.held), "{rows:?}");
         assert!(!held_back(0.0, "vim.repeat-jk", 1));
+    }
+
+    #[test]
+    fn a_lesson_you_know_or_want_swapped() {
+        use chrono::TimeZone;
+        let (mut app, _) = app_with_store(CoachingMode::Balanced);
+        let mut ext = ext_hello(&mut app, 1);
+        let at = |h, m| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 10, 20, h, m, 0)
+                .unwrap()
+                .timestamp_millis() as u64
+        };
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>wwwbbb", at(10, 0));
+        app.tick(at(10, 0) + 61_000);
+        let first = nudges(&mut ext).pop().unwrap();
+        assert_eq!(first.rule_id, "learn.daily");
+        let first_item = app.todays_lesson.unwrap();
+        // Show me another: a different one, right away.
+        let respond = |app: &mut App, id: &str, action| {
+            app.on_nudge_response(id, action, at(10, 2));
+        };
+        respond(&mut app, &first.nudge_id, NudgeAction::Another);
+        let second = nudges(&mut ext).pop().unwrap();
+        assert_eq!(second.rule_id, "learn.daily");
+        let second_item = app.todays_lesson.unwrap();
+        assert_ne!(first_item, second_item);
+        assert_eq!(app.state.challenge.as_ref().unwrap().item, second_item);
+        // I know this: known from now on, and its challenge is gone.
+        respond(&mut app, &second.nudge_id, NudgeAction::KnowIt);
+        assert!(app.memory.known(None, at(10, 3)).knows(second_item));
+        assert!(app.state.challenge.is_none());
+        // At most three more a day.
+        for _ in 0..5 {
+            let n = app.nudges.back().unwrap().0.clone();
+            app.todays_lesson = Some(first_item);
+            respond(&mut app, &n, NudgeAction::Another);
+        }
+        assert_eq!(app.extra_lessons.1, EXTRA_LESSONS);
+    }
+
+    #[test]
+    fn a_challenge_stays_open_as_long_as_you_say() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        app.config.learn.challenge_days = 1;
+        app.state.challenge = Some(config::Challenge {
+            item: "find".into(),
+            set_at: 0,
+        });
+        app.tick(86_400_000 / 2);
+        assert!(app.state.challenge.is_some(), "half a day: still open");
+        app.tick(86_400_000 + 61_000);
+        assert!(app.state.challenge.is_none());
+        let outcomes = app.memory.store().unwrap().challenge_outcomes().unwrap();
+        assert_eq!(outcomes["find"], (0, 0, 1));
     }
 
     #[test]

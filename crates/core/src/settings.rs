@@ -85,6 +85,7 @@ const fn notice(mut x: Setting, why: &'static str) -> Setting {
 }
 
 const COACHING: &str = "Coaching";
+const TIMING: &str = "Timing";
 const LEARNING: &str = "Learning";
 const PRIVACY: &str = "Privacy and text";
 const AI: &str = "AI";
@@ -125,32 +126,71 @@ pub static SETTINGS: &[Setting] = &[
     s(
         "coaching.balanced_interval_minutes",
         Kind::Int { min: 1, max: 480 },
-        COACHING,
+        TIMING,
         "Balanced mode: minutes between batches of tips",
     ),
     s(
         "coaching.batch_size",
         Kind::Int { min: 1, max: 10 },
-        COACHING,
+        TIMING,
         "Balanced mode: tips per batch",
     ),
     s(
         "coaching.cooldown_minutes",
         Kind::Int { min: 0, max: 480 },
-        COACHING,
+        TIMING,
         "Active mode: minutes before the same habit gets a tip again",
     ),
     s(
         "coaching.hourly_cap",
         Kind::Int { min: 1, max: 60 },
-        COACHING,
+        TIMING,
         "Active mode: tips per hour at most",
     ),
     s(
         "coaching.summary_time",
         Kind::Time,
-        COACHING,
+        TIMING,
         "Passive mode: when the end-of-day summary comes",
+    ),
+    s(
+        "coaching.hold_ms",
+        Kind::Int { min: 0, max: 10000 },
+        TIMING,
+        "How long a habit waits before its tip, in milliseconds, so it isn't about keys you're still typing",
+    ),
+    s(
+        "coaching.pause_ms",
+        Kind::Int {
+            min: 300,
+            max: 30000,
+        },
+        TIMING,
+        "When tips wait for a pause: how long you stop typing for it to count, in milliseconds",
+    ),
+    s(
+        "learn.gap_minutes",
+        Kind::Int { min: 0, max: 240 },
+        TIMING,
+        "No daily lesson within this many minutes of another tip",
+    ),
+    s(
+        "learn.challenge_days",
+        Kind::Int { min: 1, max: 30 },
+        TIMING,
+        "Days a challenge stays open",
+    ),
+    s(
+        "learn.again_after_days",
+        Kind::Int { min: 1, max: 90 },
+        TIMING,
+        "Days before a lesson you didn't take up can come again",
+    ),
+    s(
+        "learn.max_showings",
+        Kind::Int { min: 1, max: 20 },
+        TIMING,
+        "Times a lesson is shown at most, if you don't take it up",
     ),
     basic(s(
         "learn.daily",

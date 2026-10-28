@@ -37,6 +37,13 @@ type Skills = (
     flowbuddy_core::mastery::Model,
 );
 
+fn pace(config: &Config) -> curriculum::Pace {
+    curriculum::Pace {
+        again_after_days: u64::from(config.learn.again_after_days),
+        max_showings: config.learn.max_showings,
+    }
+}
+
 /// A pattern: (rule id, context).
 type PatternKey = (String, String);
 
@@ -50,6 +57,8 @@ pub struct Memory {
     learning: LearningConfig,
     /// Curriculum levels taken as known (`[learn] level`).
     known_levels: u8,
+    /// How often lessons come back (`[learn] again_after_days`, …).
+    pace: curriculum::Pace,
     /// Uses and daily-tip rows per curriculum item, read once and kept up
     /// to date here, so knowing what you know needn't read the database.
     progress_cache: std::cell::RefCell<Option<ProgressCache>>,
@@ -91,6 +100,7 @@ impl Memory {
             last_maintenance_ms: None,
             learning: config.learning,
             known_levels: config.learn.level.known_levels(),
+            pace: pace(config),
             progress_cache: std::cell::RefCell::new(None),
             retention_days: config.memory.episode_retention_days,
             focus: None,
@@ -130,6 +140,7 @@ impl Memory {
         self.learning = config.learning;
         self.retention_days = config.memory.episode_retention_days;
         self.known_levels = config.learn.level.known_levels();
+        self.pace = pace(config);
     }
 
     /// A tip as it was shown, for `flowbuddy tips` and the menu.
@@ -419,12 +430,15 @@ impl Memory {
             NudgeAction::FalsePositive | NudgeAction::MuteRule => {
                 self.close_tip(rule_id, Outcome::NotHelpful)
             }
-            NudgeAction::Seen => {}
+            NudgeAction::Seen | NudgeAction::KnowIt | NudgeAction::Another => {}
         }
         let event = match action {
             NudgeAction::Dismiss => Event::Dismissed,
             NudgeAction::FalsePositive => Event::FalsePositive,
-            NudgeAction::Seen | NudgeAction::MuteRule => return,
+            NudgeAction::Seen
+            | NudgeAction::MuteRule
+            | NudgeAction::KnowIt
+            | NudgeAction::Another => return,
         };
         self.record(ctx, rule_id, event, now_ms);
     }
@@ -578,12 +592,13 @@ impl Memory {
         // Rules you tripped, not ones you only did the better way for.
         let mut habits: Vec<(String, u64)> = hits.into_iter().filter(|(_, n)| *n > 0).collect();
         habits.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        curriculum::choose(
+        curriculum::choose_paced(
             &progress,
             &self.known(Some(ctx), now_ms),
             now_ms / 1000,
             ctx,
             &habits,
+            self.pace,
         )
     }
 

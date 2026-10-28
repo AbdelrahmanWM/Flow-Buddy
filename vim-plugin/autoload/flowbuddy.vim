@@ -359,6 +359,24 @@ function! flowbuddy#on_mode(new_mode) abort
   call s:send({'type': 'editor_mode', 'mode': s:mode_name(a:new_mode)})
 endfunction
 
+" After a : command: if Vim said "Not an editor command" (E492), tell the
+" daemon. Only that it happened: not the command, which the daemon knows
+" the name of from the keys.
+function! flowbuddy#on_cmdline_leave() abort
+  let s:errmsg_before = v:errmsg
+  call timer_start(0, function('s:check_ex_error'))
+endfunction
+
+function! s:check_ex_error(timer) abort
+  if v:errmsg !=# s:errmsg_before && flowbuddy#is_unknown_ex(v:errmsg)
+    call s:send({'type': 'editor_event', 'event': 'ex_error'})
+  endif
+endfunction
+
+function! flowbuddy#is_unknown_ex(errmsg) abort
+  return a:errmsg =~# '^E492:'
+endfunction
+
 function! flowbuddy#on_focus(focused) abort
   call s:finish()
   call s:send({'type': 'editor_focus', 'focused': a:focused ? v:true : v:false})

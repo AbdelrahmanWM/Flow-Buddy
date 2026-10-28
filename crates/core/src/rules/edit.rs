@@ -1811,9 +1811,376 @@ impl Rule for BufferWalk {
     }
 }
 
+// Windows, files and folds ---------------------------------------------------
+
+/// `Ctrl-w` then an arrow key: `Ctrl-w h` and friends stay on the home row.
+#[derive(Default)]
+pub struct WindowArrows;
+
+impl WindowArrows {
+    const ID: &'static str = "vim.window-arrows";
+}
+
+impl Rule for WindowArrows {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Moving between windows with Ctrl-w and an arrow key"
+    }
+
+    fn title(&self) -> &'static str {
+        "Windows from the home row"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        let Some(c) = command(step) else {
+            return;
+        };
+        if c.keys.len() != 2 || !c.keys[0].is_ctrl('w') {
+            return;
+        }
+        if c.keys[1].is_arrow() {
+            out.push(finding(
+                Self::ID,
+                "Windows from the home row",
+                "`Ctrl-w` then an arrow: `Ctrl-w h`, `Ctrl-w j`, `Ctrl-w k` and `Ctrl-w l` do the same without reaching for the arrows.".into(),
+                Shape::fixed("Ctrl-w then an arrow"),
+                step,
+            ));
+        } else if c.keys[1].plain_char().is_some_and(|k| "hjkl".contains(k)) {
+            out.push(adoption(Self::ID, step));
+        }
+    }
+
+    fn reset(&mut self) {}
+}
+
+/// `:e` back and forth between the same two files: `Ctrl-^` does it.
+#[derive(Default)]
+pub struct FileFlip {
+    /// The last files opened with `:e`, as hashes only, and when.
+    opened: Vec<(u64, u64)>,
+}
+
+impl FileFlip {
+    const ID: &'static str = "vim.file-flip";
+    const WITHIN_MS: u64 = 10 * 60_000;
+}
+
+impl Rule for FileFlip {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Opening the same two files in turn with :e"
+    }
+
+    fn title(&self) -> &'static str {
+        "Back to the other file"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if command(step)
+            .is_some_and(|c| c.single().is_some_and(|k| k.is_ctrl('^') || k.is_ctrl('6')))
+        {
+            out.push(adoption(Self::ID, step));
+            return;
+        }
+        let Some(VimEvent::Cmdline {
+            kind: ':',
+            text: Some(t),
+        }) = &step.event
+        else {
+            return;
+        };
+        let t = t.trim();
+        let Some(file) = t
+            .strip_prefix("e ")
+            .or_else(|| t.strip_prefix("edit "))
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+        else {
+            return;
+        };
+        self.opened
+            .retain(|(_, at)| step.at_ms.saturating_sub(*at) <= Self::WITHIN_MS);
+        self.opened.push((hash_of(file), step.at_ms));
+        // A, B, A: back to the file before.
+        if let [.., (a, _), (b, _), (c, _)] = self.opened.as_slice()
+            && a == c
+            && a != b
+        {
+            out.push(finding(
+                Self::ID,
+                "Back to the other file",
+                "`:e` back to the file you just left: `Ctrl-^` switches between the last two files in one key.".into(),
+                Shape::fixed(":e A, :e B, :e A"),
+                step,
+            ));
+            self.opened.clear();
+        }
+    }
+
+    fn reset(&mut self) {}
+}
+
+/// `zc` then `zo` on and off again: `za` does both.
+#[derive(Default)]
+pub struct FoldFlip {
+    /// The run of `zc`/`zo`, alternating, and when the last came.
+    run: Vec<(char, u64)>,
+}
+
+impl FoldFlip {
+    const ID: &'static str = "vim.fold-flip";
+    const GAP_MS: u64 = 30_000;
+}
+
+impl Rule for FoldFlip {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Closing and opening the same fold in turn with zc and zo"
+    }
+
+    fn title(&self) -> &'static str {
+        "One key for both"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        let Some(c) = command(step) else {
+            return;
+        };
+        if c.is("za") {
+            out.push(adoption(Self::ID, step));
+            self.run.clear();
+            return;
+        }
+        let which = if c.is("zc") {
+            'c'
+        } else if c.is("zo") {
+            'o'
+        } else {
+            // Anything else, a move too: another fold, maybe.
+            self.run.clear();
+            return;
+        };
+        let alternates = self
+            .run
+            .last()
+            .is_some_and(|(w, at)| *w != which && step.at_ms.saturating_sub(*at) <= Self::GAP_MS);
+        if !alternates {
+            self.run.clear();
+        }
+        self.run.push((which, step.at_ms));
+        if self.run.len() == 3 {
+            out.push(finding(
+                Self::ID,
+                "One key for both",
+                "`zc` and `zo` in turn on the same fold: `za` opens it when it's closed and closes it when it's open.".into(),
+                Shape::fixed("zc, zo, zc"),
+                step,
+            ));
+        }
+    }
+
+    fn reset(&mut self) {
+        self.run.clear();
+    }
+}
+
+// Moving lines, and one command from Insert mode ------------------------------
+
+/// `dd` then `p` (or `kP`) again and again to carry a line along: `:m`.
+#[derive(Default)]
+pub struct LineCarry {
+    /// `dd` just came, and when.
+    cut: Option<u64>,
+    /// Moves in a row, the last when.
+    moves: Vec<u64>,
+}
+
+impl LineCarry {
+    const ID: &'static str = "vim.line-carry";
+    const GAP_MS: u64 = 4_000;
+    const RUN: usize = 3;
+}
+
+impl Rule for LineCarry {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Moving a line a step at a time with dd and p"
+    }
+
+    fn title(&self) -> &'static str {
+        "Move it in one go"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if ex_move(step) {
+            out.push(adoption(Self::ID, step));
+            self.moves.clear();
+            return;
+        }
+        let Some(c) = command(step) else {
+            return;
+        };
+        if c.count.is_none() && c.is("dd") {
+            self.cut = Some(step.at_ms);
+            return;
+        }
+        // Between the cut and the put: `k` or `j` to step past a line.
+        if self.cut.is_some() && (c.is("k") || c.is("j")) && c.count.is_none() {
+            return;
+        }
+        let put = c.count.is_none() && (c.is("p") || c.is("P"));
+        match self.cut.take() {
+            Some(at) if put && step.at_ms.saturating_sub(at) <= Self::GAP_MS => {
+                self.moves
+                    .retain(|t| step.at_ms.saturating_sub(*t) <= Self::GAP_MS * 2);
+                self.moves.push(step.at_ms);
+                if self.moves.len() == Self::RUN {
+                    out.push(finding(
+                        Self::ID,
+                        "Move it in one go",
+                        "Carrying a line with `dd` and `p` again and again: `:m +3` moves it three lines down (`:m -4` up, `:m 0` to the top) in one go.".into(),
+                        Shape::fixed("dd then p ×3"),
+                        step,
+                    ));
+                    self.moves.clear();
+                }
+            }
+            _ => self.moves.clear(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.cut = None;
+        self.moves.clear();
+    }
+}
+
+fn ex_move(step: &Step) -> bool {
+    matches!(&step.event, Some(VimEvent::Cmdline { kind: ':', text: Some(t) })
+        if crate::curriculum::ex_word(t).is_some_and(|w| w == "m" || w == "move"))
+}
+
+/// Leaving Insert mode for one command and going straight back, often:
+/// `Ctrl-o` runs one command and stays.
+#[derive(Default)]
+pub struct OneCommandOut {
+    /// Esc from Insert mode just came, and when.
+    escaped: Option<u64>,
+    /// One command came after it, and when.
+    one: Option<u64>,
+    /// Round trips lately.
+    trips: Vec<u64>,
+}
+
+impl OneCommandOut {
+    const ID: &'static str = "vim.one-command-out";
+    const BACK_MS: u64 = 2_500;
+    const WITHIN_MS: u64 = 10 * 60_000;
+    const TRIPS: usize = 3;
+}
+
+impl Rule for OneCommandOut {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Leaving Insert mode for one command and going straight back"
+    }
+
+    fn title(&self) -> &'static str {
+        "One command, then keep typing"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if insert_key(step) == Some(InsertKey::CtrlO) {
+            out.push(adoption(Self::ID, step));
+            return;
+        }
+        if matches!(step.event, Some(VimEvent::Escape)) && step.before == VimMode::Insert {
+            self.escaped = Some(step.at_ms);
+            self.one = None;
+            return;
+        }
+        let Some(c) = command(step).filter(|_| step.before == VimMode::Normal) else {
+            return;
+        };
+        let back_in = step.after == VimMode::Insert && c.count.is_none() && c.single().is_some();
+        match (self.escaped, self.one) {
+            (Some(_), Some(at)) if back_in && step.at_ms.saturating_sub(at) <= Self::BACK_MS => {
+                self.trips
+                    .retain(|t| step.at_ms.saturating_sub(*t) <= Self::WITHIN_MS);
+                self.trips.push(step.at_ms);
+                if self.trips.len() >= Self::TRIPS {
+                    out.push(finding(
+                        Self::ID,
+                        "One command, then keep typing",
+                        "Leaving Insert mode for one command and going straight back: `Ctrl-o` runs one Normal-mode command and keeps you typing.".into(),
+                        Shape::fixed("Esc, one command, back"),
+                        step,
+                    ));
+                    self.trips.clear();
+                }
+                self.escaped = None;
+                self.one = None;
+            }
+            (Some(esc), None) if !back_in && step.at_ms.saturating_sub(esc) <= Self::BACK_MS => {
+                self.one = Some(step.at_ms);
+            }
+            _ => {
+                self.escaped = None;
+                self.one = None;
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.escaped = None;
+        self.one = None;
+    }
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
     vec![
         Box::new(FindBack::default()),
+        Box::new(LineCarry::default()),
+        Box::new(OneCommandOut::default()),
+        Box::new(WindowArrows),
+        Box::new(FileFlip::default()),
+        Box::new(FoldFlip::default()),
         Box::new(SelectAll::default()),
         Box::new(BufferWalk::default()),
         Box::new(Macro::default()),
@@ -1853,6 +2220,56 @@ mod tests {
             .iter()
             .map(|f| glossary::plain(&f.text))
             .collect()
+    }
+
+    #[test]
+    fn carrying_lines_and_one_command_out() {
+        assert_eq!(findings(&vim(LineCarry::default(), "ddpddpddp")).len(), 1);
+        assert_eq!(
+            findings(&vim(LineCarry::default(), "ddkPddkPddkP")).len(),
+            1
+        );
+        assert!(
+            findings(&vim(LineCarry::default(), "ddpddp")).is_empty(),
+            "twice is fine"
+        );
+        assert_eq!(adoptions(&vim(LineCarry::default(), ":m +3<CR>")), 1);
+        let trip = "ix<Esc>ua";
+        assert_eq!(
+            findings(&vim(OneCommandOut::default(), &trip.repeat(3))).len(),
+            1
+        );
+        assert!(findings(&vim(OneCommandOut::default(), &trip.repeat(2))).is_empty());
+        assert!(
+            findings(&vim(OneCommandOut::default(), &"ix<Esc>jjjja".repeat(3))).is_empty(),
+            "several commands: Normal mode is the right place"
+        );
+    }
+
+    #[test]
+    fn windows_files_and_folds() {
+        assert_eq!(findings(&vim(WindowArrows, "<C-w><Left>")).len(), 1);
+        assert_eq!(adoptions(&vim(WindowArrows, "<C-w>h")), 1);
+        let flip = vim(FileFlip::default(), ":e a.rs<CR>:e b.rs<CR>:e a.rs<CR>");
+        assert_eq!(
+            texts(&flip),
+            [
+                ":e back to the file you just left: Ctrl-^ switches between the last two files in one key."
+            ]
+        );
+        assert!(
+            findings(&vim(
+                FileFlip::default(),
+                ":e a.rs<CR>:e b.rs<CR>:e c.rs<CR>"
+            ))
+            .is_empty()
+        );
+        assert_eq!(findings(&vim(FoldFlip::default(), "zczozc")).len(), 1);
+        assert!(
+            findings(&vim(FoldFlip::default(), "zcjzozc")).is_empty(),
+            "a move between"
+        );
+        assert_eq!(adoptions(&vim(FoldFlip::default(), "za")), 1);
     }
 
     #[test]

@@ -93,6 +93,9 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._gotIt = this._action('Got it', 'dismiss');
         this._mute = this._action('Stop this tip', 'mute_rule');
         this._notHelpful = this._action('Not helpful', 'false_positive');
+        // On the daily lesson instead of "Not helpful".
+        this._knowIt = this._action('I know this', 'know_it');
+        this._another = this._action('Show me another', 'another');
         this._setNudgeActions(false);
 
         this._recentMenu = new PopupMenu.PopupSubMenuMenuItem('Recent tips');
@@ -198,8 +201,12 @@ class FlowBuddyIndicator extends PanelMenu.Button {
     }
 
     _setNudgeActions(visible) {
-        for (const item of [this._gotIt, this._mute, this._notHelpful])
+        const lesson = visible && this._nudge?.rule_id === 'learn.daily';
+        for (const item of [this._gotIt, this._mute])
             item.visible = visible;
+        this._notHelpful.visible = visible && !lesson;
+        this._knowIt.visible = lesson;
+        this._another.visible = lesson;
     }
 
     _command(name, args) {

@@ -141,6 +141,13 @@ fn keys_of(e: &Entry) -> Option<Vec<Key>> {
         "quote" => "\"ayy",
         "<Tab>" => "CTRL-I",
         "N:" => ":.,+2d<CR>",
+        // On a selection, `:` and `!` start with its range filled in; the
+        // tracker sees only what's typed after.
+        "v_:" => ":'<,'>d<CR>",
+        "v_!" => "!!",
+        // Visual versions of Normal-mode lookups.
+        "v_K" => "K",
+        "v_CTRL-]" => "CTRL-]",
         _ => e.keys,
     };
     let mut rest = keys.replace("[\"x]", "").replace("[count]", "");

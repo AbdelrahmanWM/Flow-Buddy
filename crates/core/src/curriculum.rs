@@ -366,10 +366,9 @@ pub static CURRICULUM: &[Item] = &[
         "replace-char",
         1,
         "`r<char>`",
-        "replace the character under the cursor, staying in Normal mode",
+        "replace the character under the cursor (or every selected one), staying in Normal mode",
         "Fix a typo'd letter in two keys.",
-        |s| !s.before.is_visual()
-            && cmd(s).is_some_and(|c| c.keys.len() == 2 && c.keys[0].plain_char() == Some('r'))
+        |s| cmd(s).is_some_and(|c| c.keys.len() == 2 && c.keys[0].plain_char() == Some('r'))
     ),
     // Level 2: bigger moves and text objects.
     item!(
@@ -872,6 +871,22 @@ pub static CURRICULUM: &[Item] = &[
         |s| is(s, &["]s", "[s", "]S", "[S", "z=", "zg", "zw"])
     ),
     item!(
+        "visual-swap",
+        3,
+        "`o` in Visual mode",
+        "jump to the other end of the selection, to grow it from there",
+        "Selected one line too few at the top? `o` and extend it.",
+        |s| visual_then(s, "oO")
+    ),
+    item!(
+        "visual-linewise",
+        3,
+        "`Y` and `D` in Visual mode",
+        "copy or delete the selected lines whole, wherever the selection starts",
+        "Delete every line a selection touches.",
+        |s| visual_then(s, "YDXR")
+    ),
+    item!(
         "scroll-line",
         3,
         "`Ctrl-e` and `Ctrl-y`",
@@ -989,9 +1004,9 @@ pub static CURRICULUM: &[Item] = &[
         "case",
         3,
         "`~` and `gU`",
-        "switch case, or make upper case over a motion",
+        "switch case, or make upper case over a motion (`U` and `u` on a selection)",
         "Turn `const` into `CONST` with `gUiw`.",
-        |s| is(s, &["~"]) || op_motion(s, "g", "Uu~")
+        |s| is(s, &["~"]) || op_motion(s, "g", "Uu~") || visual_then(s, "uU~")
     ),
     item!(
         "increment",
@@ -1015,7 +1030,8 @@ pub static CURRICULUM: &[Item] = &[
         "`Ctrl-v`",
         "select a rectangle of text",
         "Add the same text at the start of several lines.",
-        |s| ctrl(s, "v") && s.before == VimMode::Normal
+        // From Visual mode too: `v` then `Ctrl-v` makes it a block.
+        |s| ctrl(s, "v") && (s.before == VimMode::Normal || s.before.is_visual())
     ),
     item!(
         "block-append",
@@ -1534,6 +1550,22 @@ pub static CURRICULUM: &[Item] = &[
         None
     ),
     item!(
+        "visual-increment",
+        4,
+        "`g Ctrl-a` in Visual mode",
+        "count up down the selected lines: 1, 2, 3…",
+        "Number a list: select the zeros, `g Ctrl-a`.",
+        |s| s.before.is_visual()
+            && cmd(s).is_some_and(|c| {
+                c.keys.len() == 2
+                    && c.keys[0].plain_char() == Some('g')
+                    && (c.keys[1].is_ctrl('a') || c.keys[1].is_ctrl('x'))
+            }),
+        VIM_AND_VSCODE,
+        None,
+        None
+    ),
+    item!(
         "line-undo",
         4,
         "`U`",
@@ -1562,6 +1594,9 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("bigword", &["word"]),
     ("till", &["find"]),
     ("scroll-line", &["half-page"]),
+    ("visual-swap", &["visual-line"]),
+    ("visual-linewise", &["visual-line"]),
+    ("visual-increment", &["increment", "visual-block"]),
     ("window-close", &["split"]),
     ("window-cycle", &["split"]),
     ("window-size", &["split"]),
@@ -2301,6 +2336,12 @@ mod tests {
             ("<C-]>", "tags"),
             ("<C-t>", "tags"),
             ("K", "keyword-help"),
+            ("vjU", "case"),
+            ("vjrx", "replace-char"),
+            ("v<C-v>", "visual-block"),
+            ("vjo", "visual-swap"),
+            ("vjD", "visual-linewise"),
+            ("<C-v>jjg<C-a>", "visual-increment"),
         ];
         for (keys, id) in cases {
             assert!(

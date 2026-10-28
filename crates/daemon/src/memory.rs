@@ -253,7 +253,7 @@ impl Memory {
     /// How many of this rule's latest tips (last 30 days) were dismissed,
     /// marked not helpful or ignored, counting back from the newest that
     /// has an outcome.
-    fn unhelpful_in_a_row(&self, rule_id: &str, now_ms: u64) -> u32 {
+    pub fn unhelpful_in_a_row(&self, rule_id: &str, now_ms: u64) -> u32 {
         use flowbuddy_store::Outcome;
         let Some(store) = &self.store else { return 0 };
         let since = (now_ms / 1000).saturating_sub(30 * 86_400);

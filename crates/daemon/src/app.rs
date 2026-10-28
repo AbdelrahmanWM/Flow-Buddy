@@ -607,6 +607,12 @@ impl App {
             Some(personal) => format!("{} {personal}", f.text),
             None => f.text.clone(),
         };
+        // Worded for where you are with it.
+        let text = flowbuddy_core::learning::adapt(
+            &text,
+            self.memory.stage(f.rule_id, ctx),
+            self.memory.unhelpful_in_a_row(f.rule_id, now_ms),
+        );
         self.show(f.rule_id, f.title, &text, f.mode == VimMode::Insert, now_ms);
         self.memory.nudged(f.rule_id, now_ms);
         self.memory

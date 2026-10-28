@@ -1811,9 +1811,207 @@ impl Rule for BufferWalk {
     }
 }
 
+// Windows, files and folds ---------------------------------------------------
+
+/// `Ctrl-w` then an arrow key: `Ctrl-w h` and friends stay on the home row.
+#[derive(Default)]
+pub struct WindowArrows;
+
+impl WindowArrows {
+    const ID: &'static str = "vim.window-arrows";
+}
+
+impl Rule for WindowArrows {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Moving between windows with Ctrl-w and an arrow key"
+    }
+
+    fn title(&self) -> &'static str {
+        "Windows from the home row"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        let Some(c) = command(step) else {
+            return;
+        };
+        if c.keys.len() != 2 || !c.keys[0].is_ctrl('w') {
+            return;
+        }
+        if c.keys[1].is_arrow() {
+            out.push(finding(
+                Self::ID,
+                "Windows from the home row",
+                "`Ctrl-w` then an arrow: `Ctrl-w h`, `Ctrl-w j`, `Ctrl-w k` and `Ctrl-w l` do the same without reaching for the arrows.".into(),
+                Shape::fixed("Ctrl-w then an arrow"),
+                step,
+            ));
+        } else if c.keys[1].plain_char().is_some_and(|k| "hjkl".contains(k)) {
+            out.push(adoption(Self::ID, step));
+        }
+    }
+
+    fn reset(&mut self) {}
+}
+
+/// `:e` back and forth between the same two files: `Ctrl-^` does it.
+#[derive(Default)]
+pub struct FileFlip {
+    /// The last files opened with `:e`, as hashes only, and when.
+    opened: Vec<(u64, u64)>,
+}
+
+impl FileFlip {
+    const ID: &'static str = "vim.file-flip";
+    const WITHIN_MS: u64 = 10 * 60_000;
+}
+
+impl Rule for FileFlip {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Opening the same two files in turn with :e"
+    }
+
+    fn title(&self) -> &'static str {
+        "Back to the other file"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if command(step)
+            .is_some_and(|c| c.single().is_some_and(|k| k.is_ctrl('^') || k.is_ctrl('6')))
+        {
+            out.push(adoption(Self::ID, step));
+            return;
+        }
+        let Some(VimEvent::Cmdline {
+            kind: ':',
+            text: Some(t),
+        }) = &step.event
+        else {
+            return;
+        };
+        let t = t.trim();
+        let Some(file) = t
+            .strip_prefix("e ")
+            .or_else(|| t.strip_prefix("edit "))
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+        else {
+            return;
+        };
+        self.opened
+            .retain(|(_, at)| step.at_ms.saturating_sub(*at) <= Self::WITHIN_MS);
+        self.opened.push((hash_of(file), step.at_ms));
+        // A, B, A: back to the file before.
+        if let [.., (a, _), (b, _), (c, _)] = self.opened.as_slice()
+            && a == c
+            && a != b
+        {
+            out.push(finding(
+                Self::ID,
+                "Back to the other file",
+                "`:e` back to the file you just left: `Ctrl-^` switches between the last two files in one key.".into(),
+                Shape::fixed(":e A, :e B, :e A"),
+                step,
+            ));
+            self.opened.clear();
+        }
+    }
+
+    fn reset(&mut self) {}
+}
+
+/// `zc` then `zo` on and off again: `za` does both.
+#[derive(Default)]
+pub struct FoldFlip {
+    /// The run of `zc`/`zo`, alternating, and when the last came.
+    run: Vec<(char, u64)>,
+}
+
+impl FoldFlip {
+    const ID: &'static str = "vim.fold-flip";
+    const GAP_MS: u64 = 30_000;
+}
+
+impl Rule for FoldFlip {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Closing and opening the same fold in turn with zc and zo"
+    }
+
+    fn title(&self) -> &'static str {
+        "One key for both"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        let Some(c) = command(step) else {
+            return;
+        };
+        if c.is("za") {
+            out.push(adoption(Self::ID, step));
+            self.run.clear();
+            return;
+        }
+        let which = if c.is("zc") {
+            'c'
+        } else if c.is("zo") {
+            'o'
+        } else {
+            // Anything else, a move too: another fold, maybe.
+            self.run.clear();
+            return;
+        };
+        let alternates = self
+            .run
+            .last()
+            .is_some_and(|(w, at)| *w != which && step.at_ms.saturating_sub(*at) <= Self::GAP_MS);
+        if !alternates {
+            self.run.clear();
+        }
+        self.run.push((which, step.at_ms));
+        if self.run.len() == 3 {
+            out.push(finding(
+                Self::ID,
+                "One key for both",
+                "`zc` and `zo` in turn on the same fold: `za` opens it when it's closed and closes it when it's open.".into(),
+                Shape::fixed("zc, zo, zc"),
+                step,
+            ));
+        }
+    }
+
+    fn reset(&mut self) {
+        self.run.clear();
+    }
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
     vec![
         Box::new(FindBack::default()),
+        Box::new(WindowArrows),
+        Box::new(FileFlip::default()),
+        Box::new(FoldFlip::default()),
         Box::new(SelectAll::default()),
         Box::new(BufferWalk::default()),
         Box::new(Macro::default()),
@@ -1853,6 +2051,32 @@ mod tests {
             .iter()
             .map(|f| glossary::plain(&f.text))
             .collect()
+    }
+
+    #[test]
+    fn windows_files_and_folds() {
+        assert_eq!(findings(&vim(WindowArrows, "<C-w><Left>")).len(), 1);
+        assert_eq!(adoptions(&vim(WindowArrows, "<C-w>h")), 1);
+        let flip = vim(FileFlip::default(), ":e a.rs<CR>:e b.rs<CR>:e a.rs<CR>");
+        assert_eq!(
+            texts(&flip),
+            [
+                ":e back to the file you just left: Ctrl-^ switches between the last two files in one key."
+            ]
+        );
+        assert!(
+            findings(&vim(
+                FileFlip::default(),
+                ":e a.rs<CR>:e b.rs<CR>:e c.rs<CR>"
+            ))
+            .is_empty()
+        );
+        assert_eq!(findings(&vim(FoldFlip::default(), "zczozc")).len(), 1);
+        assert!(
+            findings(&vim(FoldFlip::default(), "zcjzozc")).is_empty(),
+            "a move between"
+        );
+        assert_eq!(adoptions(&vim(FoldFlip::default(), "za")), 1);
     }
 
     #[test]

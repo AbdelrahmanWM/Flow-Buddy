@@ -108,6 +108,7 @@ impl Rule for ClickHabit {
                         shape: Shape::repeat(self.shape, self.count),
                         mode: VimMode::Normal,
                         at_ms: ev.at_ms,
+                        start_ms: ev.at_ms,
                     }));
                 }
             }
@@ -234,6 +235,7 @@ impl Rule for Reselect {
                 shape: Shape::fixed("same selection again"),
                 mode: VimMode::Normal,
                 at_ms: ev.at_ms,
+                start_ms: ev.at_ms,
             }));
         }
     }

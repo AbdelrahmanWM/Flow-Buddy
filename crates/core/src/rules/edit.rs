@@ -69,6 +69,7 @@ fn finding(
         shape,
         mode: VimMode::Normal,
         at_ms: step.at_ms,
+        start_ms: step.at_ms,
     })
 }
 
@@ -1350,6 +1351,7 @@ impl Rule for InsertKeys {
                     }),
                     mode: VimMode::Insert,
                     at_ms: step.at_ms,
+                    start_ms: step.at_ms,
                 }));
             }
             _ => self.reset(),
@@ -1391,6 +1393,7 @@ impl OperatorRun {
             shape: Shape::repeat("same operator", n),
             mode: VimMode::Normal,
             at_ms,
+            start_ms: at_ms,
         }));
     }
 }
@@ -1578,6 +1581,7 @@ impl Rule for SearchAgain {
                 shape: Shape::fixed(shape),
                 mode: VimMode::Normal,
                 at_ms: at,
+                start_ms: at,
             }));
         }
     }

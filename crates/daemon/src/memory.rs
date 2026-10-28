@@ -19,7 +19,12 @@ pub use flowbuddy_store::days::day;
 /// What [`Memory::progress`] reads from the database.
 #[derive(Clone)]
 struct ProgressCache {
-    uses: HashMap<String, u64>,
+    /// The day it was read: "recent" moves on with the days.
+    day: String,
+    /// What you said you know or don't (`flowbuddy learn --know`).
+    overrides: HashMap<String, bool>,
+    /// Per environment (`None`: all of them), read when first wanted.
+    uses: HashMap<Option<ContextKind>, HashMap<String, flowbuddy_store::ItemUse>>,
     items: HashMap<String, flowbuddy_store::LearnRow>,
 }
 
@@ -248,7 +253,7 @@ impl Memory {
     /// How many of this rule's latest tips (last 30 days) were dismissed,
     /// marked not helpful or ignored, counting back from the newest that
     /// has an outcome.
-    fn unhelpful_in_a_row(&self, rule_id: &str, now_ms: u64) -> u32 {
+    pub fn unhelpful_in_a_row(&self, rule_id: &str, now_ms: u64) -> u32 {
         use flowbuddy_store::Outcome;
         let Some(store) = &self.store else { return 0 };
         let since = (now_ms / 1000).saturating_sub(30 * 86_400);
@@ -393,22 +398,30 @@ impl Memory {
 
     /// Write curriculum uses, and mark shown items you've started using as
     /// learned.
-    pub fn command_uses(&self, usage: HashMap<&'static str, u64>, now_ms: u64) {
+    pub fn command_uses(&self, usage: HashMap<(ContextKind, &'static str), u64>, now_ms: u64) {
         let Some(store) = &self.store else { return };
         if usage.is_empty() {
             return;
         }
         let today = day(now_ms);
-        for (id, n) in &usage {
-            let _ = store.add_command_use(&today, id, *n);
+        for ((ctx, id), n) in &usage {
+            let _ = store.add_command_use(&today, ctx.as_str(), id, *n);
         }
         if let Some(c) = self.progress_cache.borrow_mut().as_mut() {
-            for (id, n) in &usage {
-                *c.uses.entry(id.to_string()).or_default() += n;
+            for ((ctx, id), n) in &usage {
+                for (scope, uses) in c.uses.iter_mut() {
+                    if scope.is_none_or(|s| s == *ctx) {
+                        let u = uses.entry(id.to_string()).or_default();
+                        u.total += n;
+                        u.recent += n;
+                        u.days_idle = 0;
+                    }
+                }
             }
         }
+        let used: std::collections::HashSet<&str> = usage.keys().map(|(_, id)| *id).collect();
         for row in store.learn_items().unwrap_or_default() {
-            if row.learned_at.is_some() || !usage.contains_key(row.item_id.as_str()) {
+            if row.learned_at.is_some() || !used.contains(row.item_id.as_str()) {
                 continue;
             }
             let since = day(row.first_shown * 1000);
@@ -424,13 +437,22 @@ impl Memory {
         }
     }
 
-    /// Uses and daily-tip rows per curriculum item.
-    fn progress(&self) -> Option<impl Fn(&str) -> curriculum::Progress + use<>> {
+    /// Uses and daily-tip rows per curriculum item, in `ctx` (with uses
+    /// from before environments were told apart), or everywhere.
+    fn progress(
+        &self,
+        ctx: Option<ContextKind>,
+        now_ms: u64,
+    ) -> Option<impl Fn(&str) -> curriculum::Progress + use<>> {
         let store = self.store.as_ref()?;
         let mut cache = self.progress_cache.borrow_mut();
-        if cache.is_none() {
+        let today = day(now_ms);
+        let recent_from = day(now_ms.saturating_sub(curriculum::RECENT_DAYS * 86_400_000));
+        if cache.as_ref().is_none_or(|c| c.day != today) {
             *cache = Some(ProgressCache {
-                uses: store.command_uses("0000-00-00").ok()?,
+                day: today.clone(),
+                overrides: store.known_overrides().unwrap_or_default(),
+                uses: HashMap::new(),
                 items: store
                     .learn_items()
                     .ok()?
@@ -439,11 +461,25 @@ impl Memory {
                     .collect(),
             });
         }
-        let ProgressCache { uses, items } = cache.clone()?;
+        let c = cache.as_mut()?;
+        let uses = match c.uses.entry(ctx) {
+            std::collections::hash_map::Entry::Occupied(e) => e.get().clone(),
+            std::collections::hash_map::Entry::Vacant(e) => e
+                .insert(
+                    store
+                        .item_uses(&today, &recent_from, ctx.map(|c| c.as_str()))
+                        .ok()?,
+                )
+                .clone(),
+        };
+        let items = c.items.clone();
         Some(move |id: &str| {
             let row = items.get(id);
+            let u = uses.get(id).copied().unwrap_or_default();
             curriculum::Progress {
-                uses: uses.get(id).copied().unwrap_or(0),
+                uses: u.total,
+                recent_uses: u.recent,
+                days_idle: uses.contains_key(id).then_some(u.days_idle),
                 times_shown: row.map_or(0, |r| r.times_shown),
                 last_shown: row.map(|r| r.last_shown),
                 learned: row.is_some_and(|r| r.learned_at.is_some()),
@@ -453,8 +489,17 @@ impl Memory {
 
     /// What you already use, for the skill tree; everything when there's
     /// no memory to tell.
-    pub fn known(&self) -> curriculum::Known {
-        let Some(progress) = self.progress() else {
+    /// Say items are known, not known, or back to what use shows.
+    pub fn set_known(&self, items: &[String], known: Option<bool>) {
+        let Some(store) = &self.store else { return };
+        for item in items {
+            let _ = store.set_known_override(item, known);
+        }
+        self.progress_cache.replace(None);
+    }
+
+    pub fn known(&self, ctx: Option<ContextKind>, now_ms: u64) -> curriculum::Known {
+        let Some(progress) = self.progress(ctx, now_ms) else {
             return curriculum::Known::everything();
         };
         let mastered = self
@@ -462,7 +507,15 @@ impl Memory {
             .iter()
             .filter(|(_, s)| **s == Stage::Mastered)
             .map(|((rule, _), _)| rule.as_str());
-        curriculum::Known::from_progress(&progress, mastered).with_levels(self.known_levels)
+        let overrides = self
+            .progress_cache
+            .borrow()
+            .as_ref()
+            .map(|c| c.overrides.clone())
+            .unwrap_or_default();
+        curriculum::Known::from_progress(&progress, mastered)
+            .with_levels(self.known_levels)
+            .with_overrides(&overrides)
     }
 
     /// The day's "something new", if anything's left to learn.
@@ -471,8 +524,23 @@ impl Memory {
         ctx: ContextKind,
         now_ms: u64,
     ) -> Option<&'static curriculum::Item> {
-        let progress = self.progress()?;
-        curriculum::pick_for(&progress, &self.known(), now_ms / 1000, ctx)
+        let progress = self.progress(Some(ctx), now_ms)?;
+        // This week's habits, most hits first.
+        let (from, to) = flowbuddy_store::days::range(now_ms, 7, 0);
+        let mut hits: HashMap<String, u64> = HashMap::new();
+        for row in self.store.as_ref()?.daily(&from, &to).unwrap_or_default() {
+            *hits.entry(row.rule_id).or_default() += row.hits;
+        }
+        // Rules you tripped, not ones you only did the better way for.
+        let mut habits: Vec<(String, u64)> = hits.into_iter().filter(|(_, n)| *n > 0).collect();
+        habits.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        curriculum::pick_from_habits(
+            &progress,
+            &self.known(Some(ctx), now_ms),
+            now_ms / 1000,
+            ctx,
+            &habits,
+        )
     }
 
     pub fn learn_shown(&self, item_id: &str, now_ms: u64) {
@@ -657,6 +725,7 @@ mod tests {
             shape: flowbuddy_core::rule::Shape::fixed("x"),
             mode: flowbuddy_core::context::VimMode::Normal,
             at_ms: 0,
+            start_ms: 0,
         };
         m.hit(&f, ContextKind::TerminalVim, 2_000_000);
         assert!(!m.filter_allows("vim.repeat-jk", "active", 10, 2_000_000));

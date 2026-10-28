@@ -124,6 +124,28 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX tip_history_shown ON tip_history (shown_at);
 "#,
+    r#"
+    -- Uses of curriculum items per environment (terminal-vim, vscode-vim…);
+    -- the ones counted before are kept as 'any', which counts everywhere.
+    CREATE TABLE commands_used_ctx (
+        day     TEXT    NOT NULL,
+        context TEXT    NOT NULL,
+        item_id TEXT    NOT NULL,
+        count   INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day, context, item_id)
+    );
+    INSERT INTO commands_used_ctx (day, context, item_id, count)
+        SELECT day, 'any', item_id, count FROM commands_used;
+    DROP TABLE commands_used;
+    ALTER TABLE commands_used_ctx RENAME TO commands_used;
+"#,
+    r#"
+    -- What you said you know (1) or don't (0), over what use shows.
+    CREATE TABLE known_overrides (
+        item_id TEXT    PRIMARY KEY,
+        known   INTEGER NOT NULL
+    );
+"#,
 ];
 
 /// One tip as it was shown.
@@ -135,6 +157,14 @@ pub struct HistoryTip {
     pub text: String,
     /// Shown for Insert mode: its commands mean their Insert-mode things.
     pub insert: bool,
+}
+
+/// How much a curriculum item was used: see [`Store::item_uses`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ItemUse {
+    pub total: u64,
+    pub recent: u64,
+    pub days_idle: u64,
 }
 
 /// Progress on one curriculum item.
@@ -580,18 +610,24 @@ impl Store {
             "DELETE FROM daily_stats; DELETE FROM activity; DELETE FROM patterns;
              DELETE FROM episodes; DELETE FROM typing; DELETE FROM typo_pairs;
              DELETE FROM tip_outcomes; DELETE FROM commands_used; DELETE FROM learn_items;
-             DELETE FROM tip_history;",
+             DELETE FROM tip_history; DELETE FROM known_overrides;",
         )?;
         self.conn.execute_batch("VACUUM")?;
         let _ = self.conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
         Ok(())
     }
 
-    pub fn add_command_use(&self, day: &str, item_id: &str, count: u64) -> Result<()> {
+    pub fn add_command_use(
+        &self,
+        day: &str,
+        context: &str,
+        item_id: &str,
+        count: u64,
+    ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO commands_used (day, item_id, count) VALUES (?1, ?2, ?3)
-             ON CONFLICT (day, item_id) DO UPDATE SET count = count + excluded.count",
-            params![day, item_id, count],
+            "INSERT INTO commands_used (day, context, item_id, count) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (day, context, item_id) DO UPDATE SET count = count + excluded.count",
+            params![day, context, item_id, count],
         )?;
         Ok(())
     }
@@ -602,6 +638,78 @@ impl Store {
             "SELECT item_id, SUM(count) FROM commands_used WHERE day >= ?1 GROUP BY item_id",
         )?;
         let rows = stmt.query_map(params![from_day], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    /// For each curriculum item: uses ever, uses since `recent_from`, and
+    /// days from its last use to `today` (ISO dates); in one environment
+    /// (and uses from before they were told apart), or `None` for all.
+    pub fn item_uses(
+        &self,
+        today: &str,
+        recent_from: &str,
+        context: Option<&str>,
+    ) -> Result<HashMap<String, ItemUse>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT item_id, SUM(count),
+                    SUM(CASE WHEN day >= ?2 THEN count ELSE 0 END),
+                    CAST(julianday(?1) - julianday(MAX(day)) AS INTEGER)
+             FROM commands_used WHERE ?3 IS NULL OR context = ?3 OR context = 'any'
+             GROUP BY item_id",
+        )?;
+        let rows = stmt.query_map(params![today, recent_from, context], |r| {
+            Ok((
+                r.get(0)?,
+                ItemUse {
+                    total: r.get(1)?,
+                    recent: r.get(2)?,
+                    days_idle: r.get::<_, i64>(3)?.max(0) as u64,
+                },
+            ))
+        })?;
+        rows.collect()
+    }
+
+    /// Say an item is known (`Some(true)`), not known, or back to what use
+    /// shows (`None`).
+    pub fn set_known_override(&self, item_id: &str, known: Option<bool>) -> Result<()> {
+        match known {
+            Some(k) => self.conn.execute(
+                "INSERT INTO known_overrides (item_id, known) VALUES (?1, ?2)
+                 ON CONFLICT (item_id) DO UPDATE SET known = ?2",
+                params![item_id, k],
+            )?,
+            None => self.conn.execute(
+                "DELETE FROM known_overrides WHERE item_id = ?1",
+                params![item_id],
+            )?,
+        };
+        Ok(())
+    }
+
+    pub fn known_overrides(&self) -> Result<HashMap<String, bool>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT item_id, known FROM known_overrides")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    /// The day each curriculum item was first used.
+    pub fn item_first_used(&self) -> Result<HashMap<String, String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT item_id, MIN(day) FROM commands_used GROUP BY item_id")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    /// The environments uses were counted in (not 'any').
+    pub fn use_contexts(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT context FROM commands_used WHERE context != 'any' ORDER BY context",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
         rows.collect()
     }
 
@@ -809,9 +917,10 @@ impl Store {
             ("typing", "day, context"),
             ("typo_pairs", "day, pair"),
             ("tip_outcomes", "rule_id, context, stage, mode"),
-            ("commands_used", "day, item_id"),
+            ("commands_used", "day, context, item_id"),
             ("learn_items", "item_id"),
             ("tip_history", "rule_id, title, text"),
+            ("known_overrides", "item_id"),
         ] {
             let mut stmt = self.conn.prepare(&format!("SELECT {cols} FROM {table}"))?;
             let n = stmt.column_count();
@@ -1075,6 +1184,33 @@ mod tests {
     }
 
     #[test]
+    fn recent_and_idle_uses() {
+        let s = Store::open_in_memory().unwrap();
+        s.add_command_use("2026-06-01", "any", "marks", 9).unwrap();
+        s.add_command_use("2026-10-20", "terminal-vim", "ciw", 2)
+            .unwrap();
+        s.add_command_use("2026-10-26", "vscode-vim", "ciw", 1)
+            .unwrap();
+        let u = s.item_uses("2026-10-27", "2026-09-27", None).unwrap();
+        assert_eq!(
+            u["ciw"],
+            ItemUse {
+                total: 3,
+                recent: 3,
+                days_idle: 1
+            }
+        );
+        assert_eq!(u["marks"].recent, 0);
+        assert!(u["marks"].days_idle > 140);
+        // Per environment: its own uses, and the old ones.
+        let vs = s
+            .item_uses("2026-10-27", "2026-09-27", Some("vscode-vim"))
+            .unwrap();
+        assert_eq!(vs["ciw"].total, 1);
+        assert_eq!(vs["marks"].total, 9);
+    }
+
+    #[test]
     fn tip_history_is_searchable() {
         let s = Store::open_in_memory().unwrap();
         let tip = |at, rule: &str, text: &str| HistoryTip {
@@ -1133,9 +1269,12 @@ mod tests {
     #[test]
     fn command_uses_and_learning() {
         let s = Store::open_in_memory().unwrap();
-        s.add_command_use("2026-10-24", "ciw", 2).unwrap();
-        s.add_command_use("2026-10-25", "ciw", 1).unwrap();
-        s.add_command_use("2026-10-25", "star", 4).unwrap();
+        s.add_command_use("2026-10-24", "terminal-vim", "ciw", 2)
+            .unwrap();
+        s.add_command_use("2026-10-25", "terminal-vim", "ciw", 1)
+            .unwrap();
+        s.add_command_use("2026-10-25", "terminal-vim", "star", 4)
+            .unwrap();
         let uses = s.command_uses("2026-10-25").unwrap();
         assert_eq!((uses["ciw"], uses["star"]), (1, 4));
         s.learn_shown("ciw", 100).unwrap();

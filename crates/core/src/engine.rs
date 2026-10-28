@@ -29,11 +29,6 @@ pub struct Engine {
     rank: HashMap<&'static str, usize>,
 }
 
-/// Findings this close together in one batch are about the same keys.
-const SAME_GESTURE_MS: u64 = 2000;
-/// A runner-up joins the winning tip only if both fit in this.
-const MAX_JOINED: usize = 280;
-
 impl Engine {
     pub fn new(rules: Vec<Box<dyn Rule>>) -> Self {
         let defaults = rules
@@ -85,12 +80,22 @@ impl Engine {
         let rank = |f: &Finding| self.rank.get(f.rule_id).copied().unwrap_or(usize::MAX);
         out.retain_mut(|e| match e {
             RuleEvent::Finding(f) => {
-                // Only what works here: vscodevim has no `:earlier`.
-                match crate::support::fit(context, &f.text) {
-                    Some(text) => f.text = text,
-                    None => return false,
+                // Only what works here (vscodevim has no `:earlier`), and
+                // what you're ready for, each alternative on its own.
+                // Insert-mode keys mean other things; they're not checked.
+                let insert = f.mode == crate::context::VimMode::Insert;
+                let ok = |c: &str| {
+                    crate::support::supports(context, c)
+                        && (insert || self.known.ready_for_command(c))
+                };
+                let text = crate::support::with_equivalents(context, &f.text);
+                match crate::support::fit_by(&text, ok) {
+                    Some(text) => {
+                        f.text = text;
+                        true
+                    }
+                    None => false,
                 }
-                self.known.ready_for_rule(f.rule_id)
             }
             _ => true,
         });
@@ -102,35 +107,32 @@ impl Engine {
         {
             return;
         }
-        let events = std::mem::take(out);
-        let mut group: Vec<Finding> = Vec::new();
-        let flush = |group: &mut Vec<Finding>, out: &mut Vec<RuleEvent>| {
+        // Gather findings into groups whose key spans overlap; each group
+        // becomes one tip, the best-ranked, with the runner-up in it.
+        let mut others = Vec::new();
+        let mut groups: Vec<Vec<Finding>> = Vec::new();
+        for e in std::mem::take(out) {
+            match e {
+                RuleEvent::Finding(f) => {
+                    match groups.iter_mut().find(|g| g.iter().any(|h| h.overlaps(&f))) {
+                        Some(g) => g.push(f),
+                        None => groups.push(vec![f]),
+                    }
+                }
+                other => others.push(other),
+            }
+        }
+        out.extend(others);
+        for mut group in groups {
             group.sort_by_key(rank);
-            let mut it = group.drain(..);
+            let mut it = group.into_iter();
             if let Some(mut best) = it.next() {
-                if let Some(next) = it.next()
-                    && best.text.len() + next.text.len() < MAX_JOINED
-                {
-                    best.text = format!("{} Also: {}", best.text, next.text);
+                if let Some(next) = it.next() {
+                    best.absorb(&next);
                 }
                 out.push(RuleEvent::Finding(best));
             }
-        };
-        for e in events {
-            match e {
-                RuleEvent::Finding(f) => {
-                    if group
-                        .last()
-                        .is_some_and(|g| f.at_ms.abs_diff(g.at_ms) > SAME_GESTURE_MS)
-                    {
-                        flush(&mut group, out);
-                    }
-                    group.push(f);
-                }
-                other => out.push(other),
-            }
         }
-        flush(&mut group, out);
     }
 
     /// All built-in rules.
@@ -473,5 +475,23 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn each_suggestion_waits_for_what_it_builds_on() {
+        let tips = |known: Known| {
+            let mut e = Engine::standard();
+            e.set_known(known);
+            feed(&mut e, ContextKind::TerminalVim, "viwd")
+                .into_iter()
+                .filter_map(|e| match e {
+                    RuleEvent::Finding(f) => Some(f.text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        // `diw` builds on `cw`: not for someone who doesn't use it yet.
+        assert!(tips(Known::of([])).is_empty());
+        assert_eq!(tips(Known::of(["change-word"])).len(), 1);
     }
 }

@@ -138,6 +138,21 @@ pub struct MotionFacts {
     /// 'relativenumber'): how many digits the end line's number has, for
     /// `42G`. Never the number itself.
     pub line_number_digits: Option<u32>,
+    /// How far (in lines) the next few blank-line boundaries are, in the
+    /// movement's direction, nearest first: for `}}` then `2j`.
+    pub paragraph_lines: Option<Vec<u32>>,
+    /// `]]` (down) or `[[` (up) presses: sections, lines starting with `{`.
+    pub section_hops: Option<u32>,
+    /// The end is the unmatched `(` before the start (`[(`) or the
+    /// unmatched `)` after it (`])`).
+    pub unmatched_paren: bool,
+    /// `)` (forward) or `(` (back) presses: sentences.
+    pub sentence_hops: Option<u32>,
+    /// `gj` or `gk` presses: screen lines, when lines wrap.
+    pub screen_line_hops: Option<u32>,
+    /// How many characters typed after `/` (or `?`) make the end the first
+    /// match: the text itself is never sent.
+    pub search_chars: Option<u32>,
     /// How many lines the view scrolled during the movement (the top
     /// visible line's delta; positive is further into the file).
     pub view_scrolled: Option<i64>,
@@ -252,7 +267,7 @@ pub struct OperatorReport {
     /// With `[text] shapes` on: which motions would have covered the range
     /// exactly (one line, charwise). Numbers only.
     #[serde(default)]
-    pub range: Option<OperatorRange>,
+    pub range: Option<Box<OperatorRange>>,
 }
 
 /// A charwise range on one line, seen as an operator's motion: facts about
@@ -272,6 +287,36 @@ pub struct OperatorRange {
     pub facts: MotionFacts,
     #[serde(default)]
     pub words: Option<u32>,
+    /// `W` presses to just after the range, and `E` presses to its last
+    /// character.
+    #[serde(default)]
+    pub bigwords: Option<u32>,
+    #[serde(default)]
+    pub bigword_ends: Option<u32>,
+    /// It runs from a bracket to its match (`d%`).
+    #[serde(default)]
+    pub bracket: bool,
+    /// Seen from just after it, going back to its first character: for an
+    /// operator whose motion went backwards (`db`, `dF<char>`, `d0`).
+    #[serde(default)]
+    pub back: Option<BackRange>,
+}
+
+/// Backward motions from just after a range that land on its first
+/// character.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct BackRange {
+    /// `b` and `B` presses.
+    pub words: Option<u32>,
+    pub bigwords: Option<u32>,
+    /// `F<char>` presses (the first character), and `T<char>` presses (the
+    /// one before it).
+    pub find_hops: Option<u32>,
+    pub till_hops: Option<u32>,
+    /// It starts at column 0, or at the first non-blank.
+    pub line_start: bool,
+    pub first_nonblank: bool,
 }
 
 #[cfg(test)]
@@ -341,5 +386,13 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn operator_ranges_from_the_vim_plugin_parse() {
+        // What flowbuddy#range_facts sends for 'foo(a, b)' in 'x = foo(a, b) + 1'.
+        let json = r#"{"bigword_ends":2,"facts":{"till_hops":2,"word_end_hops":6,"line_end":false,"find_hops":1},"cols":8,"back":{"bigwords":2,"till_hops":2,"words":6,"line_start":false,"first_nonblank":false,"find_hops":1}}"#;
+        let r: OperatorRange = serde_json::from_str(json).unwrap();
+        assert_eq!(r.back.unwrap().bigwords, Some(2));
     }
 }

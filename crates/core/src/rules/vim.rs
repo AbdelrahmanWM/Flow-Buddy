@@ -93,6 +93,7 @@ pub fn repeat_jk() -> RepeatRule {
         },
     })
     .replaced_by_editor()
+    .skip_deliberate()
     .when_held(|unit, secs| {
         let (page, para) = if unit == "j" { ("Ctrl-d", "}") } else { ("Ctrl-u", "{") };
         format!("You held {unit} for {secs:.1} s. `{page}` moves half a page per press, `{para}` jumps to the next blank line.")
@@ -127,6 +128,7 @@ pub fn repeat_hl() -> RepeatRule {
         },
     })
     .replaced_by_editor()
+    .skip_deliberate()
     .when_held(|unit, secs| {
         let (word, find) = if unit == "l" { ("w", "f<char>") } else { ("b", "F<char>") };
         format!("You held {unit} for {secs:.1} s. `{word}` moves a word per press; `{find}` jumps straight to a character.")
@@ -313,6 +315,7 @@ impl Rule for WriteThenQuit {
                     shape: Shape::fixed(":w then :q"),
                     mode: VimMode::Cmdline,
                     at_ms: step.at_ms,
+                    start_ms: step.at_ms,
                 }));
                 return;
             }
@@ -407,6 +410,7 @@ impl Rule for Windows {
                 shape: Shape::fixed(":e #"),
                 mode: VimMode::Cmdline,
                 at_ms: step.at_ms,
+                start_ms: step.at_ms,
             }));
             return;
         }
@@ -459,6 +463,7 @@ impl Rule for Windows {
             shape: Shape::fixed(shape),
             mode,
             at_ms: step.at_ms,
+            start_ms: step.at_ms,
         }));
     }
 
@@ -467,8 +472,157 @@ impl Rule for Windows {
     }
 }
 
+/// Going too far and coming back: `j`×9 then `k`×2, where `7j` lands.
+/// Keys alone give the exact numbers, so this works without a plugin.
+#[derive(Default)]
+pub struct Overshoot {
+    /// The run before this one, and this one: (key, presses, first, last).
+    prev: Option<(char, u32, u64, u64)>,
+    run: Option<(char, u32, u64, u64)>,
+}
+
+impl Overshoot {
+    const ID: &'static str = "vim.overshoot";
+    /// At least this many presses out, for it to be worth a count.
+    const OUT: u32 = 4;
+    const GAP_MS: u64 = 1500;
+
+    fn opposite(a: char, b: char) -> bool {
+        matches!(
+            (a, b),
+            ('j', 'k') | ('k', 'j') | ('l', 'h') | ('h', 'l') | ('w', 'b') | ('b', 'w')
+        )
+    }
+
+    /// A run ended: was it the way back from an overshoot?
+    fn finish(&mut self, out: &mut Vec<RuleEvent>) {
+        let Some(back) = self.run.take() else { return };
+        let Some(out_run) = self.prev.replace(back) else {
+            return;
+        };
+        let (k1, n1, start, end1) = out_run;
+        let (k2, n2, start2, end2) = back;
+        if !Self::opposite(k1, k2)
+            || n1 < Self::OUT
+            || n2 >= n1
+            || n2 > 3
+            || start2.saturating_sub(end1) > Self::GAP_MS
+        {
+            return;
+        }
+        let net = n1 - n2;
+        let better = if net == 1 {
+            format!("`{k1}`")
+        } else if net <= 9 {
+            format!("`{net}{k1}`")
+        } else {
+            return;
+        };
+        self.prev = None;
+        out.push(RuleEvent::Finding(Finding {
+            rule_id: Self::ID,
+            title: "Count it out",
+            text: format!("`{k1}`×{n1} then `{k2}`×{n2}: {better} lands there in one go."),
+            shape: Shape::fixed("too far, then back"),
+            mode: VimMode::Normal,
+            at_ms: end2,
+            start_ms: start,
+        }));
+    }
+}
+
+impl Rule for Overshoot {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Going too far with j, l or w and coming back, where a count lands right away"
+    }
+
+    fn title(&self) -> &'static str {
+        "Count it out"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        LINE_AND_SHELL
+    }
+
+    // An editor's motion facts do this exactly.
+    fn replaced_by_editor(&self) -> bool {
+        true
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        if step.event.is_none() {
+            return;
+        }
+        let key = uncounted(step, &['j', 'k', 'h', 'l', 'w', 'b']).and_then(|c| c.head());
+        let at = step.at_ms;
+        match (key, self.run) {
+            (Some(k), Some((r, n, first, last)))
+                if k == r && at.saturating_sub(last) <= Self::GAP_MS =>
+            {
+                self.run = Some((r, n + 1, first, at));
+            }
+            (Some(k), _) => {
+                self.finish(out);
+                self.run = Some((k, 1, at, at));
+            }
+            (None, _) => {
+                self.finish(out);
+                self.prev = None;
+            }
+        }
+    }
+
+    fn tick(&mut self, now_ms: u64, out: &mut Vec<RuleEvent>) {
+        if self
+            .run
+            .is_some_and(|(_, _, _, last)| now_ms.saturating_sub(last) > Self::GAP_MS)
+        {
+            self.finish(out);
+            self.prev = None;
+        }
+    }
+
+    fn reset(&mut self) {
+        self.prev = None;
+        self.run = None;
+    }
+}
+
+pub fn find_repeat() -> RepeatRule {
+    RepeatRule::new(RepeatSpec {
+        id: "vim.find-repeat",
+        description: "Pressing ; again and again after f or t",
+        title: "Count the find",
+        contexts: LINE_AND_SHELL,
+        threshold: 3,
+        unit: |s| uncounted(s, &[';']).map(|_| ";"),
+        adopted: |s| {
+            command(s)
+                .is_some_and(|c| c.count.is_some() && c.head().is_some_and(|h| "fFtT".contains(h)))
+        },
+        message: |_, n| {
+            if n < 9 {
+                format!(
+                    "`;` {n} times after `f`. `{}f<char>` gets to that one at once. `/` and a few letters works too.",
+                    n + 1
+                )
+            } else {
+                format!(
+                    "`;` {n} times after `f`. `/` and a few letters of where you're going gets there at once."
+                )
+            }
+        },
+    })
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
     vec![
+        Box::new(Overshoot::default()),
+        Box::new(find_repeat()),
         Box::new(repeat_jk()),
         Box::new(repeat_hl()),
         Box::new(repeat_x()),
@@ -630,5 +784,31 @@ mod tests {
         // Ctrl-w w is one command, not Ctrl-w and a word motion.
         let ev = vim(repeat_hl(), "<C-w>l<C-w>l<C-w>l<C-w>l<C-w>l<C-w>l");
         assert!(findings(&ev).is_empty());
+    }
+
+    #[test]
+    fn overshooting_and_coming_back() {
+        let ev = vim(Overshoot::default(), "jjjjjjjjjkk<Esc>");
+        let f = findings(&ev);
+        assert_eq!(f.len(), 1, "{ev:?}");
+        assert_eq!(f[0].text, "`j`×9 then `k`×2: `7j` lands there in one go.");
+        // Coming back as far: not an overshoot. A short trip out: fine.
+        assert!(findings(&vim(Overshoot::default(), "jjjjjkkkkk<Esc>")).is_empty());
+        assert!(findings(&vim(Overshoot::default(), "jjjk<Esc>")).is_empty());
+        assert_eq!(
+            findings(&vim(Overshoot::default(), "llllllh<Esc>")).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn semicolons_after_find() {
+        let ev = vim(find_repeat(), "fx;;;;<Esc>");
+        assert_eq!(
+            findings(&ev)[0].text.split('.').next().unwrap(),
+            "`;` 4 times after `f`"
+        );
+        assert!(findings(&ev)[0].text.contains("`5f<char>`"));
+        assert_eq!(adoptions(&vim(find_repeat(), "3fx")), 1);
     }
 }

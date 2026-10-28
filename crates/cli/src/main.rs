@@ -43,7 +43,23 @@ enum Cmd {
     /// The one habit worth working on now.
     Next,
     /// Your daily "something new" and your progress through Vim's features.
-    Learn,
+    Learn {
+        /// Say you know these (ids from --list), so tips build on them.
+        #[arg(long, value_delimiter = ',')]
+        know: Vec<String>,
+        /// Say you don't know these, so they're taught.
+        #[arg(long, value_delimiter = ',')]
+        forget: Vec<String>,
+        /// Back to judging these from your use.
+        #[arg(long, value_delimiter = ',')]
+        reset: Vec<String>,
+        /// Every item: its id, level and commands.
+        #[arg(long)]
+        list: bool,
+        /// Where your history disagrees with the order things are taught in.
+        #[arg(long)]
+        audit: bool,
+    },
     /// Check everything Flow Buddy needs, and say how to fix what's missing.
     Doctor,
     /// A few questions about how you'd like to be coached, saved to the
@@ -238,7 +254,40 @@ fn main() {
         Cmd::Mode { mode } => set_mode(mode),
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),
-        Cmd::Learn => learn(),
+        Cmd::Learn {
+            know,
+            forget,
+            reset,
+            list,
+            audit,
+        } => {
+            if audit {
+                learn_audit()
+            } else if list {
+                for i in flowbuddy_core::curriculum::CURRICULUM {
+                    println!(
+                        "{:<16} level {}  {}",
+                        i.id,
+                        i.level,
+                        flowbuddy_core::glossary::plain(i.keys)
+                    );
+                }
+                Ok(())
+            } else if know.is_empty() && forget.is_empty() && reset.is_empty() {
+                learn()
+            } else {
+                Client::connect(ClientKind::Cli).and_then(|mut c| {
+                    for (items, known) in [(know, Some(true)), (forget, Some(false)), (reset, None)]
+                    {
+                        if !items.is_empty() {
+                            c.command(Command::KnowItems { items, known })?;
+                        }
+                    }
+                    println!("Noted.");
+                    Ok(())
+                })
+            }
+        }
         Cmd::Watch => watch(),
         Cmd::Setup => run_setup(),
         Cmd::Doctor => {
@@ -878,6 +927,14 @@ fn ssh_config(host: &str, socket: &std::path::Path) -> String {
     )
 }
 
+fn learn_audit() -> anyhow::Result<()> {
+    match open_db()? {
+        Some(store) => print!("{}", report::audit(&store, now_ms())?),
+        None => println!("Nothing recorded yet."),
+    }
+    Ok(())
+}
+
 fn learn() -> anyhow::Result<()> {
     match open_db()? {
         Some(store) => {
@@ -1097,8 +1154,14 @@ fn ctx(event: CtxCmd, shell_pid: Option<u32>, tty: Option<String>) -> anyhow::Re
     let msg = match event {
         CtxCmd::Fg { command, shape } => ClientMsg::Ctx {
             event: CtxEvent::Fg,
-            // Defence in depth: only ever send a basename.
-            command: Some(command.rsplit('/').next().unwrap_or_default().to_string()),
+            // Defence in depth: only ever send a basename, and only a plain
+            // program name (never `^old^new` or anything else typed).
+            command: Some(command.rsplit('/').next().unwrap_or_default().to_string()).filter(|c| {
+                !c.is_empty()
+                    && c.len() <= 64
+                    && c.chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || "._+-".contains(ch))
+            }),
             vi_mode: None,
             shell_pid,
             tty,

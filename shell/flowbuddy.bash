@@ -44,6 +44,8 @@ __flowbuddy_shape() {
         echo cd-up
     elif [[ $n == 2 && ${now[0]} == cd && ${now[1]} =~ ^\.\.(/\.\.)+/?$ ]]; then
         echo cd-up-many
+    elif [[ $n == 2 && ${now[0]} == cd && ${now[1]} == - ]]; then
+        echo cd-back
     elif ((n > 1 && p > 1)) && [[ ${now[0]} != "${prev[0]}" && ${now[n - 1]} == "${prev[p - 1]}" ]] &&
         ((${#now[n - 1]} >= 12)); then
         echo reused-arg

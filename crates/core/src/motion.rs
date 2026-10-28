@@ -17,6 +17,9 @@ use crate::vim::{Command, Step};
 #[derive(Clone, Debug, PartialEq)]
 pub struct OperatorEvent {
     pub report: OperatorReport,
+    /// The operator's motion went backwards (`db`, `dF`): the cursor was
+    /// just after the range.
+    pub backward: bool,
     /// Keys for the operator and anything that moved into place first.
     pub keys_used: u32,
     /// Keys for the operator command alone (`d3w`: 3).
@@ -47,10 +50,15 @@ pub enum Category {
     Search,
     LastChange,
     LineNumber,
+    Section,
+    Unmatched,
+    Sentence,
+    ScreenLine,
+    SearchTo,
 }
 
 impl Category {
-    pub const ALL: [Category; 14] = [
+    pub const ALL: [Category; 19] = [
         Category::Count,
         Category::Paragraph,
         Category::Screen,
@@ -65,6 +73,11 @@ impl Category {
         Category::Search,
         Category::LastChange,
         Category::LineNumber,
+        Category::Section,
+        Category::Unmatched,
+        Category::Sentence,
+        Category::ScreenLine,
+        Category::SearchTo,
     ];
 
     pub fn id(self) -> &'static str {
@@ -83,6 +96,11 @@ impl Category {
             Category::Search => "motion.search",
             Category::LastChange => "motion.last-change",
             Category::LineNumber => "motion.line-number",
+            Category::Section => "motion.section",
+            Category::Unmatched => "motion.unmatched",
+            Category::Sentence => "motion.sentence",
+            Category::ScreenLine => "motion.screen-line",
+            Category::SearchTo => "motion.search-to",
         }
     }
 
@@ -102,6 +120,11 @@ impl Category {
             Category::Search => "Repeat the search",
             Category::LastChange => "Jump to the last change",
             Category::LineNumber => "Jump to the line number",
+            Category::Section => "Jump by section",
+            Category::Unmatched => "Jump to the enclosing bracket",
+            Category::Sentence => "Move by sentence",
+            Category::ScreenLine => "Move by screen line",
+            Category::SearchTo => "Search for it",
         }
     }
 
@@ -111,6 +134,7 @@ impl Category {
         match self {
             Category::Count => "count",
             Category::Paragraph => "paragraph",
+            Category::Screen if keys == "M" => "screen-middle",
             Category::Screen => "screen",
             Category::File => "file-ends",
             Category::Word if keys.contains(['W', 'B']) => "bigword",
@@ -118,14 +142,22 @@ impl Category {
             Category::Word => "word",
             Category::Find if keys.contains(['t', 'T']) => "till",
             Category::Find => "find",
+            Category::LineEnds if keys.ends_with('0') => "line-start",
+            Category::LineEnds if keys.ends_with('^') => "first-nonblank",
             Category::LineEnds => "line-ends",
             Category::Bracket => "percent",
+            Category::Star if keys.contains('#') => "star-back",
             Category::Star => "star",
             Category::JumpBack => "jump-back",
             Category::Page => "half-page",
             Category::Search => "search-next",
             Category::LastChange => "change-list",
             Category::LineNumber => "goto-line",
+            Category::Section => "section",
+            Category::Unmatched => "unmatched",
+            Category::Sentence => "sentence-motion",
+            Category::ScreenLine => "screen-lines",
+            Category::SearchTo => "search",
         }
     }
 
@@ -149,6 +181,11 @@ impl Category {
             Category::Search => "Moving to the next search match without n or N",
             Category::LastChange => "Moving back to where you last changed something without g;",
             Category::LineNumber => "Moving far to a line whose number is on screen without 42G",
+            Category::Section => "Moving line by line to the next function or block where ]] lands",
+            Category::Unmatched => "Moving to the bracket around the cursor without [( or ])",
+            Category::Sentence => "Moving word by word through prose where ( or ) lands",
+            Category::ScreenLine => "Moving through a wrapped line without gj or gk",
+            Category::SearchTo => "Moving far to text you can see without searching for it",
         }
     }
 
@@ -169,6 +206,11 @@ impl Category {
             Category::Search => "keys for n/N",
             Category::LastChange => "keys for g;",
             Category::LineNumber => "keys for 42G",
+            Category::Section => "keys for ]]",
+            Category::Unmatched => "keys for [(",
+            Category::Sentence => "keys for )",
+            Category::ScreenLine => "keys for gj",
+            Category::SearchTo => "keys for /",
         }
     }
 }
@@ -302,6 +344,55 @@ fn vertical(lines: i64, f: &MotionFacts) -> Vec<Part> {
             cost: k + finish.cost,
         });
     }
+    // Blank lines then a few more: `}}` then `2j`, or one too far and back.
+    if let Some(bounds) = &f.paragraph_lines {
+        let (para, back) = if down { ("}", "k") } else { ("{", "j") };
+        let best = bounds
+            .iter()
+            .take(GLANCE as usize)
+            .enumerate()
+            .filter_map(|(i, &d)| {
+                let k = i as u32 + 1;
+                let (key, r) = if d <= n { (fwd, n - d) } else { (back, d - n) };
+                (r > 0).then(|| {
+                    (
+                        k,
+                        repeated(Category::Count, key, 1, r, readable_lines(r, f)),
+                    )
+                })
+            })
+            .min_by_key(|(k, rest)| k + rest.cost);
+        if let Some((k, rest)) = best {
+            let paras = if k == 1 {
+                para.to_string()
+            } else {
+                format!("{para}×{k}")
+            };
+            parts.push(Part {
+                category: Category::Paragraph,
+                keys: format!("{paras} then {}", rest.keys),
+                cost: k + rest.cost,
+            });
+        }
+    }
+    if let Some(k) = f.section_hops {
+        parts.push(repeated(
+            Category::Section,
+            if down { "]]" } else { "[[" },
+            2,
+            k,
+            k <= GLANCE,
+        ));
+    }
+    if let Some(k) = f.screen_line_hops {
+        parts.push(repeated(
+            Category::ScreenLine,
+            if down { "gj" } else { "gk" },
+            2,
+            k,
+            k <= GLANCE,
+        ));
+    }
     // The number is right there in the margin: type it.
     if let Some(d) = f.line_number_digits.filter(|_| n > GLANCE) {
         parts.push(Part {
@@ -376,15 +467,54 @@ fn horizontal(lines: i64, cols: i64, f: &MotionFacts) -> Vec<Part> {
     parts
 }
 
-/// Counting characters or lines by eye is hard, so on a tie any other
-/// motion wins over a count; otherwise the earlier one.
-fn better(a_cost: u32, a: Category, b_cost: u32, b: Category) -> bool {
-    (b_cost, b == Category::Count) < (a_cost, a == Category::Count)
+/// How much effort typing `keys` takes, in half-keys: each key is 2,
+/// and a shifted key (`}`, `$`, `G`), a `Ctrl` chord, or a count digit
+/// (counted by eye) is 1 more. `cost` is the plan's key count.
+pub fn effort(keys: &str, cost: u32) -> u32 {
+    let mut extra = 0;
+    for word in keys.split_whitespace() {
+        if matches!(word, "then" | "or" | "and") {
+            continue;
+        }
+        let word = word.trim_end_matches(',');
+        let (cmd, times) = match word.split_once('×') {
+            Some((c, n)) => (c, n.parse().unwrap_or(1)),
+            None => (word, 1),
+        };
+        let chords = cmd.matches("Ctrl-").count() as u32;
+        let rest = cmd
+            .replace("Ctrl-", "")
+            .replace("<char>", "")
+            .replace("<text>", "");
+        let line = u32::from(rest.contains("<line>")) * 2;
+        let rest = rest.replace("<line>", "");
+        let shifted = rest
+            .chars()
+            .filter(|c| c.is_ascii_uppercase() || "{}$%^~#*:()?_+<>|\"&!@".contains(*c))
+            .count() as u32;
+        let digits = rest
+            .chars()
+            .filter(|c| c.is_ascii_digit() && *c != '0')
+            .count() as u32;
+        extra += (chords + shifted + digits + line) * times;
+    }
+    2 * cost + extra
+}
+
+/// Less effort wins. Counting characters or lines by eye is hard, so on a
+/// tie any other motion wins over a count; otherwise the earlier one.
+fn better(a_effort: u32, a: Category, b_effort: u32, b: Category) -> bool {
+    (b_effort, b == Category::Count) < (a_effort, a == Category::Count)
 }
 
 fn cheapest_part(parts: Vec<Part>) -> Option<Part> {
     parts.into_iter().reduce(|a, b| {
-        if better(a.cost, a.category, b.cost, b.category) {
+        if better(
+            effort(&a.keys, a.cost),
+            a.category,
+            effort(&b.keys, b.cost),
+            b.category,
+        ) {
             b
         } else {
             a
@@ -447,6 +577,35 @@ pub fn plans_for(m: &Motion, known: &Known) -> Vec<Plan> {
             cost: 1,
         });
     }
+    if f.unmatched_paren {
+        plans.push(Plan {
+            category: Category::Unmatched,
+            keys: if back { "[(" } else { "])" }.into(),
+            cost: 2,
+        });
+    }
+    if let Some(k) = f.sentence_hops {
+        let p = repeated(
+            Category::Sentence,
+            if back { "(" } else { ")" },
+            1,
+            k,
+            k <= GLANCE,
+        );
+        plans.push(Plan {
+            category: p.category,
+            keys: p.keys,
+            cost: p.cost,
+        });
+    }
+    // Type a few letters of what's there: `/`, them, Enter.
+    if let Some(c) = f.search_chars {
+        plans.push(Plan {
+            category: Category::SearchTo,
+            keys: if back { "?<text>" } else { "/<text>" }.into(),
+            cost: c + 2,
+        });
+    }
     if f.last_change && m.lines != 0 {
         plans.push(Plan {
             category: Category::LastChange,
@@ -503,9 +662,10 @@ pub fn plans_for(m: &Motion, known: &Known) -> Vec<Plan> {
     }
     plans.retain(|p| p.cost > 0 && known.ready(p.skill()));
     plans.sort_by(|a, b| {
-        if better(a.cost, a.category, b.cost, b.category) {
+        let (ea, eb) = (effort(&a.keys, a.cost), effort(&b.keys, b.cost));
+        if better(ea, a.category, eb, b.category) {
             std::cmp::Ordering::Greater
-        } else if better(b.cost, b.category, a.cost, a.category) {
+        } else if better(eb, b.category, ea, a.category) {
             std::cmp::Ordering::Less
         } else {
             std::cmp::Ordering::Equal
@@ -569,6 +729,12 @@ pub struct MotionRule {
 }
 
 impl MotionRule {
+    /// Keys a plan must save to be worth a tip: the threshold, or a quarter
+    /// of a long move (a key or two off forty isn't worth breaking flow).
+    fn saving(&self, used: u32) -> u32 {
+        self.min_saving.max(used / 4)
+    }
+
     pub fn new(category: Category) -> Self {
         MotionRule {
             category,
@@ -613,6 +779,14 @@ impl Rule for MotionRule {
         if ev.keys_used == 0 {
             return;
         }
+        // Slow and steady: reading through, not trying to get somewhere.
+        let m = &ev.motion;
+        if m.moves >= 3
+            && m.end_ms.saturating_sub(m.start_ms) / u64::from(m.moves - 1)
+                >= crate::rules::repeat::READING_MS
+        {
+            return;
+        }
         // Only what you're ready for: a plan a step too far gives way to
         // the next best.
         let all = plans_for(&ev.motion, &self.known);
@@ -620,14 +794,14 @@ impl Rule for MotionRule {
             return;
         };
         // A second way of a different kind, if it's also worth it.
-        let alt = all
-            .iter()
-            .find(|p| p.category != plan.category && ev.keys_used >= p.cost + self.min_saving);
+        let alt = all.iter().find(|p| {
+            p.category != plan.category && ev.keys_used >= p.cost + self.saving(ev.keys_used)
+        });
         if plan.category != self.category {
             return;
         }
         let at_ms = ev.motion.end_ms;
-        if ev.keys_used >= plan.cost + self.min_saving {
+        if ev.keys_used >= plan.cost + self.saving(ev.keys_used) {
             let used = ev.keys_used;
             out.push(RuleEvent::Finding(Finding {
                 rule_id: self.category.id(),
@@ -649,6 +823,7 @@ impl Rule for MotionRule {
                 shape: Shape::repeat(self.category.shape_token(), used),
                 mode: ev.motion.mode.vim_mode().unwrap_or(VimMode::Normal),
                 at_ms,
+                start_ms: ev.motion.start_ms,
             }));
         } else if ev.keys_used <= plan.cost && plan.cost >= 2 {
             // As short as it gets for a move that needed more than one key.
@@ -733,6 +908,7 @@ impl Rule for ScrollRule {
             shape: Shape::repeat("keys to scroll", used),
             mode: m.mode.vim_mode().unwrap_or(VimMode::Normal),
             at_ms: m.end_ms,
+            start_ms: m.start_ms,
         }));
     }
 
@@ -804,6 +980,7 @@ impl Rule for MarkRule {
             shape: Shape::repeat("keys back to a line", used),
             mode: m.mode.vim_mode().unwrap_or(VimMode::Normal),
             at_ms: m.end_ms,
+            start_ms: m.start_ms,
         }));
     }
 
@@ -891,6 +1068,7 @@ impl Rule for TextObjectRule {
             shape: Shape::repeat("keys for a text object", used),
             mode: VimMode::Normal,
             at_ms: ev.report.at_ms,
+            start_ms: ev.report.at_ms,
         }));
     }
 
@@ -917,6 +1095,7 @@ impl OperatorMotionRule {
 pub fn range_plans(
     op: crate::editor::Operator,
     range: &crate::editor::OperatorRange,
+    backward: bool,
 ) -> Vec<(String, u32, &'static str)> {
     use crate::editor::Operator;
     let o = op.key();
@@ -949,6 +1128,32 @@ pub fn range_plans(
         out.sort_by_key(|(_, c, _)| *c);
         return out;
     }
+    // From just after the range, going back: only if that's where you were.
+    if backward {
+        if let Some(b) = &range.back {
+            let mut add = |n: Option<u32>, motion: &str, cost: u32, skill: &'static str| {
+                if let Some(n) = n.filter(|n| *n <= GLANCE) {
+                    let (k, c) = counted(n, motion, cost);
+                    out.push((k, c, skill));
+                }
+            };
+            add(b.words, "b", 1, "word");
+            add(b.bigwords, "B", 1, "bigword");
+            add(b.find_hops, "F<char>", 2, "find");
+            add(b.till_hops, "T<char>", 2, "till");
+            if b.line_start {
+                out.push((format!("{o}0"), 2, "line-start"));
+            }
+            if b.first_nonblank {
+                out.push((format!("{o}^"), 2, "first-nonblank"));
+            }
+        }
+        out.sort_by_key(|(_, c, _)| *c);
+        return out;
+    }
+    if range.bracket {
+        out.push((format!("{o}%"), 2, "percent"));
+    }
     if f.line_end {
         match op {
             Operator::Delete => out.push(("D".to_string(), 1, "d-to-end")),
@@ -956,17 +1161,34 @@ pub fn range_plans(
             Operator::Yank => out.push((format!("{o}$"), 2, "line-ends")),
         }
     }
-    // `cw` works like `ce`, so for a change the word-start count is left out.
-    if let Some(n) = range
-        .words
-        .filter(|n| *n <= GLANCE && op != Operator::Change)
-    {
-        let (k, c) = counted(n, "w", 1);
-        out.push((k, c, "word"));
-    }
-    if let Some(n) = f.word_end_hops.filter(|n| *n <= GLANCE) {
-        let (k, c) = counted(n, "e", 1);
-        out.push((k, c, "word-end"));
+    // `cw` works like `ce` (to the end of the word, not the next one), so
+    // a change's `w` comes from the word ends.
+    if op == Operator::Change {
+        if let Some(n) = f.word_end_hops.filter(|n| *n <= GLANCE) {
+            let (k, c) = counted(n, "w", 1);
+            out.push((k, c, "change-word"));
+        }
+        if let Some(n) = range.bigword_ends.filter(|n| *n <= GLANCE) {
+            let (k, c) = counted(n, "W", 1);
+            out.push((k, c, "bigword"));
+        }
+    } else {
+        if let Some(n) = range.words.filter(|n| *n <= GLANCE) {
+            let (k, c) = counted(n, "w", 1);
+            out.push((k, c, "word"));
+        }
+        if let Some(n) = f.word_end_hops.filter(|n| *n <= GLANCE) {
+            let (k, c) = counted(n, "e", 1);
+            out.push((k, c, "word-end"));
+        }
+        if let Some(n) = range.bigwords.filter(|n| *n <= GLANCE) {
+            let (k, c) = counted(n, "W", 1);
+            out.push((k, c, "bigword"));
+        }
+        if let Some(n) = range.bigword_ends.filter(|n| *n <= GLANCE) {
+            let (k, c) = counted(n, "E", 1);
+            out.push((k, c, "bigword"));
+        }
     }
     if let Some(n) = f.till_hops.filter(|n| *n <= GLANCE) {
         let (k, c) = counted(n, "t<char>", 2);
@@ -1009,7 +1231,7 @@ impl Rule for OperatorMotionRule {
             return;
         };
         let used = ev.op_keys;
-        let Some((keys, cost, _)) = range_plans(ev.report.op, range)
+        let Some((keys, cost, _)) = range_plans(ev.report.op, range, ev.backward)
             .into_iter()
             .find(|(_, _, skill)| self.known.ready(skill))
         else {
@@ -1028,6 +1250,7 @@ impl Rule for OperatorMotionRule {
             shape: Shape::repeat("keys for an operator's motion", used),
             mode: VimMode::Normal,
             at_ms: ev.report.at_ms,
+            start_ms: ev.report.at_ms,
         }));
     }
 
@@ -1065,7 +1288,7 @@ pub fn best_for_edit(ev: &OperatorEvent, known: &Known) -> Vec<(String, u32)> {
         .collect();
     if let Some(range) = &ev.report.range {
         out.extend(
-            range_plans(ev.report.op, range)
+            range_plans(ev.report.op, range, ev.backward)
                 .into_iter()
                 .filter(|(_, _, skill)| known.ready(skill))
                 .map(|(k, c, _)| (k, c)),
@@ -1371,6 +1594,7 @@ mod tests {
     fn text_objects_instead_of_positioning() {
         use crate::editor::{Operator, TextObject};
         let ev = |keys_used, objects: Vec<TextObject>| OperatorEvent {
+            backward: false,
             op_keys: 2,
             report: OperatorReport {
                 op: Operator::Delete,
@@ -1540,11 +1764,12 @@ mod tests {
     fn shorter_motions_for_an_operator() {
         use crate::editor::{Operator, OperatorRange};
         let ev = |op, op_keys, range| OperatorEvent {
+            backward: false,
             report: OperatorReport {
                 op,
                 at_ms: 9,
                 objects: vec![],
-                range: Some(range),
+                range: Some(Box::new(range)),
             },
             keys_used: op_keys,
             op_keys,
@@ -1579,13 +1804,13 @@ mod tests {
             words: Some(4),
             ..Default::default()
         };
-        let plans = range_plans(Operator::Change, &to_end);
+        let plans = range_plans(Operator::Change, &to_end, false);
         assert_eq!(plans[0].0, "C");
         assert!(
             plans.iter().all(|p| !p.0.contains('w')),
             "cw is ce: {plans:?}"
         );
-        let keys: Vec<_> = range_plans(Operator::Delete, &to_end)
+        let keys: Vec<_> = range_plans(Operator::Delete, &to_end, false)
             .into_iter()
             .map(|p| p.0)
             .collect();
@@ -1627,7 +1852,7 @@ mod tests {
             ..Default::default()
         };
         // 11 lines up to a blank line: `d}`, not counting them.
-        let keys: Vec<_> = range_plans(Operator::Delete, &range)
+        let keys: Vec<_> = range_plans(Operator::Delete, &range, false)
             .into_iter()
             .map(|p| p.0)
             .collect();
@@ -1638,8 +1863,129 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            range_plans(Operator::Yank, &three)[0],
+            range_plans(Operator::Yank, &three, false)[0],
             ("3yy".to_string(), 3, "count")
         );
+    }
+
+    #[test]
+    fn backward_bracket_and_bigword_plans() {
+        use crate::editor::{BackRange, Operator, OperatorRange};
+        let keys = |op, range: &OperatorRange, back| -> Vec<String> {
+            range_plans(op, range, back)
+                .into_iter()
+                .map(|p| p.0)
+                .collect()
+        };
+        let back = OperatorRange {
+            back: Some(BackRange {
+                words: Some(2),
+                find_hops: Some(1),
+                line_start: true,
+                ..Default::default()
+            }),
+            words: Some(1),
+            ..Default::default()
+        };
+        // Cursor after the range: only backward motions make sense.
+        assert_eq!(
+            keys(Operator::Delete, &back, true),
+            ["d0", "d2b", "dF<char>"]
+        );
+        assert_eq!(keys(Operator::Delete, &back, false), ["dw"]);
+        let bracket = OperatorRange {
+            bracket: true,
+            bigwords: Some(1),
+            bigword_ends: Some(1),
+            facts: MotionFacts {
+                word_end_hops: Some(3),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            keys(Operator::Delete, &bracket, false),
+            ["d%", "dW", "dE", "d3e"]
+        );
+        // A change: `cw` from the word ends, as Vim does it.
+        assert_eq!(keys(Operator::Change, &bracket, false), ["c%", "cW", "c3w"]);
+    }
+
+    #[test]
+    fn wider_search_for_the_cheapest_way() {
+        // 26 lines down; blank lines at 10 and 24: `}}` then `2j` (4 keys).
+        let f = MotionFacts {
+            paragraph_lines: Some(vec![10, 24, 40]),
+            ..Default::default()
+        };
+        assert_eq!(
+            plan(26, 0, f),
+            (Category::Paragraph, "}×2 then jj".into(), 4)
+        );
+        // One past the target and back.
+        let f = MotionFacts {
+            paragraph_lines: Some(vec![13]),
+            ..Default::default()
+        };
+        assert_eq!(plan(12, 0, f), (Category::Paragraph, "} then k".into(), 2));
+        // Far away and visible: three letters of it.
+        let f = MotionFacts {
+            search_chars: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(plan(40, 12, f), (Category::SearchTo, "/<text>".into(), 5));
+        let f = MotionFacts {
+            section_hops: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(plan(30, 0, f), (Category::Section, "]]".into(), 2));
+        let f = MotionFacts {
+            unmatched_paren: true,
+            ..Default::default()
+        };
+        assert_eq!(plan(0, -14, f), (Category::Unmatched, "[(".into(), 2));
+    }
+
+    #[test]
+    fn reading_through_gets_no_tip() {
+        let mut ev = MotionEvent {
+            motion: Motion {
+                start_ms: 0,
+                end_ms: 5_600,
+                moves: 8,
+                mode: EditorMode::Normal,
+                lines: 8,
+                cols: 0,
+                facts: MotionFacts::default(),
+            },
+            keys_used: 8,
+        };
+        let tips = |ev: &MotionEvent| {
+            let mut out = Vec::new();
+            MotionRule::new(Category::Count).on_motion(ev, &mut out);
+            crate::rules::testing::findings(&out).len()
+        };
+        assert_eq!(tips(&ev), 0, "a line every 0.8 s: reading");
+        ev.motion.end_ms = 800;
+        assert_eq!(tips(&ev), 1);
+    }
+
+    #[test]
+    fn effort_weighs_shift_chords_and_counting() {
+        assert_eq!(effort("w", 1), 2);
+        assert_eq!(effort("}", 1), 3, "shifted");
+        assert_eq!(effort("Ctrl-d", 1), 3, "a chord");
+        assert_eq!(effort("7j", 2), 5, "a digit to count");
+        assert_eq!(effort("Ctrl-d×3 then 4j", 5), 10 + 3 + 1);
+        assert_eq!(effort("f<char>", 2), 4);
+        // Two plain keys beat two shifted ones at the same key count.
+        assert!(effort("ww", 2) < effort("}}", 2));
+    }
+
+    #[test]
+    fn a_long_move_must_save_more() {
+        let r = MotionRule::new(Category::Count);
+        assert_eq!(r.saving(8), 3);
+        assert_eq!(r.saving(40), 10);
     }
 }

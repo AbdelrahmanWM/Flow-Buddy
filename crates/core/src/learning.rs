@@ -168,6 +168,15 @@ pub fn next_stage(
 mod tests {
     use super::*;
 
+    #[test]
+    fn tips_follow_your_progress() {
+        let t = "Try `7j`.";
+        assert_eq!(adapt(t, Stage::New, 0), t);
+        assert_eq!(adapt(t, Stage::Improving, 0), "Nearly there: Try `7j`.");
+        assert_eq!(adapt(t, Stage::Regressed, 0), "This one's back: Try `7j`.");
+        assert!(adapt(t, Stage::Nudged, 2).ends_with("Stop this tip from the menu."));
+    }
+
     fn w(hits: u64, adoptions: u64) -> Window {
         Window {
             hits,
@@ -258,6 +267,22 @@ mod tests {
 /// How much a habit deserves attention now: how often it happened lately,
 /// weighted by where it is in learning, and trusted less the more often
 /// its nudges were marked "not helpful". Mastered habits score 0.
+/// A tip's words for where you are with the habit: a lead-in by stage,
+/// and after tips that went unheeded, how to make it stop.
+pub fn adapt(text: &str, stage: Stage, unheeded_in_a_row: u32) -> String {
+    let lead = match stage {
+        Stage::Improving => "Nearly there: ",
+        Stage::Mastered => "A check-in on one you've got: ",
+        Stage::Regressed => "This one's back: ",
+        Stage::New | Stage::Nudged => "",
+    };
+    let mut out = format!("{lead}{text}");
+    if unheeded_in_a_row >= 2 {
+        out.push_str(" Not for you? Stop this tip from the menu.");
+    }
+    out
+}
+
 pub fn priority(stage: Stage, recent_hits: u64, false_positives: u64) -> f64 {
     let weight = match stage {
         Stage::Regressed => 1.5,

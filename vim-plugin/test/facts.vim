@@ -95,6 +95,21 @@ function! Test_same_selection() abort
   call assert_false(flowbuddy#same_selection([], sel, 5000))
 endfunction
 
+function! Test_wider_facts() abort
+  call s:buf(['a', 'b', '', 'c', 'd', '', 'e', 'f', 'g', 'h'])
+  let f = s:facts([1, 1], [8, 1])
+  call assert_equal([2, 5, 9], f.paragraph_lines)
+  " Sections are lines starting with {, C style.
+  call s:buf(['int a()', '{', '  x;', '}', 'int b()', '{', 'let z = (1, 2, 3);'])
+  call assert_equal(2, s:facts([1, 1], [6, 1]).section_hops)
+  " From inside the parentheses back to the (.
+  call assert_true(s:facts([7, 14], [7, 9]).unmatched_paren)
+  " Searching for 'z' from line 1 finds it first: one letter.
+  call assert_equal(1, s:facts([1, 1], [7, 5]).search_chars)
+  call s:buf(['One sentence. Two sentences here. Three.'])
+  call assert_equal(2, s:facts([1, 1], [1, 35]).sentence_hops)
+endfunction
+
 function! Test_time_budget() abort
   call s:buf(['a', 'b', '', 'c', 'd', '', 'e'])
   call assert_equal(1, s:facts([1, 1], [3, 1]).paragraph_hops)
@@ -225,6 +240,21 @@ function! Test_range_facts() abort
   let r = flowbuddy#range_facts('one two three', 1, 8)
   call assert_equal(2, r.words)
   call assert_equal({}, flowbuddy#range_facts('abc', 5, 6))
+  " Backward, W/E and %: 'x = foo(a, b) + 1', the range 'foo(a, b)'.
+  let text = 'x = foo(a, b) + 1'
+  " dW from f takes 'foo(a, ' (up to b); dE takes 'foo(a,'.
+  call assert_equal(1, flowbuddy#range_facts(text, 5, 11).bigwords)
+  call assert_equal(1, flowbuddy#range_facts(text, 5, 10).bigword_ends)
+  " From the space after 'foo(a, b)': B twice gets back to f, F once.
+  let r = flowbuddy#range_facts(text, 5, 13)
+  call assert_equal(2, r.back.bigwords)
+  call assert_equal(1, r.back.find_hops)
+  call assert_false(r.back.line_start)
+  " The bracket part alone: d%.
+  call assert_true(flowbuddy#range_facts('x = foo(a, b) + 1', 8, 13).bracket)
+  " From the start of the line: d0.
+  call assert_true(flowbuddy#range_facts('  abc def', 1, 5).back.line_start)
+  call assert_true(flowbuddy#range_facts('  abc def', 3, 5).back.first_nonblank)
 endfunction
 
 function! Test_line_range() abort

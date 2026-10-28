@@ -57,6 +57,8 @@ pub enum Entry {
         keys_used: u32,
         #[serde(default)]
         op_keys: u32,
+        #[serde(default)]
+        backward: bool,
     },
     /// In-progress streaks were dropped (a click, a VS Code shortcut).
     Reset {
@@ -365,6 +367,7 @@ pub fn replay_with(entries: &[Entry], settings: &RuleSettings) -> Vec<Finding> {
                 report,
                 keys_used,
                 op_keys,
+                backward,
                 ..
             } => keep(engine.on_operator(
                 context,
@@ -372,6 +375,7 @@ pub fn replay_with(entries: &[Entry], settings: &RuleSettings) -> Vec<Finding> {
                     report: report.clone(),
                     keys_used: *keys_used,
                     op_keys: *op_keys,
+                    backward: *backward,
                 },
             )),
             Entry::Reset { .. } => engine.reset(),

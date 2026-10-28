@@ -24,8 +24,11 @@ const FIELDS = [
     'word_hops', 'word_end_hops', 'bigword_hops', 'find_hops', 'till_hops',
     'line_start', 'first_nonblank', 'line_end', 'bracket_match', 'star_hops',
     'jump_back', 'last_change', 'search_hops', 'relative_numbers', 'view_scrolled',
-    'revisits', 'line_number_digits',
+    'revisits', 'line_number_digits', 'paragraph_lines', 'section_hops', 'unmatched_paren',
+    'sentence_hops', 'screen_line_hops', 'search_chars',
 ];
+
+const LATER = ['paragraph_lines', 'search_chars', 'section_hops', 'unmatched_paren'];
 
 let failed = 0;
 let passed = 0;
@@ -58,6 +61,10 @@ function facts(name, lines, [sl, sc], [el, ec], opts, expected, keys) {
         }
         check(name, picked, expected);
     } else {
+        // Facts added later have their own checks below.
+        for (const k of LATER)
+            if (!(k in expected))
+                delete got[k];
         check(name, got, expected);
     }
 }
@@ -207,14 +214,38 @@ facts('no move', words, [0, 3], [0, 3], {}, {});
     check('no numbers shown', {d: computeFacts(lines, {line: 4, col: 0}, {line: 149, col: 0}, {}).line_number_digits}, {d: undefined});
 }
 
+{
+    // As the Vim plugin's test (0-based here).
+    const para = ['a', 'b', '', 'c', 'd', '', 'e', 'f', 'g', 'h'];
+    check('paragraph lines', {p: computeFacts(para, {line: 0, col: 0}, {line: 7, col: 0}).paragraph_lines},
+        {p: [2, 5, 9]});
+    const code = ['int a()', '{', '  x;', '}', 'int b()', '{', 'let z = (1, 2, 3);'];
+    check('sections', {s: computeFacts(code, {line: 0, col: 0}, {line: 5, col: 0}).section_hops}, {s: 2});
+    check('[(', {u: computeFacts(code, {line: 6, col: 13}, {line: 6, col: 8}).unmatched_paren}, {u: true});
+    check('/z', {c: computeFacts(code, {line: 0, col: 0}, {line: 6, col: 4}).search_chars}, {c: 1});
+}
+
 // Operator ranges, as the Vim plugin's tests (0-based here).
 check('dw over call', rangeFacts('call(foo, bar)', 0, 3), {cols: 3, words: 1,
-    facts: {word_end_hops: 1, find_hops: 2, till_hops: 1, line_end: false}});
+    facts: {word_end_hops: 1, find_hops: 2, till_hops: 1, line_end: false},
+    back: {words: 1, bigwords: 1, find_hops: 1, line_start: true, first_nonblank: true}});
 check('dt, from f', rangeFacts('call(foo, bar)', 5, 7), {cols: 2, words: 1,
-    facts: {word_end_hops: 1, find_hops: 2, till_hops: 1, line_end: false}});
+    facts: {word_end_hops: 1, find_hops: 2, till_hops: 1, line_end: false},
+    back: {words: 1, find_hops: 1, till_hops: 1, line_start: false, first_nonblank: false}});
 check('d$ and f)', rangeFacts('call(foo, bar)', 5, 13), {cols: 8, words: 4,
-    facts: {word_end_hops: 4, find_hops: 1, line_end: true}});
+    facts: {word_end_hops: 4, find_hops: 1, line_end: true}, bigwords: 2, bigword_ends: 2});
 check('d2w', rangeFacts('one two three', 0, 7).words, 2);
+{
+    // As the Vim plugin's test (0-based here).
+    const text = 'x = foo(a, b) + 1';
+    check('dW', {n: rangeFacts(text, 4, 10).bigwords}, {n: 1});
+    check('dE', {n: rangeFacts(text, 4, 9).bigword_ends}, {n: 1});
+    const r = rangeFacts(text, 4, 12);
+    check('back', {b: r.back.bigwords, f: r.back.find_hops, s: r.back.line_start}, {b: 2, f: 1, s: false});
+    check('d%', {b: rangeFacts(text, 7, 12).bracket}, {b: true});
+    check('d0', {s: rangeFacts('  abc def', 0, 4).back.line_start}, {s: true});
+    check('d^', {s: rangeFacts('  abc def', 2, 4).back.first_nonblank}, {s: true});
+}
 check('outside the line', {r: rangeFacts('abc', 4, 5)}, {r: null});
 check('d} over lines', lineRange(['a', 'b', 'c'], ''), {linewise: true, lines: 2, facts: {file_end: false, paragraph_hops: 1}});
 check('a blank among them', lineRange(['a', '', 'c'], '').facts, {file_end: false});

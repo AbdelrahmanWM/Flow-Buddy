@@ -8,9 +8,11 @@
 
 use std::collections::HashSet;
 
-use crate::context::VimMode;
+use crate::context::{ContextKind, VimMode};
+use crate::ipc::CommandShape;
 use crate::key::Sym;
 use crate::rules::vim::command;
+use crate::rules::vscode::UiWhat;
 use crate::vim::{Command, Step, VimEvent};
 
 pub struct Item {
@@ -25,12 +27,43 @@ pub struct Item {
     /// When it helps.
     pub example: &'static str,
     recognise: fn(&Step) -> bool,
+    /// Where it's taught and counted.
+    pub places: &'static [ContextKind],
+    /// Seen as a command the shell hook reports, rather than as keys.
+    pub shape: Option<CommandShape>,
+    /// Seen as a VS Code action done with its shortcut.
+    pub ui: Option<UiWhat>,
 }
+
+/// Editing in Vim's ways: Vim, VS Code, Claude Code, vi-mode shells (each
+/// where it supports the item; see `crate::support`).
+const EDITING: &[ContextKind] = &[
+    ContextKind::TerminalVim,
+    ContextKind::VsCodeVim,
+    ContextKind::ClaudeVim,
+    ContextKind::BashVi,
+];
+const IN_VSCODE: &[ContextKind] = &[ContextKind::VsCodeVim];
+const IN_SHELL: &[ContextKind] = &[ContextKind::BashVi, ContextKind::Shell];
 
 impl Item {
     pub fn used_in(&self, step: &Step) -> bool {
         (self.recognise)(step)
     }
+
+    pub fn applies_in(&self, ctx: ContextKind) -> bool {
+        self.places.contains(&ctx)
+    }
+}
+
+/// Items the shell hook's `shape` shows you used.
+pub fn used_by_shape(shape: CommandShape) -> impl Iterator<Item = &'static Item> {
+    CURRICULUM.iter().filter(move |i| i.shape == Some(shape))
+}
+
+/// Items a VS Code action done with its shortcut shows you used.
+pub fn used_by_ui(what: UiWhat) -> impl Iterator<Item = &'static Item> {
+    CURRICULUM.iter().filter(move |i| i.ui == Some(what))
 }
 
 fn cmd(step: &Step) -> Option<&Command> {
@@ -68,6 +101,15 @@ fn op_motion(step: &Step, ops: &str, motions: &str) -> bool {
     })
 }
 
+fn uncounted(step: &Step, spellings: &[&str]) -> bool {
+    cmd(step).is_some_and(|c| c.count.is_none() && spellings.iter().any(|s| c.is(s)))
+}
+
+/// A `:` command whose text `test` accepts.
+fn cmdline_is(step: &Step, test: impl Fn(&str) -> bool) -> bool {
+    matches!(&step.event, Some(VimEvent::Cmdline { kind: ':', text: Some(t) }) if test(t.trim()))
+}
+
 fn counted(step: &Step, heads: &str) -> bool {
     cmd(step).is_some_and(|c| c.count.is_some() && c.head().is_some_and(|h| heads.contains(h)))
 }
@@ -98,6 +140,23 @@ macro_rules! item {
             what: $what,
             example: $example,
             recognise: $rec,
+            places: EDITING,
+            shape: None,
+            ui: None,
+        }
+    };
+    ($id:literal, $level:literal, $keys:literal, $what:literal, $example:literal, $rec:expr,
+     $places:expr, $shape:expr, $ui:expr) => {
+        Item {
+            id: $id,
+            level: $level,
+            keys: $keys,
+            what: $what,
+            example: $example,
+            recognise: $rec,
+            places: $places,
+            shape: $shape,
+            ui: $ui,
         }
     };
 }
@@ -124,10 +183,26 @@ pub static CURRICULUM: &[Item] = &[
     item!(
         "line-ends",
         1,
-        "`0`, `^` and `$`",
-        "the start, first character, or end of the line",
+        "`$`",
+        "the end of the line",
         "Get to the end of a long line in one key.",
-        |s| is(s, &["0", "^", "$"])
+        |s| is(s, &["$"])
+    ),
+    item!(
+        "line-start",
+        1,
+        "`0`",
+        "the very start of the line",
+        "Back to column one, before the indentation.",
+        |s| is(s, &["0"])
+    ),
+    item!(
+        "first-nonblank",
+        1,
+        "`^`",
+        "the first character of the line that isn't a space",
+        "Start of the code on an indented line.",
+        |s| is(s, &["^"])
     ),
     item!(
         "file-ends",
@@ -135,7 +210,8 @@ pub static CURRICULUM: &[Item] = &[
         "`gg` and `G`",
         "the first or last line of the file",
         "Jump to the top to check the imports.",
-        |s| is(s, &["gg", "G"])
+        // `5G` is going to line 5, not the end.
+        |s| uncounted(s, &["gg", "G"])
     ),
     item!(
         "append",
@@ -159,7 +235,8 @@ pub static CURRICULUM: &[Item] = &[
         "`u` and `Ctrl-r`",
         "undo, and redo what you undid",
         "Step back and forward through your changes.",
-        |s| is(s, &["u"]) || ctrl(s, "r")
+        // In Visual mode `u` makes text lower case.
+        |s| (is(s, &["u"]) && !s.before.is_visual()) || ctrl(s, "r")
     ),
     item!(
         "count",
@@ -203,6 +280,64 @@ pub static CURRICULUM: &[Item] = &[
     ),
     // Level 2: bigger moves and text objects.
     item!(
+        "search",
+        1,
+        "`/` and a few letters",
+        "jump to the next place those letters appear",
+        "See the word you want three screens down? Search for it.",
+        |s| matches!(
+            &s.event,
+            Some(VimEvent::Cmdline {
+                kind: '/' | '?',
+                text: Some(_)
+            })
+        )
+    ),
+    item!(
+        "history-search",
+        1,
+        "`Ctrl-r`",
+        "search your shell history as you type",
+        "Find last week's long docker command by a word in it.",
+        |s| s.before == VimMode::Insert
+            && matches!(
+                crate::rules::vim::insert_key(s),
+                Some(crate::vim::InsertKey::CtrlR)
+            ),
+        IN_SHELL,
+        None,
+        None
+    ),
+    item!(
+        "quick-open",
+        1,
+        "`Ctrl-P`",
+        "open a file by typing part of its name",
+        "Jump to a file without clicking through the explorer.",
+        |_| false,
+        IN_VSCODE,
+        None,
+        Some(UiWhat::FileOpened)
+    ),
+    item!(
+        "completion",
+        2,
+        "`Ctrl-n`",
+        "complete the word you're typing from words in your files",
+        "Type the start of a long name and let Vim finish it.",
+        // Insert-mode Ctrl-n isn't told apart from other keys: said with
+        // `flowbuddy learn --know completion`.
+        |_| false
+    ),
+    item!(
+        "screen-lines",
+        2,
+        "`gj` and `gk`",
+        "down or up a line as it's shown, when long lines wrap",
+        "Move through a long paragraph of prose line by line.",
+        |s| is(s, &["gj", "gk"])
+    ),
+    item!(
         "paragraph",
         2,
         "`}` and `{`",
@@ -216,7 +351,10 @@ pub static CURRICULUM: &[Item] = &[
         "`42G` and `:42`",
         "jump straight to a line by its number",
         "Go to the line an error message names.",
-        |s| counted(s, "G") || cmdline(s, &["1", "2", "3", "4", "5", "6", "7", "8", "9"])
+        // `:42` alone: `:1,5d` is a range.
+        |s| counted(s, "G")
+            || cmdline_is(s, |t| !t.is_empty()
+                && t.chars().all(|c| c.is_ascii_digit()))
     ),
     item!(
         "half-page",
@@ -229,18 +367,34 @@ pub static CURRICULUM: &[Item] = &[
     item!(
         "star",
         2,
-        "`*` and `#`",
-        "jump to the next or previous use of the word under the cursor",
+        "`*`",
+        "jump to the next use of the word under the cursor",
         "Find where a variable is used next.",
-        |s| head(s, "*#")
+        |s| head(s, "*")
+    ),
+    item!(
+        "star-back",
+        2,
+        "`#`",
+        "jump to the previous use of the word under the cursor",
+        "Find where a variable was set.",
+        |s| head(s, "#")
     ),
     item!(
         "search-next",
         2,
-        "`n` and `N`",
-        "the next or previous match of your last search",
+        "`n`",
+        "the next match of your last search",
         "After `/name`, hop through every match.",
-        |s| is(s, &["n", "N"])
+        |s| is(s, &["n"])
+    ),
+    item!(
+        "search-back",
+        2,
+        "`N`",
+        "the previous match of your last search",
+        "Went past the one you wanted? Back one.",
+        |s| is(s, &["N"])
     ),
     item!(
         "percent",
@@ -253,10 +407,18 @@ pub static CURRICULUM: &[Item] = &[
     item!(
         "screen",
         2,
-        "`H`, `M` and `L`",
-        "the top, middle or bottom line of the window",
+        "`H` and `L`",
+        "the top or bottom line of the window",
         "Jump to something you can see without counting lines.",
-        |s| is(s, &["H", "M", "L"])
+        |s| is(s, &["H", "L"])
+    ),
+    item!(
+        "screen-middle",
+        2,
+        "`M`",
+        "the middle line of the window",
+        "Halfway down what you see, in one key.",
+        |s| is(s, &["M"])
     ),
     item!(
         "ciw",
@@ -264,7 +426,8 @@ pub static CURRICULUM: &[Item] = &[
         "`ciw`",
         "change the whole word under the cursor, from anywhere in it",
         "Rename a variable without moving to its start.",
-        |s| object(s, "c", "wW")
+        // Any operator on a word: `diw` and `yiw` are the same skill.
+        |s| object(s, "cdy", "wW")
     ),
     item!(
         "ci-quote",
@@ -317,10 +480,18 @@ pub static CURRICULUM: &[Item] = &[
     item!(
         "jump-back",
         2,
-        "`Ctrl-o` and `Ctrl-i`",
-        "back to where you were before a jump, and forward again",
+        "`Ctrl-o`",
+        "back to where you were before a jump",
         "Return after `gg` or a search.",
-        |s| ctrl(s, "oi") && s.before == VimMode::Normal
+        |s| ctrl(s, "o") && s.before == VimMode::Normal
+    ),
+    item!(
+        "jump-forward",
+        2,
+        "`Ctrl-i`",
+        "forward again after `Ctrl-o`",
+        "Went back one jump too many? Forward again.",
+        |s| ctrl(s, "i") && s.before == VimMode::Normal
     ),
     item!(
         "center",
@@ -340,12 +511,63 @@ pub static CURRICULUM: &[Item] = &[
     ),
     // Level 3: power tools.
     item!(
+        "cd-back",
+        2,
+        "`cd -`",
+        "back to the folder you were in before",
+        "Hop between two project folders.",
+        |_| false,
+        IN_SHELL,
+        Some(CommandShape::CdBack),
+        None
+    ),
+    item!(
+        "last-arg",
+        2,
+        "`Alt-.`",
+        "insert the previous command's last argument",
+        "mkdir a folder, then cd into it without typing its name again.",
+        |_| false,
+        IN_SHELL,
+        None,
+        None
+    ),
+    item!(
+        "tabs",
+        2,
+        "`gt` and `gT`",
+        "the next or previous editor tab",
+        "Flip between two files you're working on.",
+        |s| is(s, &["gt", "gT"]),
+        IN_VSCODE,
+        None,
+        None
+    ),
+    item!(
+        "terminal-toggle",
+        2,
+        "`` Ctrl-` ``",
+        "to the terminal and back",
+        "Run the tests, then straight back to the code.",
+        |_| false,
+        IN_VSCODE,
+        None,
+        Some(UiWhat::TerminalFocused)
+    ),
+    item!(
         "marks",
         3,
         "`ma` and `'a`",
         "set a mark, and jump back to its line",
         "Bookmark a spot you keep returning to.",
-        |s| head(s, "m'`") && cmd(s).is_some_and(|c| c.keys.len() == 2)
+        // A letter after it: `''` and `` `` `` jump back, `'.` is the last change.
+        |s| head(s, "m'`")
+            && cmd(s).is_some_and(|c| {
+                c.keys.len() == 2
+                    && c.keys[1]
+                        .plain_char()
+                        .is_some_and(|k| k.is_ascii_alphabetic())
+            })
     ),
     item!(
         "last-change",
@@ -425,7 +647,8 @@ pub static CURRICULUM: &[Item] = &[
         "`\"0p`",
         "paste the last yank, even after deleting something since",
         "Yank a word, delete the old one, and still paste the yanked word.",
-        |s| cmd(s).is_some_and(|c| c.register.is_some())
+        // Not `"_`: that's the black hole, for throwing text away.
+        |s| cmd(s).is_some_and(|c| c.register.is_some_and(|r| r != '_'))
     ),
     item!(
         "windows",
@@ -500,6 +723,62 @@ pub static CURRICULUM: &[Item] = &[
         |s| ctrl(s, "v") && s.before == VimMode::Normal
     ),
     item!(
+        "block-append",
+        3,
+        "`Ctrl-v`, `$`, then `A`",
+        "add text at the end of several lines, however long they are",
+        "Put a semicolon at the end of ten lines at once.",
+        |s| s.before == VimMode::VisualBlock && head(s, "A")
+    ),
+    item!(
+        "sentence",
+        3,
+        "`das` and `cis`",
+        "delete or change a whole sentence, from anywhere in it",
+        "Rewrite a sentence in a comment or a README.",
+        |s| object(s, "cdy", "s")
+    ),
+    item!(
+        "gn-select",
+        3,
+        "`gn`",
+        "select the next search match",
+        "Search, then `gn` and `U` to upper-case each match in turn.",
+        |s| is(s, &["gn", "gN"]) && !s.before.is_visual()
+    ),
+    item!(
+        "section",
+        3,
+        "`]]` and `[[`",
+        "the next or previous section: a line starting with `{`",
+        "Hop between functions in C, where `{` starts the line.",
+        |s| is(s, &["]]", "[[", "][", "[]"])
+    ),
+    item!(
+        "unmatched",
+        3,
+        "`[(` and `])`",
+        "the opening or closing bracket around the cursor",
+        "From inside a long argument list, back to its `(`.",
+        |s| is(s, &["[(", "])", "[{", "]}"])
+    ),
+    item!(
+        "sentence-motion",
+        3,
+        "`(` and `)`",
+        "back or forward a sentence",
+        "Move through comments and documentation a sentence at a time.",
+        |s| is(s, &["(", ")"])
+    ),
+    item!(
+        "fold",
+        3,
+        "`za`, `zc` and `zo`",
+        "toggle, close or open the fold under the cursor",
+        "Hide a long function to see what's around it.",
+        |s| is(s, &["za", "zc", "zo", "zR", "zM"])
+    ),
+    item!(
         "tag-object",
         3,
         "`cit`",
@@ -526,6 +805,30 @@ pub static CURRICULUM: &[Item] = &[
     ),
     // Level 4: the command line.
     item!(
+        "quick-sub",
+        3,
+        "`^old^new`",
+        "run the last command again with one word swapped",
+        "Rerun a test with another file name.",
+        |_| false,
+        IN_SHELL,
+        None,
+        None
+    ),
+    item!(
+        "split",
+        3,
+        "`Ctrl-w v`",
+        "a second editor side by side",
+        "Read the test while you write the code.",
+        |s| cmd(s).is_some_and(|c| {
+            c.keys.len() == 2 && c.keys[0].is_ctrl('w') && c.keys[1].plain_char() == Some('v')
+        }),
+        &[ContextKind::VsCodeVim, ContextKind::TerminalVim],
+        None,
+        None
+    ),
+    item!(
         "substitute-cmd",
         4,
         "`:s/old/new/`",
@@ -540,6 +843,14 @@ pub static CURRICULUM: &[Item] = &[
         "replace text everywhere in the file",
         "Rename a variable in the whole file.",
         |s| cmdline(s, &["%s"])
+    ),
+    item!(
+        "quickfix",
+        4,
+        "`:cn` and `:cp`",
+        "to the next or previous error or search result in the quickfix list",
+        "After `:make` or `:grep`, walk through the results.",
+        |s| cmdline(s, &["cn", "cp", "cnext", "cprev", "copen", "cc"])
     ),
     item!(
         "global",
@@ -594,6 +905,10 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("bigword", &["word"]),
     ("till", &["find"]),
     ("screen", &["half-page"]),
+    ("screen-middle", &["screen"]),
+    ("jump-forward", &["jump-back"]),
+    ("star-back", &["star"]),
+    ("search-back", &["search-next"]),
     ("center", &["half-page"]),
     ("ciw", &["change-word"]),
     ("ci-quote", &["ciw"]),
@@ -612,6 +927,11 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("macro", &["dot"]),
     ("replay-macro", &["macro"]),
     ("cgn", &["dot", "star"]),
+    ("gn-select", &["cgn"]),
+    ("search-next", &["search"]),
+    ("unmatched", &["percent"]),
+    ("sentence", &["ciw"]),
+    ("block-append", &["visual-block"]),
     ("undo-time", &["undo-redo"]),
     ("increment", &["count"]),
     ("substitute-all", &["substitute-cmd"]),
@@ -657,6 +977,8 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("vim.increment", &["increment"]),
     ("vim.insert-keys", &["insert-keys"]),
     ("vim.windows", &["windows"]),
+    ("vim.overshoot", &["count"]),
+    ("vim.find-repeat", &["find", "search"]),
     ("vim.operator-run", &["count"]),
     ("vim.scroll-run", &["half-page", "center"]),
     ("vim.search-again", &["search-next"]),
@@ -677,22 +999,27 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("motion.search", &["search-next"]),
     ("motion.last-change", &["change-list"]),
     ("motion.line-number", &["goto-line"]),
+    ("motion.section", &["section"]),
+    ("motion.unmatched", &["unmatched"]),
+    ("motion.sentence", &["sentence-motion"]),
+    ("motion.screen-line", &["screen-lines"]),
+    ("motion.search-to", &["search"]),
     ("motion.scroll", &["center"]),
     ("motion.mark", &["marks"]),
     ("motion.text-object", &["ciw"]),
     ("motion.operator", &["word-end", "till", "d-to-end"]),
-    ("bash.up-history", &[]),
+    ("bash.up-history", &["history-search"]),
     ("bash.backspace-clear", &[]),
     ("bash.left-streak", &[]),
-    ("shell.cd-up", &[]),
-    ("shell.reused-arg", &[]),
-    ("shell.one-word-changed", &[]),
-    ("shell.keys", &[]),
-    ("vscode.quick-open", &[]),
-    ("vscode.terminal-toggle", &[]),
-    ("vscode.tab-switch", &[]),
+    ("shell.cd-up", &["cd-back"]),
+    ("shell.reused-arg", &["last-arg"]),
+    ("shell.one-word-changed", &["quick-sub"]),
+    ("shell.keys", &["history-search"]),
+    ("vscode.quick-open", &["quick-open"]),
+    ("vscode.terminal-toggle", &["terminal-toggle"]),
+    ("vscode.tab-switch", &["tabs"]),
     ("vim.reselect", &["gv"]),
-    ("vscode.split", &[]),
+    ("vscode.split", &["split"]),
 ];
 
 /// The skills `rule_id` teaches, or `None` for a rule not in the tree.
@@ -713,6 +1040,68 @@ pub fn object_skill(object: &str) -> &'static str {
         Some('t') => "tag-object",
         _ => "ciw",
     }
+}
+
+/// The keys a tip's command stands for: `Ctrl-d` → Ctrl+d, `f<char>` →
+/// `f` and a letter, `<line>G` → `42G`, `:sort` → `:sort` and Enter.
+fn command_keys(press: &str) -> Vec<crate::key::Key> {
+    use crate::key::Key;
+    let press = press
+        .replace("<char>", "x")
+        .replace("<line>", "42")
+        .replace("old", "x")
+        .replace("new", "y");
+    if let Some(rest) = press.strip_prefix(':') {
+        let mut keys = vec![Key::ch(':')];
+        keys.extend(rest.chars().map(Key::ch));
+        keys.push(Key::ENTER);
+        return keys;
+    }
+    let mut keys = Vec::new();
+    let mut rest = press.as_str();
+    while !rest.is_empty() {
+        if let Some(r) = rest.strip_prefix("Ctrl-")
+            && let Some(c) = r.chars().next()
+        {
+            keys.push(Key::ctrl(c));
+            rest = &r[c.len_utf8()..];
+        } else if let Some(r) = rest.strip_prefix("Esc") {
+            keys.push(Key::ESC);
+            rest = r;
+        } else {
+            let c = rest.chars().next().unwrap_or(' ');
+            keys.push(Key::ch(c));
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    keys
+}
+
+/// The curriculum items a tip's command is (`ci(` → `ci-paren`), by
+/// typing it into the key tracker from Normal mode.
+pub fn items_of_command(cmd: &str) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    for press in cmd
+        .split_whitespace()
+        .filter(|w| !matches!(*w, "then" | "or" | "and" | "…"))
+        .map(|w| w.split('×').next().unwrap_or(w).trim_end_matches(','))
+    {
+        let mut t = crate::vim::Tracker::new(crate::vim::Flavor::Vim);
+        t.reset_known(VimMode::Normal);
+        for (i, key) in command_keys(press).into_iter().enumerate() {
+            let step = t.feed(crate::key::KeyStroke {
+                key,
+                repeat: false,
+                at_ms: i as u64,
+            });
+            for item in CURRICULUM {
+                if item.used_in(&step) && !out.contains(&item.id) {
+                    out.push(item.id);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The items you already use.
@@ -743,29 +1132,48 @@ impl Known {
             everything: false,
             ids: ids.into_iter().collect(),
         }
+        .closed()
+    }
+
+    /// Using something means knowing what it builds on, all the way down:
+    /// someone who uses `ci(` knows `ciw` and `cw` too.
+    fn closed(mut self) -> Self {
+        let mut todo: Vec<&'static str> = self.ids.iter().copied().collect();
+        while let Some(id) = todo.pop() {
+            for r in requires(id) {
+                if self.ids.insert(r) {
+                    todo.push(r);
+                }
+            }
+        }
+        self
     }
 
     /// Items used often enough, or learned, plus the skills of rules
-    /// you've mastered.
+    /// you've mastered that you've actually used: mastering `j`-streaks
+    /// with counts says nothing about `Ctrl-d`.
     pub fn from_progress<'a>(
         progress: &dyn Fn(&str) -> Progress,
         mastered_rules: impl IntoIterator<Item = &'a str>,
     ) -> Self {
         let mut ids: HashSet<&'static str> = CURRICULUM
             .iter()
-            .filter(|i| {
-                let p = progress(i.id);
-                p.learned || p.uses >= KNOWN_USES
-            })
+            .filter(|i| progress(i.id).known())
             .map(|i| i.id)
             .collect();
         for rule in mastered_rules {
-            ids.extend(rule_skills(rule).unwrap_or_default());
+            ids.extend(
+                rule_skills(rule)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|s| progress(s).uses > 0),
+            );
         }
         Known {
             everything: false,
             ids,
         }
+        .closed()
     }
 
     /// Also everything up to curriculum level `up_to`, as `[learn] level`
@@ -773,7 +1181,27 @@ impl Known {
     pub fn with_levels(mut self, up_to: u8) -> Self {
         self.ids
             .extend(CURRICULUM.iter().filter(|i| i.level <= up_to).map(|i| i.id));
-        self
+        self.closed()
+    }
+
+    /// With what you said: known items added (and what they build on),
+    /// then not-known ones taken out.
+    pub fn with_overrides(mut self, overrides: &std::collections::HashMap<String, bool>) -> Self {
+        if self.everything {
+            return self;
+        }
+        for item in CURRICULUM {
+            if overrides.get(item.id) == Some(&true) {
+                self.ids.insert(item.id);
+            }
+        }
+        let mut k = self.closed();
+        for item in CURRICULUM {
+            if overrides.get(item.id) == Some(&false) {
+                k.ids.remove(item.id);
+            }
+        }
+        k
     }
 
     pub fn knows(&self, id: &str) -> bool {
@@ -785,6 +1213,12 @@ impl Known {
         self.knows(id) || requires(id).iter().all(|r| self.knows(r))
     }
 
+    /// Whether a tip's command is something you're ready for: every item
+    /// it is (commands the curriculum doesn't know are fine).
+    pub fn ready_for_command(&self, cmd: &str) -> bool {
+        self.everything || items_of_command(cmd).iter().all(|i| self.ready(i))
+    }
+
     /// Whether a rule's main advice is something you're ready for.
     pub fn ready_for_rule(&self, rule_id: &str) -> bool {
         rule_skills(rule_id)
@@ -793,8 +1227,25 @@ impl Known {
     }
 }
 
-/// Used this many times, an item counts as known.
+/// Used this many times lately, an item counts as known.
 pub const KNOWN_USES: u64 = 3;
+/// "Lately".
+pub const RECENT_DAYS: u64 = 30;
+/// Or used this many times overall, and not long ago.
+pub const REGULAR_USES: u64 = 9;
+/// Unused this long, it's no longer known: it may have been forgotten.
+pub const FADE_DAYS: u64 = 90;
+
+impl Progress {
+    /// Known: used a few times lately, or regularly and not too long ago,
+    /// or learned from a daily tip and not left unused for long.
+    pub fn known(&self) -> bool {
+        let fresh = self.days_idle.is_none_or(|d| d <= FADE_DAYS);
+        self.recent_uses >= KNOWN_USES
+            || (fresh && self.uses >= REGULAR_USES)
+            || (fresh && self.learned)
+    }
+}
 /// An item is shown at most this many times.
 pub const MAX_SHOWINGS: u32 = 3;
 /// And not again within this many days.
@@ -805,6 +1256,10 @@ pub const AGAIN_AFTER_DAYS: u64 = 7;
 pub struct Progress {
     /// Times used, ever.
     pub uses: u64,
+    /// Times used in the last [`RECENT_DAYS`].
+    pub recent_uses: u64,
+    /// Days since it was last used; `None` if not known.
+    pub days_idle: Option<u64>,
     pub times_shown: u32,
     /// Unix seconds.
     pub last_shown: Option<u64>,
@@ -833,16 +1288,47 @@ pub fn pick_for(
     now_s: u64,
     ctx: crate::context::ContextKind,
 ) -> Option<&'static Item> {
-    CURRICULUM.iter().find(|item| {
+    CURRICULUM
+        .iter()
+        .find(|item| worth_teaching(item, progress, known, now_s, ctx))
+}
+
+/// The day's lesson from your habits: of the rules you tripped most this
+/// week (`habits`, most first), the first skill their advice teaches that
+/// you're ready for and don't know yet; else the curriculum's next.
+pub fn pick_from_habits(
+    progress: &dyn Fn(&str) -> Progress,
+    known: &Known,
+    now_s: u64,
+    ctx: crate::context::ContextKind,
+    habits: &[(String, u64)],
+) -> Option<&'static Item> {
+    habits
+        .iter()
+        .flat_map(|(rule, _)| rule_skills(rule).unwrap_or_default())
+        .filter_map(|id| find(id))
+        .find(|item| worth_teaching(item, progress, known, now_s, ctx))
+        .or_else(|| pick_for(progress, known, now_s, ctx))
+}
+
+fn worth_teaching(
+    item: &Item,
+    progress: &dyn Fn(&str) -> Progress,
+    known: &Known,
+    now_s: u64,
+    ctx: crate::context::ContextKind,
+) -> bool {
+    {
         let p = progress(item.id);
         known.ready(item.id)
+            && item.applies_in(ctx)
             && crate::support::supports_all(ctx, &tip_text(item))
-            && p.uses < KNOWN_USES
-            && !p.learned
+            // Not known now: learned and since forgotten comes back.
+            && !known.knows(item.id)
             && p.times_shown < MAX_SHOWINGS
             && p.last_shown
                 .is_none_or(|t| now_s.saturating_sub(t) >= AGAIN_AFTER_DAYS * 86_400)
-    })
+    }
 }
 
 /// The tip text for an item, with its commands marked.
@@ -905,6 +1391,11 @@ mod tests {
             ("<C-w>l", "windows"),
             ("ia<C-r>", "insert-keys"),
             ("g;", "change-list"),
+            ("zc", "fold"),
+            (":cn<CR>", "quickfix"),
+            ("das", "sentence"),
+            ("<C-v>jj$A;<Esc>", "block-append"),
+            ("gn", "gn-select"),
             ("42G", "goto-line"),
             (":120<CR>", "goto-line"),
             (":earlier 1m<CR>", "undo-time"),
@@ -925,6 +1416,12 @@ mod tests {
         }
         // An argument isn't a motion: `fw` is find, not word.
         assert!(!used("fw").contains(&"word"));
+        // Near misses.
+        assert!(!used(":1,5d<CR>").contains(&"goto-line"));
+        assert!(!used("5G").contains(&"file-ends") && used("5G").contains(&"goto-line"));
+        assert!(!used("\"_dd").contains(&"registers") && used("\"ayy").contains(&"registers"));
+        assert!(!used("''").contains(&"marks") && !used("'.").contains(&"marks"));
+        assert!(!used("vu").contains(&"undo-redo") && used("u").contains(&"undo-redo"));
     }
 
     #[test]
@@ -998,11 +1495,146 @@ mod tests {
         // Using it already makes it ready, whatever it builds on.
         assert!(Known::of(["ci-paren"]).ready("ci-paren"));
         assert!(Known::everything().ready("global"));
-        // A mastered rule's skills count as known.
-        let k = Known::from_progress(&|_| Progress::default(), ["motion.find"]);
+        // A mastered rule's skills count as known, the ones you've used.
+        let used_find = |id: &str| Progress {
+            uses: u64::from(id == "find"),
+            ..Default::default()
+        };
+        let k = Known::from_progress(&used_find, ["motion.find"]);
         assert!(k.knows("find") && k.ready("till"));
+        let used_count = |id: &str| Progress {
+            uses: u64::from(id == "count"),
+            ..Default::default()
+        };
+        let k = Known::from_progress(&used_count, ["vim.repeat-jk"]);
+        assert!(k.knows("count") && !k.knows("half-page") && !k.knows("paragraph"));
         assert!(!none.ready_for_rule("motion.text-object"));
         assert!(none.ready_for_rule("motion.count") && none.ready_for_rule("shell.cd-up"));
+    }
+
+    #[test]
+    fn commands_are_items() {
+        assert_eq!(items_of_command("ci("), ["ci-paren"]);
+        assert_eq!(items_of_command("Ctrl-d"), ["half-page"]);
+        assert_eq!(items_of_command("3f<char>"), ["find"]);
+        assert_eq!(items_of_command("<line>G"), ["goto-line"]);
+        assert_eq!(items_of_command(":sort"), ["sort"]);
+        assert_eq!(items_of_command("Ctrl-d×3 then 4j"), ["half-page", "count"]);
+        let k = Known::of(["change-word"]);
+        assert!(k.ready_for_command("ciw") && !k.ready_for_command("ci("));
+        assert!(!k.ready_for_command("zz"), "zz builds on Ctrl-d");
+        assert!(k.ready_for_command("Ctrl-e"), "not a tree item");
+    }
+
+    #[test]
+    fn what_you_say_you_know() {
+        let said = std::collections::HashMap::from([
+            ("ci-paren".to_string(), true),
+            ("word".to_string(), false),
+        ]);
+        let k = Known::of(["word"]).with_overrides(&said);
+        assert!(
+            k.knows("ci-paren") && k.knows("ciw"),
+            "and what it builds on"
+        );
+        assert!(!k.knows("word"));
+    }
+
+    #[test]
+    fn each_place_has_its_own_lessons() {
+        let nothing = |_: &str| Progress::default();
+        let known = Known::of([]);
+        let first = |ctx| pick_for(&nothing, &known, 0, ctx).map(|i| i.id);
+        assert_eq!(first(ContextKind::Shell), Some("history-search"));
+        assert_eq!(first(ContextKind::TerminalVim), Some("word"));
+        // Shell and VS Code items stay in their place.
+        let shell_only: Vec<_> = CURRICULUM
+            .iter()
+            .filter(|i| i.applies_in(ContextKind::Shell))
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(
+            shell_only,
+            ["history-search", "cd-back", "last-arg", "quick-sub"]
+        );
+        assert!(!find("tabs").unwrap().applies_in(ContextKind::TerminalVim));
+        assert_eq!(
+            used_by_shape(CommandShape::CdBack)
+                .map(|i| i.id)
+                .collect::<Vec<_>>(),
+            ["cd-back"]
+        );
+        assert_eq!(
+            used_by_ui(UiWhat::FileOpened)
+                .map(|i| i.id)
+                .collect::<Vec<_>>(),
+            ["quick-open"]
+        );
+    }
+
+    #[test]
+    fn the_lesson_comes_from_your_habits() {
+        let nothing = |_: &str| Progress::default();
+        let known = Known::of(["word", "count"]);
+        // You walked with j a lot this week: } before the curriculum's next.
+        let habits = vec![
+            ("vim.repeat-jk".to_string(), 30),
+            ("vim.repeat-x".to_string(), 2),
+        ];
+        let pick = pick_from_habits(&nothing, &known, 0, ContextKind::TerminalVim, &habits);
+        assert_eq!(pick.map(|i| i.id), Some("paragraph"));
+        // Nothing this week: the curriculum's order.
+        let pick = pick_from_habits(&nothing, &known, 0, ContextKind::TerminalVim, &[]);
+        assert_eq!(
+            pick.map(|i| i.id),
+            pick_for(&nothing, &known, 0, ContextKind::TerminalVim).map(|i| i.id)
+        );
+    }
+
+    #[test]
+    fn known_means_lately_and_often() {
+        let p = |uses, recent_uses, idle| Progress {
+            uses,
+            recent_uses,
+            days_idle: Some(idle),
+            ..Default::default()
+        };
+        assert!(p(3, 3, 1).known(), "three times this month");
+        assert!(!p(3, 1, 20).known(), "three times ever, mostly long ago");
+        assert!(p(12, 0, 40).known(), "regular use, not long ago");
+        assert!(!p(50, 0, 200).known(), "not used for half a year: faded");
+        let learned = |idle| Progress {
+            learned: true,
+            days_idle: Some(idle),
+            ..Default::default()
+        };
+        assert!(learned(10).known() && !learned(120).known());
+        // A macro replays its keys without typing them: only `@q` counts.
+        let mut t = Tracker::new(Flavor::Vim);
+        t.reset_known(VimMode::Normal);
+        let ids: Vec<_> = strokes("@q", 0)
+            .into_iter()
+            .map(|k| t.feed(k))
+            .flat_map(|s| {
+                CURRICULUM
+                    .iter()
+                    .filter(move |i| i.used_in(&s))
+                    .map(|i| i.id)
+            })
+            .collect();
+        assert_eq!(ids, ["macro"]);
+    }
+
+    #[test]
+    fn using_something_means_knowing_what_it_builds_on() {
+        // ci( without ever typing ciw: ciw and cw are known, and what
+        // builds on ci( is ready.
+        let k = Known::of(["ci-paren"]);
+        assert!(k.knows("ciw") && k.knows("change-word"));
+        assert!(k.ready("tag-object") && k.ready("ci-quote"));
+        // All the way down: :sort means :s and ranges too.
+        let k = Known::of(["sort"]);
+        assert!(k.knows("range") && k.knows("substitute-cmd"));
     }
 
     #[test]
@@ -1017,9 +1649,21 @@ mod tests {
     #[test]
     fn something_new_waits_for_what_it_builds_on() {
         // Everything is used but the text objects.
-        let objects = ["ciw", "ci-quote", "ci-paren", "tag-object", "visual-object"];
+        let objects = [
+            "ciw",
+            "ci-quote",
+            "ci-paren",
+            "tag-object",
+            "visual-object",
+            "sentence",
+        ];
         let progress = |id: &str| Progress {
-            uses: if objects.contains(&id) { 0 } else { 99 },
+            // ciw once (not enough to count), the other objects never.
+            uses: match id {
+                "ciw" => 1,
+                _ if objects.contains(&id) => 0,
+                _ => 99,
+            },
             // ciw was shown three times already and won't be again.
             times_shown: if id == "ciw" { 3 } else { 0 },
             ..Default::default()

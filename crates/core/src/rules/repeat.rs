@@ -36,6 +36,41 @@ struct Streak {
     repeats: u32,
     /// Already nudged while it was going on (#114).
     reported: bool,
+    /// Began right after a search or a jump: fine-tuning near the target.
+    after_jump: bool,
+}
+
+/// Presses this far apart on average are reading, not travelling.
+pub const READING_MS: u64 = 600;
+/// A streak starting this soon after a search or jump is fine-tuning.
+const AFTER_JUMP_MS: u64 = 2000;
+/// ...if it's no longer than this.
+const FINE_TUNE_MAX: u32 = 9;
+
+impl Streak {
+    /// Slow and steady, typed not held: reading line by line.
+    fn reading(&self) -> bool {
+        self.n >= 3
+            && self.repeats == 0
+            && self.last_ms.saturating_sub(self.first_ms) / u64::from(self.n - 1) >= READING_MS
+    }
+}
+
+/// A search or jump: what comes right after it is fine-tuning.
+fn is_jump(step: &Step) -> bool {
+    match &step.event {
+        Some(VimEvent::Cmdline {
+            kind: '/' | '?', ..
+        }) => true,
+        Some(VimEvent::Command(c)) => {
+            ["n", "N", "*", "#", "G", "gg", "%", "''", "``"]
+                .iter()
+                .any(|j| c.is(j))
+                || c.single().is_some_and(|k| k.is_ctrl('o') || k.is_ctrl('i'))
+                || (c.keys.len() == 2 && c.head().is_some_and(|h| h == '\'' || h == '`'))
+        }
+        _ => false,
+    }
 }
 
 /// A streak this many times its threshold is nudged while it goes on.
@@ -50,6 +85,9 @@ pub struct RepeatRule {
     replaced_by_editor: bool,
     /// Tip text for a held key: unit and seconds held.
     held: Option<fn(&'static str, f64) -> String>,
+    /// Leave reading and fine-tuning after a jump alone.
+    skip_deliberate: bool,
+    last_jump_ms: Option<u64>,
 }
 
 /// What makes two better-way steps "the same" for counting adoptions.
@@ -77,6 +115,8 @@ impl RepeatRule {
             adopting: None,
             replaced_by_editor: false,
             held: None,
+            skip_deliberate: false,
+            last_jump_ms: None,
         }
     }
 
@@ -99,7 +139,19 @@ impl RepeatRule {
             shape: Shape::repeat(s.unit, s.n),
             mode: s.mode,
             at_ms: s.last_ms,
+            start_ms: s.first_ms,
         })
+    }
+
+    /// Don't coach moves that look deliberate: reading line by line, or
+    /// adjusting by a few right after a search or jump.
+    pub fn skip_deliberate(mut self) -> Self {
+        self.skip_deliberate = true;
+        self
+    }
+
+    fn deliberate(&self, s: &Streak) -> bool {
+        self.skip_deliberate && (s.reading() || (s.after_jump && s.n <= FINE_TUNE_MAX))
     }
 
     /// Step aside when an editor reports motions (see [`Rule::replaced_by_editor`]).
@@ -110,7 +162,7 @@ impl RepeatRule {
 
     fn end(&mut self, out: &mut Vec<RuleEvent>) {
         let Some(s) = self.streak.take() else { return };
-        if s.n >= self.spec.threshold && !s.reported {
+        if s.n >= self.spec.threshold && !s.reported && !self.deliberate(&s) {
             out.push(self.finding(&s));
         }
     }
@@ -161,6 +213,9 @@ impl Rule for RepeatRule {
         } else if step.event.is_some() {
             self.adopting = None;
         }
+        if is_jump(step) {
+            self.last_jump_ms = Some(step.at_ms);
+        }
         let Some(unit) = (self.spec.unit)(step) else {
             if step.event.is_some() {
                 self.end(out);
@@ -183,12 +238,16 @@ impl Rule for RepeatRule {
                     mode: step.before,
                     repeats: u32::from(step.repeat),
                     reported: false,
+                    after_jump: self
+                        .last_jump_ms
+                        .is_some_and(|t| step.at_ms.saturating_sub(t) <= AFTER_JUMP_MS),
                 });
             }
         }
         // Far past the threshold: say so now rather than after it ends.
         if let Some(s) = &self.streak
             && !s.reported
+            && !self.deliberate(s)
             && s.n >= self.spec.threshold * ONGOING_FACTOR
         {
             let finding = self.finding(s);

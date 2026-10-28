@@ -31,6 +31,7 @@ fn finding(
         // Typed at the prompt, where Insert-mode meanings apply.
         mode: VimMode::Insert,
         at_ms,
+        start_ms: at_ms,
     })
 }
 

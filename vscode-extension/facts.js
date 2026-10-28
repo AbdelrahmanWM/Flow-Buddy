@@ -466,10 +466,39 @@ function computeFacts(lines, start, end, opts = {}) {
             set('line_number_digits', String(end.line + 1).length);
         set('file_start', end.line === 0);
         set('file_end', end.line === lines.length - 1);
+        // How far the next few blank-line boundaries are, for }} then 2j.
+        const bounds = [];
+        let at = start.line;
+        for (let i = 0; i < 9; i++) {
+            if (at + vdir < 0 || at + vdir >= lines.length)
+                break;
+            const next = attempt(() => paragraphStep(lines, at, vdir))?.line;
+            if (next === undefined || next === at)
+                break;
+            at = next;
+            bounds.push(Math.abs(at - start.line));
+        }
+        if (bounds.length)
+            facts.paragraph_lines = bounds;
+        // ]] and [[: lines starting with {, C style.
+        let k = 0;
+        for (let l = start.line + vdir; l >= 0 && l < lines.length && k < MAX_HOPS; l += vdir) {
+            if (lines[l]?.startsWith('{')) {
+                k++;
+                if (l === end.line) {
+                    facts.section_hops = k;
+                    break;
+                }
+            }
+            if ((l - end.line) * vdir > 0)
+                break;
+        }
     }
 
     if (start.col !== null && end.col !== null && cmp(start, end) !== 0) {
         const dir = Math.sign(cmp(end, start));
+        set('unmatched_paren', attempt(() => unmatchedParen(lines, start, end, dir)));
+        set('search_chars', attempt(() => searchChars(lines, start, end, dir)));
         set('bracket_match', attempt(() => bracketMatch(lines, start, end)));
         set('star_hops', attempt(() => starHops(lines, start, end, dir, !!opts.ignorecase)));
     }
@@ -498,6 +527,50 @@ function computeFacts(lines, start, end, opts = {}) {
     set('first_nonblank', end.col === firstNonBlank(text));
     set('line_end', end.col === Math.max(text.length - 1, 0));
     return facts;
+}
+
+// `[(` (dir -1) or `])` (dir 1) from `start`: does it land on `end`?
+function unmatchedParen(lines, start, end, dir) {
+    const [open, close] = dir < 0 ? ['(', ')'] : [')', '('];
+    let depth = 0;
+    const c = new Cursor(lines, start);
+    while ((dir < 0 ? c.dec() : c.inc()) !== -1) {
+        const ch = lines[c.line]?.charAt(c.col);
+        if (ch === close)
+            depth++;
+        else if (ch === open && depth-- === 0)
+            return c.line === end.line && c.col === end.col;
+    }
+    return false;
+}
+
+// How many of the characters at `end`, searched for from `start`, make it
+// the first match (up to 8). Only the count leaves here.
+function searchChars(lines, start, end, dir) {
+    const rest = [...(lines[end.line] ?? '').slice(end.col)];
+    for (let k = 1; k <= Math.min(8, rest.length); k++) {
+        const needle = rest.slice(0, k).join('');
+        let found = null;
+        if (dir > 0) {
+            for (let l = start.line; l < lines.length && !found; l++) {
+                const from = l === start.line ? start.col + 1 : 0;
+                const i = (lines[l] ?? '').indexOf(needle, from);
+                if (i >= 0)
+                    found = {line: l, col: i};
+            }
+        } else {
+            for (let l = start.line; l >= 0 && !found; l--) {
+                const text = lines[l] ?? '';
+                const upto = l === start.line ? start.col - 1 : text.length;
+                const i = upto < 0 ? -1 : text.lastIndexOf(needle, upto);
+                if (i >= 0)
+                    found = {line: l, col: i};
+            }
+        }
+        if (found && found.line === end.line && found.col === end.col)
+            return k;
+    }
+    return undefined;
 }
 
 // Text objects an operator's range was exactly, mirroring
@@ -661,6 +734,41 @@ function rangeFacts(text, first, last) {
     const out = {cols: last - first, facts};
     if (words)
         out.words = words;
+    // W and E: WORDs are anything between blanks.
+    const big = cls.map(c => c === 0 ? 0 : 1);
+    const bstarts = idx.filter(j => big[j] && (j === 0 || !big[j - 1]));
+    const bends = idx.filter(j => big[j] && (j === n - 1 || !big[j + 1]));
+    if (after >= n)
+        out.bigwords = bstarts.filter(j => j > first).length + 1;
+    else if (bstarts.includes(after))
+        out.bigwords = bstarts.filter(j => j > first && j <= after).length;
+    if (bends.includes(last)) {
+        const k = bends.filter(j => j > first && j <= last).length;
+        if (k)
+            out.bigword_ends = k;
+    }
+    // %: from a bracket to its match.
+    const pair = {'(': ')', '[': ']', '{': '}'};
+    if (pair[chars[first]] && chars[last] === pair[chars[first]] &&
+        balanced(chars.slice(first, last + 1).join(''), chars[first], pair[chars[first]]))
+        out.bracket = true;
+    // Backward from just after the range (where the cursor was for db, dF).
+    if (after < n) {
+        const back = {};
+        if (starts.includes(first))
+            back.words = starts.filter(j => j >= first && j < after).length;
+        if (bstarts.includes(first))
+            back.bigwords = bstarts.filter(j => j >= first && j < after).length;
+        back.find_hops = count(first, after - 1, chars[first]);
+        if (first > 0) {
+            const t = count(first - 1, after - 2, chars[first - 1]);
+            if (t)
+                back.till_hops = t;
+        }
+        back.line_start = first === 0;
+        back.first_nonblank = first === firstNonBlank(text);
+        out.back = back;
+    }
     return out;
 }
 

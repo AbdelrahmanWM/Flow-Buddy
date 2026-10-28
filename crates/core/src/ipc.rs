@@ -70,6 +70,8 @@ pub enum CommandShape {
     ReusedArg,
     /// The previous command with one word changed.
     OneWordChanged,
+    /// Exactly `cd -`: back to the folder before.
+    CdBack,
     /// `clear`, from the command's name (the hooks don't send these).
     Clear,
     /// `history`, usually piped to grep.
@@ -129,6 +131,13 @@ pub enum Command {
     /// The last movement or edit that took more keys than it needed, with
     /// the best ways to do it. Answers with `Option<LastSlow>`.
     LastSlow,
+    /// Say these curriculum items are known (`Some(true)`), not known, or
+    /// back to what use shows (`None`).
+    KnowItems {
+        items: Vec<String>,
+        #[serde(default)]
+        known: Option<bool>,
+    },
     /// The latest tips, newest first. Answers with `Vec<RecentTip>`.
     RecentTips {
         #[serde(default)]

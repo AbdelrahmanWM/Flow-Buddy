@@ -26,7 +26,7 @@ pub enum ConnEvent {
     },
     Msg {
         id: ConnId,
-        msg: ClientMsg,
+        msg: Box<ClientMsg>,
     },
     Closed {
         id: ConnId,
@@ -122,7 +122,14 @@ async fn handle_conn(id: ConnId, stream: UnixStream, events: mpsc::Sender<ConnEv
         }
         match ipc::decode_client(&line) {
             Ok(msg) => {
-                if events.send(ConnEvent::Msg { id, msg }).await.is_err() {
+                if events
+                    .send(ConnEvent::Msg {
+                        id,
+                        msg: Box::new(msg),
+                    })
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -186,11 +193,11 @@ mod tests {
             .await
             .unwrap();
         match ev_rx.recv().await {
-            Some(ConnEvent::Msg {
-                id: got,
-                msg: ClientMsg::Focus { app_id, .. },
-            }) => {
+            Some(ConnEvent::Msg { id: got, msg }) => {
                 assert_eq!(got, id);
+                let ClientMsg::Focus { app_id, .. } = *msg else {
+                    panic!("expected focus")
+                };
                 assert_eq!(app_id.as_deref(), Some("code"));
             }
             _ => panic!("expected focus"),

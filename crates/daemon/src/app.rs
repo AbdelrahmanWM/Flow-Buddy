@@ -54,8 +54,6 @@ const HOLD_MS: u64 = 800;
 const PAUSE_MS: u64 = 1500;
 /// A tip still waiting for a pause after this long is stale: dropped.
 const PAUSE_GIVE_UP_MS: u64 = 120_000;
-/// Findings this close together are about the same keys.
-const SAME_GESTURE_MS: u64 = 2000;
 
 /// Recent tips kept for snippets: this many, at most.
 const RECENT_TIPS: usize = 8;
@@ -102,6 +100,8 @@ pub struct App {
     /// (finding, context, when it came).
     holding: Vec<(Finding, ContextKind, u64)>,
     hold_ms: u64,
+    /// Today's "something new", so a tip that uses it can say so.
+    todays_lesson: Option<&'static str>,
     /// When the last key came, for `when = "pause"`.
     last_key_ms: Option<u64>,
     /// When `gv` was last typed, to tell it from reselecting by hand.
@@ -125,8 +125,8 @@ pub struct App {
     held_findings: Vec<(Finding, ContextKind)>,
     /// Personal sentences your AI wrote for each rule (`[ai] tips`).
     personal_tips: HashMap<String, String>,
-    /// Curriculum items used since the last write, by id.
-    usage: HashMap<&'static str, u64>,
+    /// Curriculum items used since the last write, by environment and id.
+    usage: HashMap<(ContextKind, &'static str), u64>,
     /// Opt-in typing accuracy, written once a minute.
     typing: crate::typing::Typing,
     typing_flushed_ms: u64,
@@ -146,6 +146,25 @@ struct Cmd {
     at_ms: u64,
     keys: u32,
     kind: CmdKind,
+    /// An operator whose motion goes backwards (`db`, `dF<char>`, `d0`).
+    backward: bool,
+}
+
+/// Whether an operator command's motion goes backwards: `db`, `d2B`,
+/// `dF,`, `dT,`, `d0`, `d^`, `dge`.
+fn backward_motion(c: &flowbuddy_core::vim::Command) -> bool {
+    let rest: Vec<char> = c
+        .keys
+        .iter()
+        .skip(1)
+        .filter_map(|k| k.plain_char())
+        .skip_while(|ch| ch.is_ascii_digit() && *ch != '0')
+        .collect();
+    match rest.as_slice() {
+        [m, ..] if "bBFT0^h".contains(*m) => true,
+        ['g', 'e' | 'E', ..] => true,
+        _ => false,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -219,6 +238,13 @@ fn flavor(kind: ContextKind) -> Flavor {
 
 /// VS Code shortcuts that move focus away from the editor (palette,
 /// sidebar, terminal panel). Until the next Esc we can't know where keys go.
+/// The time now, for the few places not handed one.
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
 fn is_vscode_ui_shortcut(key: &Key) -> bool {
     let m = key.mods;
     match key.sym {
@@ -273,6 +299,7 @@ impl App {
             last_slow: None,
             last_gv_ms: None,
             last_key_ms: None,
+            todays_lesson: None,
             holding: Vec::new(),
             hold_ms: HOLD_MS,
             recent_tips: VecDeque::new(),
@@ -472,7 +499,8 @@ impl App {
     /// Record stats and the mistake memory in `store`.
     pub fn with_store(mut self, store: flowbuddy_store::Store) -> Self {
         self.memory = Memory::new(Some(store), &self.config);
-        self.engine.set_known(self.memory.known());
+        self.engine
+            .set_known(self.memory.known(Some(self.resolved.kind), wall_ms()));
         self
     }
 
@@ -599,6 +627,20 @@ impl App {
             Some(personal) => format!("{} {personal}", f.text),
             None => f.text.clone(),
         };
+        // A tip that builds on today's lesson ties the two together.
+        let lesson = self.todays_lesson.filter(|l| {
+            flowbuddy_core::curriculum::rule_skills(f.rule_id).is_some_and(|s| s.contains(l))
+        });
+        let text = match lesson {
+            Some(_) => format!("{text} That's today's something new."),
+            None => text,
+        };
+        // Worded for where you are with it.
+        let text = flowbuddy_core::learning::adapt(
+            &text,
+            self.memory.stage(f.rule_id, ctx),
+            self.memory.unhelpful_in_a_row(f.rule_id, now_ms),
+        );
         self.show(f.rule_id, f.title, &text, f.mode == VimMode::Insert, now_ms);
         self.memory.nudged(f.rule_id, now_ms);
         self.memory
@@ -693,9 +735,13 @@ impl App {
             .as_deref()
             .and_then(config::parse_range)
             .is_some_and(|q| q.contains(self.gate(now_ms).local_minute));
+        // Wherever there's something to teach: each place has its own.
         let editing = matches!(
             self.resolved.kind,
-            ContextKind::VsCodeVim | ContextKind::TerminalVim
+            ContextKind::VsCodeVim
+                | ContextKind::TerminalVim
+                | ContextKind::ClaudeVim
+                | ContextKind::BashVi
         );
         if !self.config.learn.daily
             || self.mode == CoachingMode::Off
@@ -718,6 +764,7 @@ impl App {
         let text = flowbuddy_core::curriculum::tip_text(item);
         self.show(RULE, "Something new", &text, false, now_ms);
         self.memory.learn_shown(item.id, now_ms);
+        self.todays_lesson = Some(item.id);
     }
 
     fn nudge_rule(&self, nudge_id: &str) -> Option<&'static str> {
@@ -801,7 +848,8 @@ impl App {
         self.resolver.set_ids(app_ids(&config));
         self.coach.set_config(PolicyConfig::from(&config.coaching));
         self.memory.set_config(&config);
-        self.engine.set_known(self.memory.known());
+        self.engine
+            .set_known(self.memory.known(Some(self.resolved.kind), wall_ms()));
         let text_changed = config.text != self.config.text;
         self.config = config;
         if text_changed {
@@ -871,16 +919,16 @@ impl App {
             return self.take(&f, ctx, now_ms);
         }
         let rank = self.engine.rank_of(f.rule_id);
-        if let Some(p) = self
-            .holding
-            .iter_mut()
-            .find(|(h, _, _)| h.at_ms.abs_diff(f.at_ms) <= SAME_GESTURE_MS)
-        {
+        if let Some(p) = self.holding.iter_mut().find(|(h, _, _)| h.overlaps(&f)) {
+            // The better-ranked leads; the other stays in it as another way.
             if rank < self.engine.rank_of(p.0.rule_id) {
-                tracing::debug!(kept = f.rule_id, dropped = p.0.rule_id, "same gesture");
-                *p = (f, ctx, now_ms);
+                tracing::debug!(kept = f.rule_id, joined = p.0.rule_id, "same gesture");
+                let mut best = f;
+                best.absorb(&p.0);
+                *p = (best, ctx, now_ms);
             } else {
-                tracing::debug!(kept = p.0.rule_id, dropped = f.rule_id, "same gesture");
+                tracing::debug!(kept = p.0.rule_id, joined = f.rule_id, "same gesture");
+                p.0.absorb(&f);
             }
             return;
         }
@@ -954,6 +1002,14 @@ impl App {
         } else {
             How::Other
         };
+        if how == How::Shortcut {
+            for item in flowbuddy_core::curriculum::used_by_ui(what) {
+                *self
+                    .usage
+                    .entry((ContextKind::VsCodeVim, item.id))
+                    .or_default() += 1;
+            }
+        }
         let action = UiAction {
             what,
             how,
@@ -996,7 +1052,7 @@ impl App {
     /// need them). 0 if the operator isn't in the history.
     /// Keys for the operator that made `at_ms`'s report, and with the
     /// moves into place before it.
-    fn keys_for_operator(&self, at_ms: u64) -> (u32, u32) {
+    fn keys_for_operator(&self, at_ms: u64) -> (u32, u32, bool) {
         let mut recent = self
             .commands
             .iter()
@@ -1006,7 +1062,7 @@ impl App {
             matches!(c.kind, CmdKind::Operator | CmdKind::VisualOp)
                 && at_ms.saturating_sub(c.at_ms) <= MOTION_LEAD_MS
         }) else {
-            return (0, 0);
+            return (0, 0, false);
         };
         // A selection: everything from `v` to the operator is what a
         // better command would replace.
@@ -1015,12 +1071,12 @@ impl App {
             for c in recent {
                 keys += c.keys;
                 match c.kind {
-                    CmdKind::VisualStart => return (keys, keys),
+                    CmdKind::VisualStart => return (keys, keys, false),
                     CmdKind::Motion => {}
                     _ => break,
                 }
             }
-            return (0, 0);
+            return (0, 0, false);
         }
         let mut keys = op.keys;
         let mut next_at = op.at_ms;
@@ -1031,7 +1087,7 @@ impl App {
             keys += c.keys;
             next_at = c.at_ms;
         }
-        (keys, op.keys)
+        (keys, op.keys, op.backward)
     }
 
     /// The mappings for the current context: its editor's, else the config's.
@@ -1120,7 +1176,8 @@ impl App {
             self.memory.typing(counts, now_ms);
             let usage = std::mem::take(&mut self.usage);
             self.memory.command_uses(usage, now_ms);
-            self.engine.set_known(self.memory.known());
+            self.engine
+                .set_known(self.memory.known(Some(self.resolved.kind), now_ms));
             if let Some(r) = self.recorder.as_mut() {
                 r.flush();
             }
@@ -1187,12 +1244,15 @@ impl App {
         if step.confident
             && matches!(
                 kind,
-                ContextKind::VsCodeVim | ContextKind::TerminalVim | ContextKind::ClaudeVim
+                ContextKind::VsCodeVim
+                    | ContextKind::TerminalVim
+                    | ContextKind::ClaudeVim
+                    | ContextKind::BashVi
             )
         {
             for item in flowbuddy_core::curriculum::CURRICULUM {
-                if item.used_in(&step) {
-                    *self.usage.entry(item.id).or_default() += 1;
+                if item.applies_in(kind) && item.used_in(&step) {
+                    *self.usage.entry((kind, item.id)).or_default() += 1;
                 }
             }
         }
@@ -1234,6 +1294,7 @@ impl App {
                 at_ms: stroke.at_ms,
                 keys: motion::command_keys(c),
                 kind,
+                backward: kind == CmdKind::Operator && backward_motion(c),
             });
         }
         self.record(stroke.at_ms, |t| session::step_entry(t, &step));
@@ -1280,6 +1341,9 @@ impl App {
             self.commands.clear();
             self.typing.other();
             self.engine.set_editor_motions(new.editor.is_some());
+            // What you know here: progress is kept per environment.
+            self.engine
+                .set_known(self.memory.known(Some(new.kind), now_ms));
             let (context, editor) = (new.kind, new.editor.is_some());
             self.record(now_ms, |t| Some(Entry::Context { t, context, editor }));
         }
@@ -1349,7 +1413,7 @@ impl App {
                     self.update_context(None, now_ms);
                 }
             }
-            ConnEvent::Msg { id, msg } => self.on_msg(id, msg, now_ms),
+            ConnEvent::Msg { id, msg } => self.on_msg(id, *msg, now_ms),
         }
     }
 
@@ -1426,6 +1490,11 @@ impl App {
                     (CtxEvent::Fg, Some("history")) => Some(CommandShape::History),
                     _ => None,
                 };
+                if let Some(shape) = shape.filter(|_| self.capturing(now_ms)) {
+                    for item in flowbuddy_core::curriculum::used_by_shape(shape) {
+                        *self.usage.entry((ContextKind::Shell, item.id)).or_default() += 1;
+                    }
+                }
                 if let Some(shape) = shape.or(named).filter(|_| self.capturing(now_ms)) {
                     let ev = flowbuddy_core::rules::shell::ShellEvent {
                         shape,
@@ -1563,10 +1632,11 @@ impl App {
             // From an editor that isn't the current context.
             ClientMsg::Motion(_) => {}
             ClientMsg::Operator(report) if self.resolved.editor == Some(conn) => {
-                let (keys_used, op_keys) = self.keys_for_operator(report.at_ms);
+                let (keys_used, op_keys, backward) = self.keys_for_operator(report.at_ms);
                 let ev = OperatorEvent {
                     keys_used,
                     op_keys,
+                    backward,
                     report,
                 };
                 self.record(now_ms, |t| {
@@ -1575,6 +1645,7 @@ impl App {
                         report: ev.report.clone(),
                         keys_used: ev.keys_used,
                         op_keys: ev.op_keys,
+                        backward: ev.backward,
                     })
                 });
                 let best = motion::best_for_edit(&ev, self.engine.known());
@@ -1659,6 +1730,25 @@ impl App {
                 id,
                 data: json!([]),
             },
+            Command::KnowItems { items, known } => {
+                let unknown: Vec<&String> = items
+                    .iter()
+                    .filter(|i| flowbuddy_core::curriculum::find(i).is_none())
+                    .collect();
+                if !unknown.is_empty() {
+                    return ServerMsg::Error {
+                        id,
+                        code: ErrorCode::BadRequest,
+                        message: format!(
+                            "not curriculum items: {unknown:?} (see flowbuddy learn --list)"
+                        ),
+                    };
+                }
+                self.memory.set_known(&items, known);
+                self.engine
+                    .set_known(self.memory.known(Some(self.resolved.kind), now_ms));
+                ServerMsg::Ack { id }
+            }
             Command::RecentTips { limit } => {
                 let limit = limit.unwrap_or(10).clamp(1, 50) as usize;
                 let tips: Vec<flowbuddy_core::ipc::RecentTip> = self
@@ -1825,7 +1915,13 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn send(app: &mut App, id: ConnId, msg: ClientMsg, now_ms: u64) {
-        app.on_conn(ConnEvent::Msg { id, msg }, now_ms);
+        app.on_conn(
+            ConnEvent::Msg {
+                id,
+                msg: Box::new(msg),
+            },
+            now_ms,
+        );
     }
 
     fn hello(kind: ClientKind) -> ClientMsg {
@@ -2284,7 +2380,7 @@ pub(crate) mod tests {
         type_at(
             &mut app,
             "<Esc>isecretpassword hunter2<BS><BS><BS><BS><BS><BS><BS><Esc>\
-             :e secretfile.txt<CR>/secretsearch<CR>jjjjjjjxxxxxdddddd:w<CR>:q<CR>w",
+             :e secretfile.txt<CR>/secretsearch<CR>jjjjjjjjjjjjxxxxxdddddd:w<CR>:q<CR>w",
             1_000,
         );
         focus(&mut app, "org.gnome.Terminal", 100);
@@ -3053,10 +3149,15 @@ pub(crate) mod tests {
         app.tick(at(20, 16) + 120_000);
         let learned = app.memory.store().unwrap().learn_items().unwrap();
         assert!(learned[0].learned_at.is_some(), "{learned:?}");
-        // The next day, the next thing.
+        // A habit this week: walking along lines with l. The next day's
+        // lesson comes from it (`f` is what that tip teaches next), not
+        // from the curriculum's order.
+        type_at(&mut app, "<Esc>llllllll<Esc>", at(20, 17));
+        app.tick(at(20, 17) + 61_000);
+        nudges(&mut ext);
         app.tick(at(21, 10));
         let n = nudges(&mut ext);
-        assert!(n[0].text.starts_with("`0`, `^` and `$`"), "{}", n[0].text);
+        assert!(n[0].text.starts_with("`f<char>` and `;`"), "{}", n[0].text);
     }
 
     #[test]
@@ -3459,6 +3560,7 @@ pub(crate) mod tests {
             shape: flowbuddy_core::rule::Shape::fixed("x"),
             mode: VimMode::Normal,
             at_ms,
+            start_ms: at_ms,
         };
         // The dot-repeat tip, then the macro tip a second later: the macro
         // ranks higher and is the one shown.
@@ -3503,7 +3605,7 @@ pub(crate) mod tests {
             op: Operator::Delete,
             at_ms: 2_200,
             objects: vec![],
-            range: Some(OperatorRange {
+            range: Some(Box::new(OperatorRange {
                 linewise: true,
                 lines: 10,
                 facts: flowbuddy_core::editor::MotionFacts {
@@ -3511,7 +3613,7 @@ pub(crate) mod tests {
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
+            })),
         };
         send(&mut app, 3, ClientMsg::Operator(report), 2_250);
         let n = nudges(&mut ext);
@@ -3588,5 +3690,55 @@ pub(crate) mod tests {
         app.tick(4_000);
         assert!(!app.on_record(None, 4_000).unwrap().recording);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn progress_is_kept_per_environment() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let _ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>ciwx<Esc>ciwx<Esc>ciwx<Esc>", 1_000_000);
+        app.tick(1_000_000 + 61_000);
+        let now = 1_000_000 + 62_000;
+        assert!(
+            app.memory
+                .known(Some(ContextKind::VsCodeVim), now)
+                .knows("ciw")
+        );
+        assert!(
+            !app.memory
+                .known(Some(ContextKind::TerminalVim), now)
+                .knows("ciw")
+        );
+        assert!(app.memory.known(None, now).knows("ciw"));
+    }
+
+    #[test]
+    fn saying_what_you_know() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let mut cli = connect(&mut app, 1);
+        let know = |app: &mut App, items: &[&str], known| {
+            send(
+                app,
+                1,
+                ClientMsg::Command {
+                    id: Some(1),
+                    command: Command::KnowItems {
+                        items: items.iter().map(|s| s.to_string()).collect(),
+                        known,
+                    },
+                },
+                1_000,
+            )
+        };
+        know(&mut app, &["ci-paren"], Some(true));
+        assert!(app.engine.known().knows("ciw"));
+        know(&mut app, &["ciw"], Some(false));
+        assert!(!app.engine.known().knows("ciw"));
+        know(&mut app, &["ciw", "ci-paren"], None);
+        assert!(!app.engine.known().knows("ci-paren"));
+        while cli.try_recv().is_ok() {}
+        know(&mut app, &["nonsense"], Some(true));
+        assert!(matches!(cli.try_recv().unwrap(), ServerMsg::Error { .. }));
     }
 }

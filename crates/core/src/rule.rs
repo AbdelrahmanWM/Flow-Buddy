@@ -59,6 +59,35 @@ pub struct Finding {
     pub shape: Shape,
     pub mode: VimMode,
     pub at_ms: u64,
+    /// When the keys it's about began; `at_ms` is when they ended. Tips
+    /// whose spans overlap are about the same keys.
+    pub start_ms: u64,
+}
+
+/// Keys this close before or after a tip's span still belong to the same
+/// gesture (a pause to think between `xxxx` and `i`).
+pub const GESTURE_SLACK_MS: u64 = 1500;
+/// A runner-up joins the winning tip only if both fit in this.
+const MAX_JOINED: usize = 280;
+
+impl Finding {
+    /// Whether this and `other` are about the same keys: their spans
+    /// overlap, give or take [`GESTURE_SLACK_MS`].
+    pub fn overlaps(&self, other: &Finding) -> bool {
+        let (a0, a1) = (self.start_ms.min(self.at_ms), self.at_ms);
+        let (b0, b1) = (other.start_ms.min(other.at_ms), other.at_ms);
+        a0 <= b1 + GESTURE_SLACK_MS && b0 <= a1 + GESTURE_SLACK_MS
+    }
+
+    /// Take `other` in as another way to do it, if both still read well
+    /// together, and cover both spans.
+    pub fn absorb(&mut self, other: &Finding) {
+        if self.text.len() + other.text.len() < MAX_JOINED && !self.text.contains(" Also: ") {
+            self.text = format!("{} Also: {}", self.text, other.text);
+        }
+        self.start_ms = self.start_ms.min(other.start_ms);
+        self.at_ms = self.at_ms.max(other.at_ms);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,4 +150,35 @@ pub trait Rule: Send {
 
     /// Forget in-progress state (context changed, mode uncertain).
     fn reset(&mut self);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn f(rule_id: &'static str, start_ms: u64, at_ms: u64) -> Finding {
+        Finding {
+            rule_id,
+            title: "t",
+            text: format!("{rule_id} tip."),
+            shape: Shape::fixed("x"),
+            mode: VimMode::Normal,
+            at_ms,
+            start_ms,
+        }
+    }
+
+    #[test]
+    fn spans_tell_gestures_apart() {
+        // A long j-streak and a tip at its end: the same keys.
+        assert!(f("a", 0, 9_000).overlaps(&f("b", 8_500, 8_600)));
+        // Ten seconds later, other keys.
+        assert!(!f("a", 0, 1_000).overlaps(&f("b", 11_000, 11_500)));
+        let mut best = f("a", 1_000, 2_000);
+        best.absorb(&f("b", 500, 1_800));
+        assert_eq!(best.text, "a tip. Also: b tip.");
+        assert_eq!((best.start_ms, best.at_ms), (500, 2_000));
+        best.absorb(&f("c", 600, 700));
+        assert!(!best.text.contains("c tip"), "one alternative is enough");
+    }
 }

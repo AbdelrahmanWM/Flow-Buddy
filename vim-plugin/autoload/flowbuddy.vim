@@ -543,6 +543,49 @@ function! flowbuddy#range_facts(text, c1, c2) abort
   if words
     let out.words = words
   endif
+  " W and E: WORDs are anything between blanks.
+  let bcls = map(copy(cls), {_, c -> c == 0 ? 0 : 1})
+  let bstarts = filter(range(n), {_, j -> bcls[j] && (j == 0 || !bcls[j - 1])})
+  let bends = filter(range(n), {_, j -> bcls[j] && (j == n - 1 || !bcls[j + 1])})
+  if after >= n
+    let out.bigwords = len(filter(copy(bstarts), {_, j -> j > i1})) + 1
+  elseif index(bstarts, after) >= 0
+    let out.bigwords = len(filter(copy(bstarts), {_, j -> j > i1 && j <= after}))
+  endif
+  if index(bends, i2) >= 0
+    let k = len(filter(copy(bends), {_, j -> j > i1 && j <= i2}))
+    if k
+      let out.bigword_ends = k
+    endif
+  endif
+  " % : from a bracket to its match.
+  let pair = {'(': ')', '[': ']', '{': '}'}
+  let first = chars[i1][1]
+  if has_key(pair, first) && chars[i2][1] ==# pair[first]
+        \ && s:balanced(join(map(chars[i1 : i2], {_, c -> c[1]}), ''), first, pair[first])
+    let out.bracket = v:true
+  endif
+  " Backward from just after the range (where the cursor was for db, dF).
+  if after < n
+    let back = {}
+    if index(starts, i1) >= 0
+      let back.words = len(filter(copy(starts), {_, j -> j >= i1 && j < after}))
+    endif
+    if index(bstarts, i1) >= 0
+      let back.bigwords = len(filter(copy(bstarts), {_, j -> j >= i1 && j < after}))
+    endif
+    let back.find_hops = len(filter(range(i1, after - 1), {_, j -> chars[j][1] ==# first}))
+    if i1 > 0
+      let prev = chars[i1 - 1][1]
+      let k = len(filter(range(i1 - 1, after - 2), {_, j -> chars[j][1] ==# prev}))
+      if k
+        let back.till_hops = k
+      endif
+    endif
+    let back.line_start = i1 == 0 ? v:true : v:false
+    let back.first_nonblank = i1 == match(a:text, '\S') ? v:true : v:false
+    let out.back = back
+  endif
   return out
 endfunction
 
@@ -751,6 +794,35 @@ function! s:facts(start, end, jump) abort
     endif
     let f.file_start = a:end[0] == 1 ? v:true : v:false
     let f.file_end = a:end[0] == line('$') ? v:true : v:false
+    " How far the next few blank-line boundaries are, for }} then 2j.
+    let para = lines > 0 ? '}' : '{'
+    call cursor(a:start[0], a:start[1])
+    let bounds = []
+    let prev = a:start[0]
+    for _ in range(9)
+      if s:over_budget()
+        break
+      endif
+      execute 'keepjumps normal! ' . para
+      if line('.') == prev
+        break
+      endif
+      let prev = line('.')
+      call add(bounds, abs(prev - a:start[0]))
+    endfor
+    if !empty(bounds)
+      let f.paragraph_lines = bounds
+    endif
+    let n = s:line_hops(a:start, a:end[0], lines > 0 ? ']]' : '[[')
+    if n
+      let f.section_hops = n
+    endif
+    if &wrap
+      let n = s:hops(a:start, a:end, lines > 0 ? 'gj' : 'gk', 0)
+      if n
+        let f.screen_line_hops = n
+      endif
+    endif
   endif
 
   " Within the end line, from where a vertical move would leave the cursor.
@@ -793,6 +865,28 @@ function! s:facts(start, end, jump) abort
   endif
 
   " Anywhere.
+  let back = lines < 0 || (lines == 0 && a:end[1] < a:start[1])
+  if s:hops(a:start, a:end, back ? '[(' : '])', 0) == 1
+    let f.unmatched_paren = v:true
+  endif
+  let n = s:hops(a:start, a:end, back ? '(' : ')', 0)
+  if n
+    let f.sentence_hops = n
+  endif
+  " / and the first few letters at the end: how many make it the first
+  " match. Only the count is sent.
+  let rest = strpart(getline(a:end[0]), a:end[1] - 1)
+  for k in range(1, 8)
+    if k > strchars(rest) || s:over_budget()
+      break
+    endif
+    call cursor(a:start[0], a:start[1])
+    let pat = '\V' . escape(strcharpart(rest, 0, k), '\')
+    if searchpos(pat, back ? 'bnW' : 'nW') == a:end
+      let f.search_chars = k
+      break
+    endif
+  endfor
   let start_text = getline(a:start[0])
   if s:char_at(start_text, a:start[1]) =~# '[][(){}]'
     call cursor(a:start[0], a:start[1])

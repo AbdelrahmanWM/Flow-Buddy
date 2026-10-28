@@ -3,55 +3,7 @@
 
 use std::io::{BufRead, Write};
 
-/// Set `key = value` (TOML already, e.g. `"active"` or `true`) in
-/// `[section]` of `text`: replace the key's line, keeping a trailing
-/// comment, or add it to the section, or add the section.
-pub fn set_key(text: &str, section: &str, key: &str, value: &str) -> String {
-    let mut lines: Vec<String> = text.lines().map(String::from).collect();
-    let header = format!("[{section}]");
-    let is_header = |l: &str| l.trim_start().starts_with('[');
-    let Some(start) = lines.iter().position(|l| l.trim() == header) else {
-        let mut out = text.trim_end().to_string();
-        if !out.is_empty() {
-            out.push_str("\n\n");
-        }
-        out.push_str(&format!("{header}\n{key} = {value}\n"));
-        return out;
-    };
-    let end = lines[start + 1..]
-        .iter()
-        .position(|l| is_header(l))
-        .map_or(lines.len(), |i| start + 1 + i);
-    let found = (start + 1..end).find(|&i| {
-        let l = lines[i].trim_start();
-        l.strip_prefix(key)
-            .is_some_and(|rest| rest.trim_start().starts_with('='))
-    });
-    match found {
-        Some(i) => {
-            // A trailing comment, with the spaces before it.
-            let comment = lines[i]
-                .find(" #")
-                .map(|c| {
-                    let start = lines[i][..c].trim_end().len();
-                    lines[i][start..].to_string()
-                })
-                .unwrap_or_default();
-            lines[i] = format!("{key} = {value}{comment}");
-        }
-        None => {
-            // After the section's last line that isn't blank.
-            let at = (start + 1..end)
-                .rev()
-                .find(|&i| !lines[i].trim().is_empty())
-                .map_or(start + 1, |i| i + 1);
-            lines.insert(at, format!("{key} = {value}"));
-        }
-    }
-    let mut out = lines.join("\n");
-    out.push('\n');
-    out
-}
+pub use flowbuddy_core::settings::set_key;
 
 /// One question: what it is, the choices as (value, what it means), and
 /// the current value's index.

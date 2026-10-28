@@ -1,5 +1,6 @@
 mod client;
 mod coach;
+mod config_cmd;
 mod doctor;
 mod report;
 mod review;
@@ -19,6 +20,11 @@ use crate::client::Client;
 struct Args {
     #[command(subcommand)]
     command: Cmd,
+    /// Print JSON instead of text, for scripts and the settings window
+    /// (doctor, learn, learn --report, learn --coverage, summary, rules,
+    /// config list). See docs/cli-json.md.
+    #[arg(long, global = true)]
+    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -145,6 +151,12 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<MemoryCmd>,
     },
+    /// Every setting: list them, or get, set or reset one
+    /// (`flowbuddy config set learn.daily false`).
+    Config {
+        #[command(subcommand)]
+        action: Option<config_cmd::ConfigCmd>,
+    },
     /// List rules, or enable/disable/mute one.
     Rules {
         #[command(subcommand)]
@@ -256,11 +268,29 @@ enum CtxCmd {
 
 fn main() {
     let args = Args::parse();
+    let json = args.json;
+    if json && !takes_json(&args.command) {
+        eprintln!("flowbuddy: --json works with doctor, learn, summary, rules and config list");
+        std::process::exit(2);
+    }
     let result = match args.command {
         Cmd::Status { watch } => status(watch),
-        Cmd::Rules { action } => rules(action.unwrap_or(RulesCmd::List)),
+        Cmd::Rules { action } => rules(action.unwrap_or(RulesCmd::List), json),
+        Cmd::Config { action } => config_cmd::run(
+            match action {
+                Some(config_cmd::ConfigCmd::List { json: j, basic }) => {
+                    config_cmd::ConfigCmd::List {
+                        json: j || json,
+                        basic,
+                    }
+                }
+                Some(other) => other,
+                None => config_cmd::ConfigCmd::List { json, basic: !json },
+            },
+            &flowbuddy_core::paths::config_file(),
+        ),
         Cmd::Mode { mode } => set_mode(mode),
-        Cmd::Summary { week } => summary(week),
+        Cmd::Summary { week } => summary(week, json),
         Cmd::Next => next(),
         Cmd::Learn {
             know,
@@ -272,7 +302,10 @@ fn main() {
             report: learn_report,
         } => {
             if learn_report {
-                learn_report_cmd()
+                learn_report_cmd(json)
+            } else if coverage && json {
+                print_json(&coverage_json());
+                Ok(())
             } else if coverage {
                 print!("{}", learn_coverage());
                 Ok(())
@@ -289,7 +322,7 @@ fn main() {
                 }
                 Ok(())
             } else if know.is_empty() && forget.is_empty() && reset.is_empty() {
-                learn()
+                learn(json)
             } else {
                 Client::connect(ClientKind::Cli).and_then(|mut c| {
                     for (items, known) in [(know, Some(true)), (forget, Some(false)), (reset, None)]
@@ -311,7 +344,18 @@ fn main() {
                 .map_err(|e| format!("{e:#}"))
                 .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()));
             let checks = doctor::checks(&doctor::Env::gather(status));
-            print!("{}", doctor::report(&checks));
+            if json {
+                print_json(&serde_json::json!({
+                    "version": 1,
+                    "ok": checks.iter().all(|c| c.ok),
+                    "checks": checks
+                        .iter()
+                        .map(|c| serde_json::json!({"ok": c.ok, "what": c.what, "fix": c.fix}))
+                        .collect::<Vec<_>>(),
+                }));
+            } else {
+                print!("{}", doctor::report(&checks));
+            }
             if checks.iter().any(|c| !c.ok) {
                 std::process::exit(1);
             }
@@ -586,9 +630,9 @@ fn open_db() -> anyhow::Result<Option<flowbuddy_store::Store>> {
     Ok(Some(store))
 }
 
-fn summary(week: bool) -> anyhow::Result<()> {
+fn summary(week: bool, json: bool) -> anyhow::Result<()> {
     let Some(store) = open_db()? else {
-        println!("Nothing recorded yet. Is flowbuddyd running? Try `flowbuddy status`.");
+        nothing_yet(json);
         return Ok(());
     };
     let period = if week {
@@ -596,7 +640,12 @@ fn summary(week: bool) -> anyhow::Result<()> {
     } else {
         report::Period::Today
     };
-    print!("{}", report::summary(&store, now_ms(), period)?);
+    let text = report::summary(&store, now_ms(), period)?;
+    if json {
+        print_json(&serde_json::json!({ "version": 1, "text": text }));
+    } else {
+        print!("{text}");
+    }
     Ok(())
 }
 
@@ -942,6 +991,58 @@ fn ssh_config(host: &str, socket: &std::path::Path) -> String {
     )
 }
 
+/// No database yet: the daemon hasn't run.
+fn nothing_yet(json: bool) {
+    if json {
+        print_json(&serde_json::json!({ "version": 1, "nothing_yet": true }));
+    } else {
+        println!("Nothing recorded yet. Is flowbuddyd running? Try `flowbuddy status`.");
+    }
+}
+
+fn print_json(v: &serde_json::Value) {
+    println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
+}
+
+/// Which commands print `--json`.
+fn takes_json(cmd: &Cmd) -> bool {
+    match cmd {
+        Cmd::Doctor | Cmd::Summary { .. } | Cmd::Rules { action: None } => true,
+        Cmd::Rules { action: Some(a) } => matches!(a, RulesCmd::List),
+        Cmd::Learn {
+            know,
+            forget,
+            reset,
+            list,
+            audit,
+            ..
+        } => know.is_empty() && forget.is_empty() && reset.is_empty() && !list && !audit,
+        Cmd::Config { action } => matches!(action, None | Some(config_cmd::ConfigCmd::List { .. })),
+        _ => false,
+    }
+}
+
+fn coverage_json() -> serde_json::Value {
+    use flowbuddy_core::inventory;
+    let modes: serde_json::Map<String, serde_json::Value> = inventory::coverage()
+        .into_iter()
+        .map(|(mode, t)| {
+            (
+                mode.to_string(),
+                serde_json::json!({
+                    "commands": t.commands, "coached": t.coached, "taught": t.taught,
+                    "starting": t.starting, "skipped": t.skipped, "missing": t.missing,
+                }),
+            )
+        })
+        .collect();
+    let missing: Vec<serde_json::Value> = inventory::gaps()
+        .iter()
+        .map(|e| serde_json::json!({"mode": e.mode, "keys": e.keys, "what": e.what}))
+        .collect();
+    serde_json::json!({ "version": 1, "modes": modes, "missing": missing })
+}
+
 fn learn_coverage() -> String {
     use flowbuddy_core::inventory;
     let mut out = String::from("Vim's command index (:help index)\n\n");
@@ -972,10 +1073,13 @@ fn learn_coverage() -> String {
     out
 }
 
-fn learn_report_cmd() -> anyhow::Result<()> {
+fn learn_report_cmd(json: bool) -> anyhow::Result<()> {
     match open_db()? {
+        Some(store) if json => print_json(
+            &serde_json::json!({ "version": 1, "text": report::learn_report(&store, now_ms())? }),
+        ),
         Some(store) => print!("{}", report::learn_report(&store, now_ms())?),
-        None => println!("Nothing recorded yet."),
+        None => nothing_yet(json),
     }
     Ok(())
 }
@@ -988,18 +1092,20 @@ fn learn_audit() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn learn() -> anyhow::Result<()> {
+fn learn(json: bool) -> anyhow::Result<()> {
     match open_db()? {
         Some(store) => {
             let config =
                 flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
                     .unwrap_or_default();
-            print!(
-                "{}",
-                report::learn(&store, now_ms(), config.learn.level.known_levels())?
-            )
+            let levels = config.learn.level.known_levels();
+            if json {
+                print_json(&report::learn_json(&store, now_ms(), levels)?);
+            } else {
+                print!("{}", report::learn(&store, now_ms(), levels)?)
+            }
         }
-        None => println!("Nothing recorded yet. Is flowbuddyd running? Try `flowbuddy status`."),
+        None => nothing_yet(json),
     }
     Ok(())
 }
@@ -1159,11 +1265,15 @@ fn parse_duration(s: &str, now: chrono::DateTime<chrono::Local>) -> Option<u64> 
     (num.is_empty() && total > 0).then_some(total)
 }
 
-fn rules(cmd: RulesCmd) -> anyhow::Result<()> {
+fn rules(cmd: RulesCmd, json: bool) -> anyhow::Result<()> {
     let mut client = Client::connect(ClientKind::Cli)?;
     let (rule_id, action) = match cmd {
         RulesCmd::List => {
             let infos: Vec<RuleInfo> = serde_json::from_value(client.query(Command::Rules)?)?;
+            if json {
+                print_json(&serde_json::json!({ "version": 1, "rules": infos }));
+                return Ok(());
+            }
             for r in infos {
                 let state = match (r.enabled, r.muted) {
                     (false, _) => "disabled",

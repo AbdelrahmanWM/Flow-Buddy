@@ -18,6 +18,7 @@ pub mod policy;
 pub mod rule;
 pub mod rules;
 pub mod session;
+pub mod settings;
 pub mod support;
 pub mod text;
 pub mod tipfilter;

@@ -1,10 +1,10 @@
 // A nudge card at the top centre of the screen, or, kept, in the top-right
-// corner until you hide it from the menu.
+// corner until you close it (its × button, or the menu).
 //
-// It is never reactive, so clicks pass through to the window below, and it
-// never takes keyboard focus: it can't interrupt typing. A shown card fades
-// out after the nudge's ttl. What the commands do is in the top-bar menu,
-// and a kept card lists them too.
+// It never takes keyboard focus, so it can't interrupt typing, and clicks
+// pass through it to the window below: only a kept card's × takes a click.
+// A shown card fades out after the nudge's ttl. What the commands do is in
+// the top-bar menu, and a kept card lists them too.
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
@@ -18,8 +18,9 @@ const FADE_MS = 250;
 const GAP_PX = 12;
 
 export class Card {
-    // `kept`: stays until hidden, in the corner, with the explanation.
-    constructor({kept = false} = {}) {
+    // `kept`: stays until hidden, in the corner, with the explanation and a
+    // close button that calls `onClose`.
+    constructor({kept = false, onClose = null} = {}) {
         this._kept = kept;
         this._up = false;
         this._hideId = 0;
@@ -31,12 +32,27 @@ export class Card {
             opacity: 0,
             visible: false,
         });
-        this._title = new St.Label({style_class: 'flowbuddy-card-title'});
+        this._title = new St.Label({style_class: 'flowbuddy-card-title', x_expand: true});
         this._text = new St.Label({style_class: 'flowbuddy-card-text'});
         this._text.clutter_text.line_wrap = true;
         this._explain = new St.Label({style_class: 'flowbuddy-card-explain', visible: kept});
         this._explain.clutter_text.line_wrap = true;
-        this._actor.add_child(this._title);
+        if (kept) {
+            const header = new St.BoxLayout({x_expand: true});
+            const close = new St.Button({
+                style_class: 'flowbuddy-card-close',
+                child: new St.Icon({icon_name: 'window-close-symbolic', icon_size: 14}),
+                can_focus: false,
+                y_align: Clutter.ActorAlign.START,
+                accessible_name: 'Stop keeping this tip on screen',
+            });
+            close.connect('clicked', () => onClose?.());
+            header.add_child(this._title);
+            header.add_child(close);
+            this._actor.add_child(header);
+        } else {
+            this._actor.add_child(this._title);
+        }
         this._actor.add_child(this._text);
         this._actor.add_child(this._explain);
         Main.layoutManager.uiGroup.add_child(this._actor);

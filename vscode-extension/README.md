@@ -76,3 +76,7 @@ gjs vscode-extension/test/facts.test.js
 ```
 
 The tests run `facts.js` on small hand-written buffers. No node needed.
+
+## Settings and tools
+
+In the Command Palette: **Flow Buddy: Settings…** (the basics, then everything else and each rule), **Check setup**, **Progress**, **Today** and **Recent tips**. They run the `flowbuddy` command, so it needs to be installed (`scripts/install.sh`).

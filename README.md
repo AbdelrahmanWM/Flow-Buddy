@@ -144,7 +144,9 @@ flowbuddy record start|stop       # record what the rules see (nothing typed); `
 flowbuddy record tune             # what each rule's threshold would give over your recordings, and what you marked unwanted
 ```
 
-Settings live in `~/.config/flowbuddy/config.toml` and are reloaded automatically:
+On GNOME, **Settings…** in Flow Buddy's top-bar menu (or the Extensions app) opens a window with the basics first, every other setting under Advanced, each rule on its own, and the terminal's tools as buttons: check setup, progress, today's and this week's summary, whether tips help, and exporting or deleting what Flow Buddy remembers.
+
+Settings live in `~/.config/flowbuddy/config.toml` and are reloaded automatically. You don't have to edit the file: `flowbuddy config` shows the basics, `flowbuddy config list` every setting with what it does, and `flowbuddy config set coaching.quiet_hours 22:00-08:00` changes one (it checks the value, and keeps your comments). `flowbuddy config reset <key>` puts one back. The file looks like this:
 
 ```toml
 [coaching]

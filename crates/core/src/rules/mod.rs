@@ -2,6 +2,7 @@
 
 pub mod bash;
 pub mod edit;
+pub mod mistake;
 pub mod repeat;
 pub mod shell;
 pub mod vim;
@@ -31,6 +32,7 @@ pub fn all() -> Vec<Box<dyn Rule>> {
     let mut rules = vim::all();
     rules.extend(bash::all());
     rules.extend(edit::all());
+    rules.extend(mistake::all());
     rules.extend(shell::all());
     rules.extend(vscode::all());
     rules.extend(crate::motion::all());

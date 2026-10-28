@@ -713,8 +713,9 @@ fn operator(op: char, rest: &[Key]) -> Parse {
     let Some((&m, after)) = rest.split_first() else {
         return pending;
     };
+    // `ciq` isn't a command: Vim beeps and stays in Normal mode.
     let done = Parse::Complete {
-        enters: (op == 'c').then_some(VimMode::Insert),
+        enters: (op == 'c' && target_ok(op, rest)).then_some(VimMode::Insert),
     };
     match m.plain_char() {
         Some('i' | 'a' | 'f' | 't' | 'F' | 'T' | '\'' | '`' | 'g') if after.is_empty() => pending,
@@ -722,6 +723,41 @@ fn operator(op: char, rest: &[Key]) -> Parse {
             enters: Some(VimMode::Cmdline),
         },
         _ => done,
+    }
+}
+
+/// Keys that are a motion on their own after an operator.
+const MOTIONS: &str = "wWbBeEhjkl0^$(){}G;,nN*#%HML|_+- ";
+/// Motions that take one more key: a character, a mark, or a `g`/`[`/`]`
+/// motion.
+const MOTIONS_WITH_ONE: &str = "fFtT'`";
+/// Text objects, after `i` or `a`.
+const OBJECTS: &str = "wWsp()b[]{}B<>t\"'`";
+/// `g` motions an operator takes.
+const G_MOTIONS: &str = "geEjk_0^$mMonNg";
+/// `[` and `]` motions an operator takes.
+const BRACKET_MOTIONS: &str = "[](){}mMcs*/'`z";
+
+/// Whether `rest` (what follows operator `op`, after any count and forced
+/// `v`/`V`) is something Vim takes: a motion, a text object, the operator
+/// doubled (`dd`), or the surround plugin's `ds`/`cs`.
+pub fn target_ok(op: char, rest: &[Key]) -> bool {
+    let Some(first) = rest.first() else {
+        return true;
+    };
+    let Some(c) = first.plain_char() else {
+        // Enter, Backspace, arrows: motions too.
+        return true;
+    };
+    let second = rest.get(1).and_then(|k| k.plain_char());
+    match c {
+        _ if c == op => true,
+        'i' | 'a' => second.is_none_or(|o| OBJECTS.contains(o)),
+        'g' => second.is_none_or(|g| G_MOTIONS.contains(g)),
+        '[' | ']' => second.is_none_or(|b| BRACKET_MOTIONS.contains(b)),
+        's' | 'S' if matches!(op, 'd' | 'c' | 'y') => true,
+        '/' | '?' => true,
+        _ => MOTIONS.contains(c) || MOTIONS_WITH_ONE.contains(c),
     }
 }
 

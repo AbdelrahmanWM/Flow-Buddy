@@ -2201,6 +2201,7 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("vim.find-back", &["find-back"]),
     ("vim.select-all", &["operator"]),
     ("vim.buffer-walk", &["buffers"]),
+    ("mistake.no-command", &[]),
     ("vim.change-matches", &["cgn", "substitute-all"]),
     (
         "vim.shorthand",

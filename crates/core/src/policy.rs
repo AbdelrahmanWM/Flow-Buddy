@@ -150,6 +150,22 @@ impl Coach {
         if facts.muted || (facts.stage == Stage::Mastered && !facts.check_in) {
             return None;
         }
+        // A mistake is worth knowing now, while you're stuck: right away in
+        // balanced mode too, once per rule per cooldown.
+        if finding.rule_id.starts_with("mistake.")
+            && matches!(gate.mode, CoachingMode::Active | CoachingMode::Balanced)
+            && self.open(gate)
+        {
+            let cooled = self
+                .last_per_rule
+                .get(finding.rule_id)
+                .is_none_or(|&t| now_ms.saturating_sub(t) >= self.cfg.cooldown_ms);
+            if !cooled {
+                return None;
+            }
+            self.last_per_rule.insert(finding.rule_id, now_ms);
+            return Some(finding.clone());
+        }
         match gate.mode {
             CoachingMode::Active if self.open(gate) => {
                 self.recent.retain(|&t| now_ms.saturating_sub(t) < HOUR_MS);
@@ -270,6 +286,31 @@ mod tests {
         assert!(
             c.on_finding(&finding("a"), NEW, &g, 11 * MINUTE_MS)
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn mistakes_come_right_away_in_balanced_mode_too() {
+        let mut c = Coach::new(cfg());
+        let g = gate(CoachingMode::Balanced);
+        assert!(
+            c.on_finding(&finding("vim.repeat-jk"), NEW, &g, 0)
+                .is_none(),
+            "batched"
+        );
+        assert!(
+            c.on_finding(&finding("mistake.no-command"), NEW, &g, 0)
+                .is_some()
+        );
+        assert!(
+            c.on_finding(&finding("mistake.no-command"), NEW, &g, MINUTE_MS)
+                .is_none(),
+            "cooling down"
+        );
+        let quiet = gate(CoachingMode::Passive);
+        assert!(
+            c.on_finding(&finding("mistake.no-command"), NEW, &quiet, HOUR_MS)
+                .is_none()
         );
     }
 

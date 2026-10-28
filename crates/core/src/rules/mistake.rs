@@ -343,8 +343,142 @@ impl Rule for UndoneLookAlike {
     }
 }
 
+/// Keys meant as text that went in as commands, or in capitals: noticed
+/// when you undo them. Only how many and how fast is kept, never the keys.
+/// One instance reports text typed as commands, the other Caps Lock.
+#[derive(Default)]
+pub struct WrongMode {
+    caps: bool,
+    /// The run of single-letter commands typed at typing speed: when the
+    /// last came, how many, how many different, how many were H/J/K/L.
+    run: Vec<(u64, char)>,
+    /// The run just ended, waiting for an undo: (letters, distinct,
+    /// capital moves, when it ended).
+    ended: Option<(usize, usize, usize, u64)>,
+}
+
+impl WrongMode {
+    const ID_TYPING: &'static str = "mistake.normal-typing";
+    const ID_CAPS: &'static str = "mistake.caps-lock";
+    /// Keys this close are typing, not commands one by one.
+    const TYPING_GAP_MS: u64 = 250;
+    /// The undo comes this soon after.
+    const UNDO_MS: u64 = 8_000;
+
+    fn end_run(&mut self) {
+        if self.run.len() >= 3 {
+            let mut distinct: Vec<char> = self.run.iter().map(|(_, c)| *c).collect();
+            distinct.sort_unstable();
+            distinct.dedup();
+            let caps = self
+                .run
+                .iter()
+                .filter(|(_, c)| matches!(c, 'H' | 'J' | 'K' | 'L'))
+                .count();
+            let last = self.run.last().map_or(0, |(at, _)| *at);
+            self.ended = Some((self.run.len(), distinct.len(), caps, last));
+        }
+        self.run.clear();
+    }
+}
+
+impl Rule for WrongMode {
+    fn id(&self) -> &'static str {
+        if self.caps {
+            Self::ID_CAPS
+        } else {
+            Self::ID_TYPING
+        }
+    }
+
+    fn description(&self) -> &'static str {
+        if self.caps {
+            "Commands in capitals (J, K) where lower case was meant, undone: Caps Lock on?"
+        } else {
+            "Typing text in Normal mode by accident, then undoing it"
+        }
+    }
+
+    fn title(&self) -> &'static str {
+        if self.caps {
+            "Caps Lock on?"
+        } else {
+            "That went in as commands"
+        }
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        let Some(c) = command(step) else {
+            // Typing after an accidental `o` or `i`: the run is over.
+            if !self.run.is_empty() {
+                self.end_run();
+            }
+            return;
+        };
+        if c.is("u") {
+            self.end_run();
+            if let Some((n, distinct, caps, at)) = self.ended.take()
+                && step.at_ms.saturating_sub(at) <= Self::UNDO_MS
+            {
+                let capitals = caps >= 3 && caps * 2 >= n;
+                if self.caps && capitals {
+                    out.push(finding(
+                        Self::ID_CAPS,
+                        "Caps Lock on?",
+                        "Those were capitals: `J` joins lines and `K` looks up a word, where `j` and `k` move. Is Caps Lock on?".into(),
+                        Shape::fixed("capitals, undone"),
+                        step,
+                    ));
+                } else if !self.caps && !capitals && n >= 4 && distinct >= 3 {
+                    out.push(finding(
+                        Self::ID_TYPING,
+                        "That went in as commands",
+                        "You were in Normal mode, so those keys ran as commands. `i` (or `a`, `o`) first to type, and `u` undoes what they did.".into(),
+                        Shape::fixed("text as commands, undone"),
+                        step,
+                    ));
+                }
+            }
+            return;
+        }
+        let letter = c
+            .single()
+            .and_then(|k| k.plain_char())
+            .filter(|ch| ch.is_ascii_alphabetic() && c.count.is_none());
+        let fast = self
+            .run
+            .last()
+            .is_some_and(|(at, _)| step.at_ms.saturating_sub(*at) <= Self::TYPING_GAP_MS);
+        match letter {
+            Some(ch) if fast || self.run.is_empty() => self.run.push((step.at_ms, ch)),
+            Some(ch) => {
+                self.end_run();
+                self.run.push((step.at_ms, ch));
+            }
+            None => self.end_run(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.run.clear();
+        self.ended = None;
+    }
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
-    vec![Box::new(NoCommand), Box::new(UndoneLookAlike::default())]
+    vec![
+        Box::new(NoCommand),
+        Box::new(UndoneLookAlike::default()),
+        Box::new(WrongMode::default()),
+        Box::new(WrongMode {
+            caps: true,
+            ..WrongMode::default()
+        }),
+    ]
 }
 
 #[cfg(test)]
@@ -397,6 +531,29 @@ mod tests {
         assert!(look("dwu").is_empty(), "an undo on its own");
         assert!(look("dwudd").is_empty(), "not a look-alike");
         assert!(look("dwjde").is_empty(), "no undo between");
+    }
+
+    #[test]
+    fn typing_in_normal_mode_or_in_capitals() {
+        // Keys 100 ms apart, as `run` types them: typing speed.
+        let fired = |caps, keys: &str| {
+            findings(&run(
+                Box::new(WrongMode {
+                    caps,
+                    ..WrongMode::default()
+                }),
+                Flavor::Vim,
+                VimMode::Normal,
+                keys,
+            ))
+            .len()
+        };
+        assert_eq!(fired(false, "wbheu"), 1, "letters as commands, undone");
+        assert_eq!(fired(false, "wbhe"), 0, "not undone");
+        assert_eq!(fired(false, "jjjju"), 0, "one key repeated is moving");
+        assert_eq!(fired(true, "JJJKu"), 1, "capitals, undone");
+        assert_eq!(fired(false, "JJJKu"), 0, "said once, as Caps Lock");
+        assert_eq!(fired(true, "wbheu"), 0);
     }
 
     #[test]

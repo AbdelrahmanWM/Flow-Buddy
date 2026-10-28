@@ -548,6 +548,22 @@ pub static CURRICULUM: &[Item] = &[
         |s| cmd(s).is_some_and(|c| c.register.is_some_and(|r| "+*".contains(r)))
     ),
     item!(
+        "goto-def",
+        2,
+        "`gd`",
+        "go to where the word under the cursor is defined (`gD` for the whole file)",
+        "Jump from a variable's use to where it was declared.",
+        |s| is(s, &["gd", "gD"])
+    ),
+    item!(
+        "last-nonblank",
+        2,
+        "`g_`",
+        "to the last character of the line that isn't a space",
+        "Land on the semicolon, not on trailing spaces.",
+        |s| is(s, &["g_"])
+    ),
+    item!(
         "page",
         2,
         "`Ctrl-f` and `Ctrl-b`",
@@ -780,6 +796,51 @@ pub static CURRICULUM: &[Item] = &[
         "delete without overwriting what you copied",
         "Clear a line and still paste the word you yanked.",
         |s| cmd(s).is_some_and(|c| c.register.is_some_and(|r| "_".contains(r)))
+    ),
+    item!(
+        "word-end-back",
+        3,
+        "`ge`",
+        "back to the end of the previous word (`gE` for WORDs)",
+        "Fix the end of the word you just passed.",
+        |s| is(s, &["ge", "gE"])
+    ),
+    item!(
+        "insert-col1",
+        3,
+        "`gI`",
+        "start typing in column one, before the indentation",
+        "Comment out a line at its very start.",
+        |s| is(s, &["gI"])
+    ),
+    item!(
+        "goto-file",
+        3,
+        "`gf`",
+        "open the file whose name is under the cursor (`gF` at its line number)",
+        "Follow an import or an error message's path.",
+        |s| is(s, &["gf", "gF"])
+    ),
+    item!(
+        "star-partial",
+        3,
+        "`g*`",
+        "like `*`, but matching inside longer words too",
+        "Find `count` in `countWords` as well.",
+        |s| is(s, &["g*", "g#"])
+    ),
+    item!(
+        "file-info",
+        3,
+        "`Ctrl-g` and `g Ctrl-g`",
+        "show the file name and where you are, or count words",
+        "Check a draft's word count.",
+        |s| !s.before.is_visual()
+            && (ctrl(s, "g")
+                || cmd(s).is_some_and(|c| c.keys.len() == 2
+                    && c.keys[0].plain_char() == Some('g')
+                    && c.keys[1].is_ctrl('g'))
+                || ex(s, &[("f", "file")]))
     ),
     item!(
         "scroll-line",
@@ -1173,6 +1234,38 @@ pub static CURRICULUM: &[Item] = &[
         |s| ex(s, &[("pu", "put")])
     ),
     item!(
+        "repeat-sub",
+        4,
+        "`&` and `g&`",
+        "repeat the last `:s` on this line, or on every line",
+        "Ran a substitute on one line and want it on others too.",
+        |s| is(s, &["&", "g&"]) || ex(s, &[("&", "&"), ("&&", "&&")])
+    ),
+    item!(
+        "line-middle",
+        4,
+        "`gM`",
+        "to the middle of the line (`gm` the middle of the screen width)",
+        "Jump into the middle of a long line, then refine.",
+        |s| is(s, &["gm", "gM"])
+    ),
+    item!(
+        "screen-line-ends",
+        4,
+        "`g0` and `g$`",
+        "the start or end of the line as shown on screen, when lines wrap",
+        "Get to the end of the visible part of a wrapped line.",
+        |s| is(s, &["g0", "g^", "g$"])
+    ),
+    item!(
+        "last-output",
+        4,
+        "`g<`",
+        "show the last command's output again",
+        "Read a message that scrolled away.",
+        |s| is(s, &["g<"])
+    ),
+    item!(
         "line-undo",
         4,
         "`U`",
@@ -1201,6 +1294,10 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("bigword", &["word"]),
     ("till", &["find"]),
     ("scroll-line", &["half-page"]),
+    ("word-end-back", &["word-end"]),
+    ("star-partial", &["star"]),
+    ("repeat-sub", &["substitute-cmd"]),
+    ("screen-line-ends", &["screen-lines"]),
     ("put-more", &["yank-put"]),
     ("visual-put", &["yank-put", "visual-line"]),
     ("black-hole", &["registers"]),
@@ -1885,6 +1982,19 @@ mod tests {
             ("\"%p", "special-registers"),
             (":reg<CR>", "register-list"),
             (":pu<CR>", "put-cmd"),
+            ("gd", "goto-def"),
+            ("g_", "last-nonblank"),
+            ("ge", "word-end-back"),
+            ("gIx<Esc>", "insert-col1"),
+            ("gf", "goto-file"),
+            ("g*", "star-partial"),
+            ("&", "repeat-sub"),
+            ("g&", "repeat-sub"),
+            ("<C-g>", "file-info"),
+            ("g<C-g>", "file-info"),
+            ("gM", "line-middle"),
+            ("g$", "screen-line-ends"),
+            ("g<lt>", "last-output"),
         ];
         for (keys, id) in cases {
             assert!(

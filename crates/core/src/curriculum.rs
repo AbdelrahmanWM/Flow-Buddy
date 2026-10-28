@@ -540,6 +540,14 @@ pub static CURRICULUM: &[Item] = &[
         |s| is(s, &["s", "S", "cc"])
     ),
     item!(
+        "clipboard",
+        2,
+        "`\"+y` and `\"+p`",
+        "copy to and paste from the system clipboard",
+        "Copy a function to paste into a chat or another program.",
+        |s| cmd(s).is_some_and(|c| c.register.is_some_and(|r| "+*".contains(r)))
+    ),
+    item!(
         "page",
         2,
         "`Ctrl-f` and `Ctrl-b`",
@@ -748,6 +756,30 @@ pub static CURRICULUM: &[Item] = &[
         "the start or end of what you last changed or pasted",
         "Jump to the end of a block you just pasted.",
         |s| is(s, &["`[", "`]", "'[", "']"])
+    ),
+    item!(
+        "put-more",
+        3,
+        "`gp` and `]p`",
+        "paste and land after it, or paste with the indent of this line",
+        "Paste several lines in a row with `gp gp`, or paste code into a deeper block.",
+        |s| is(s, &["gp", "gP", "]p", "[p", "]P", "[P"])
+    ),
+    item!(
+        "visual-put",
+        3,
+        "`P` in Visual mode",
+        "replace the selection with what you copied, and keep it copied",
+        "Paste the same word over several others: `viwP`, move, `viwP`.",
+        |s| visual_then(s, "pP")
+    ),
+    item!(
+        "black-hole",
+        3,
+        "`\"_d`",
+        "delete without overwriting what you copied",
+        "Clear a line and still paste the word you yanked.",
+        |s| cmd(s).is_some_and(|c| c.register.is_some_and(|r| "_".contains(r)))
     ),
     item!(
         "scroll-line",
@@ -1117,6 +1149,30 @@ pub static CURRICULUM: &[Item] = &[
         |s| is(s, &["]'", "['", "]`", "[`"])
     ),
     item!(
+        "special-registers",
+        4,
+        "`\".p`, `\":p` and `\"%p`",
+        "paste what you last typed, your last command, or the file's name",
+        "Paste the file name into a comment.",
+        |s| cmd(s).is_some_and(|c| c.register.is_some_and(|r| ".:%/".contains(r)))
+    ),
+    item!(
+        "register-list",
+        4,
+        "`:reg`",
+        "show what every register holds",
+        "Find which register has the text you copied earlier.",
+        |s| ex(s, &[("reg", "registers"), ("di", "display")])
+    ),
+    item!(
+        "put-cmd",
+        4,
+        "`:put`",
+        "paste on a line of its own, whatever was copied",
+        "Paste a word as a new line under this one: `:put`.",
+        |s| ex(s, &[("pu", "put")])
+    ),
+    item!(
         "line-undo",
         4,
         "`U`",
@@ -1145,6 +1201,13 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("bigword", &["word"]),
     ("till", &["find"]),
     ("scroll-line", &["half-page"]),
+    ("put-more", &["yank-put"]),
+    ("visual-put", &["yank-put", "visual-line"]),
+    ("black-hole", &["registers"]),
+    ("special-registers", &["registers"]),
+    ("register-list", &["registers"]),
+    ("put-cmd", &["yank-put"]),
+    ("clipboard", &["yank-put"]),
     ("format", &["dap"]),
     ("filter", &["range"]),
     ("indent-object", &["shift"]),
@@ -1814,6 +1877,14 @@ mod tests {
             (":marks<CR>", "mark-lists"),
             (":ju<CR>", "mark-lists"),
             ("]'", "mark-hop"),
+            ("\"+yy", "clipboard"),
+            ("gp", "put-more"),
+            ("]p", "put-more"),
+            ("viwP", "visual-put"),
+            ("\"_dd", "black-hole"),
+            ("\"%p", "special-registers"),
+            (":reg<CR>", "register-list"),
+            (":pu<CR>", "put-cmd"),
         ];
         for (keys, id) in cases {
             assert!(

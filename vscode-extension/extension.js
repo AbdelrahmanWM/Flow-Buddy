@@ -16,6 +16,7 @@ const {OperatorTracker} = require('./operator');
 const {UiReporter} = require('./ui');
 const {MappingReporter} = require('./mappings');
 const {version} = require('./package.json');
+const tools = require('./tools');
 
 let link = null;
 
@@ -51,6 +52,40 @@ function activate(context) {
     mappings = new MappingReporter(link);
     mappings.enable(context.subscriptions);
     link.start();
+    registerTools(context.subscriptions);
+}
+
+// Settings and tools in the Command Palette, through the flowbuddy command.
+function registerTools(subscriptions) {
+    const vscode = require('vscode');
+    const fs = require('fs');
+    const os = require('os');
+    const {execFile} = require('child_process');
+    const exists = path => {
+        try {
+            fs.accessSync(path, fs.constants.X_OK);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+    const run = args => new Promise((resolve, reject) => {
+        const cli = tools.cliPath(process.env.PATH, os.homedir(), exists);
+        if (!cli) {
+            reject(new Error('the flowbuddy command isn\'t installed: run scripts/install.sh from the Flow Buddy folder'));
+            return;
+        }
+        execFile(cli, args, {timeout: 30000}, (error, out, err) => {
+            // An exit code is an answer; anything else (not found, timed
+            // out) is a failure to run.
+            if (error && typeof error.code !== 'number') {
+                reject(error);
+                return;
+            }
+            resolve({ok: !error, out: out ?? '', err: err ?? ''});
+        });
+    });
+    tools.register(vscode, run, subscriptions);
 }
 
 function deactivate() {

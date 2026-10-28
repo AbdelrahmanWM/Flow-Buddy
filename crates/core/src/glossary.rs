@@ -151,6 +151,8 @@ fn phrase(keys: &str) -> Option<&'static str> {
         "Ctrl-r Ctrl-w" => "on the command line: put in the word under the cursor",
         "q:" => "edit earlier commands in a window",
         "Tab" => "complete the name you're typing",
+        "Ctrl-w N" => "in a terminal window: stop it to scroll and copy",
+        ":terminal" => "a shell in a Vim window",
         "Ctrl-r =" => "while typing: work out a sum and type the answer",
         "Ctrl-g u" => "while typing: start a new undo step",
         "g Ctrl-a" => "on a selection: count up line by line (1, 2, 3…)",

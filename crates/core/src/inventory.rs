@@ -132,7 +132,9 @@ fn keys_of(e: &Entry) -> Option<Vec<Key>> {
         ("visual", _) => out.push(Key::ch('v')),
         ("cmdline", _) => out.push(Key::ch(':')),
         ("normal", "text-objects") | ("operator-pending", _) => out.push(Key::ch('d')),
-        ("terminal" | "ex", _) => return None,
+        // Terminal-job mode reads keys like Insert mode does.
+        ("terminal", _) => out.push(Key::ch('i')),
+        ("ex", _) => return None,
         _ => {}
     }
     let start = out.len();
@@ -147,6 +149,8 @@ fn keys_of(e: &Entry) -> Option<Vec<Key>> {
         "v_!" => "!!",
         // Visual versions of Normal-mode lookups.
         "c_wildchar" => "<Tab>",
+        "v_r" => "rx",
+        "t_CTRL-W_N" | "t_CTRL-W_:" => "CTRL-\\ CTRL-N",
         "v_K" => "K",
         "v_CTRL-]" => "CTRL-]",
         _ => e.keys,
@@ -306,6 +310,10 @@ const STARTING: &[&str] = &[
     "c_<Left>",
     "c_<Right>",
     "c_<Home>",
+    "c_<S-Left>",
+    "c_<C-Left>",
+    "c_<S-Right>",
+    "c_<C-Right>",
     "c_<End>",
     "v_<Esc>",
     "v_v",
@@ -339,7 +347,11 @@ fn find_alias(e: &Entry) -> Option<&'static Entry> {
         !std::ptr::eq(*t, e)
             && match target.strip_prefix(':').filter(|r| !r.is_empty()) {
                 Some(ex) => t.mode == "ex" && t.tag.trim_start_matches(':') == ex,
-                None => t.mode == e.mode && strip(t.keys) == target,
+                // A terminal window's aliases are Normal-mode commands.
+                None => {
+                    (t.mode == e.mode || (e.mode == "terminal" && t.mode == "normal"))
+                        && strip(t.keys) == target
+                }
             }
     })
 }
@@ -468,6 +480,10 @@ mod tests {
         ));
         assert!(skipped(find(":write")).is_none());
         assert!(gaps().iter().all(|e| skipped(e).is_none()));
+        // Every command is decided: taught, coached, where you start, or
+        // left out with a reason. A new Vim index shows what's new here.
+        let left: Vec<_> = gaps().iter().map(|e| e.tag).collect();
+        assert!(left.is_empty(), "not covered yet: {left:?}");
     }
 
     #[test]

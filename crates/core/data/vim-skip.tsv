@@ -32,3 +32,5 @@ mark versions of ( ) { }: the motions themselves are taught	'( ') '{ '} `( `) `{
 toggling Replace mode from Insert mode: R is taught	i_<Insert> c_<Insert>
 plugin packages, magic-style substitutes and scroll binding: configuration and niche variants	:packadd :packloadall :smagic :snomagic :syncbind
 the command line itself: every : command teaches it	:
+typing Ctrl-w into a terminal window: niche	t_CTRL-W_.
+variants of marks that keep the jump list, virtual Replace mode, and forcing a motion's kind: niche	g' g` gR gr o_v o_V o_CTRL-V CTRL-W_g]

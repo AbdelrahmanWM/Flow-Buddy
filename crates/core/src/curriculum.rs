@@ -2015,6 +2015,17 @@ pub static CURRICULUM: &[Item] = &[
         None
     ),
     item!(
+        "vim-terminal",
+        4,
+        "`Ctrl-w N` in `:terminal`",
+        "stop the terminal to scroll and copy its output like text (`i` to go back)",
+        "Copy an error message out of a test run inside Vim.",
+        |s| matches!(insert_key(s), Some(InsertKey::Then('\\', 'n'))),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
         "line-undo",
         4,
         "`U`",
@@ -2043,6 +2054,7 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("bigword", &["word"]),
     ("till", &["find"]),
     ("scroll-line", &["half-page"]),
+    ("vim-terminal", &["shell-cmd"]),
     ("save-more", &["save-quit"]),
     ("buffers", &["edit-file"]),
     ("line-cmds", &["range"]),
@@ -2793,6 +2805,7 @@ mod tests {
             ("<C-w>=", "window-size"),
             ("<C-w>H", "window-move"),
             ("<C-w>f", "window-under"),
+            ("<C-w>gf", "window-under"),
             ("g<Tab>", "last-tab"),
             ("]c", "diff"),
             ("do", "diff"),
@@ -2849,6 +2862,7 @@ mod tests {
             (":vert sp<CR>", "vertical"),
             (":copen<CR>", "quickfix"),
             (":undo 0<CR>", "undo-time"),
+            ("i<C-\\><C-n>", "vim-terminal"),
         ];
         for (keys, id) in cases {
             assert!(

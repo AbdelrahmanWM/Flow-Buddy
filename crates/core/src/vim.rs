@@ -294,6 +294,11 @@ impl Tracker {
             return Some(VimEvent::Insert(match (prefix, key.sym) {
                 // Literal keys and digraphs are text: not kept.
                 ('v' | 'k', _) => InsertKey::Other,
+                // `Ctrl-\ Ctrl-n`: to Normal mode (out of a terminal, too).
+                ('\\', Sym::Char('n' | 'N')) => {
+                    self.mode = VimMode::Normal;
+                    InsertKey::Then('\\', 'n')
+                }
                 ('g', Sym::Down) => InsertKey::Then('g', 'j'),
                 ('g', Sym::Up) => InsertKey::Then('g', 'k'),
                 // Only the keys that mean something after the prefix: any
@@ -348,11 +353,11 @@ impl Tracker {
         } else if key.mods.ctrl
             && self.flavor == Flavor::Vim
             && let Sym::Char(c) = key.sym
-            && (c.is_ascii_alphabetic() || matches!(c, '@' | ']'))
+            && (c.is_ascii_alphabetic() || matches!(c, '@' | ']' | '\\'))
         {
             let c = c.to_ascii_lowercase();
             self.insert_prefix = match c {
-                'x' | 'g' | 'v' | 'q' => Some((if c == 'q' { 'v' } else { c }, 1)),
+                'x' | 'g' | 'v' | 'q' | '\\' => Some((if c == 'q' { 'v' } else { c }, 1)),
                 'k' => Some(('k', 2)),
                 _ => None,
             };
@@ -405,7 +410,7 @@ impl Tracker {
             };
         }
         let edit = match key.sym {
-            Sym::Char(c) if key.mods.ctrl && c.is_ascii_alphabetic() => {
+            Sym::Char(c) if key.mods.ctrl && (c.is_ascii_alphabetic() || c == ']') => {
                 let c = c.to_ascii_lowercase();
                 self.cmdline_prefix = match c {
                     'r' => Some(('r', 1)),
@@ -630,8 +635,12 @@ fn parse_normal(keys: &[Key]) -> Parse {
     if k.is_ctrl('v') {
         return complete(Some(VimMode::VisualBlock));
     }
-    // Window commands: Ctrl-w and one more key.
+    // Window commands: Ctrl-w and one more key, or two after `g`
+    // (`Ctrl-w gf`).
     if k.is_ctrl('w') {
+        if rest.first().and_then(|k| k.plain_char()) == Some('g') {
+            return need_one(&rest[1..], None);
+        }
         return need_one(rest, None);
     }
     let Some(c) = k.plain_char() else {

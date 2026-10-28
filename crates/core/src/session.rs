@@ -92,6 +92,9 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
     },
+    CmdlineKey {
+        key: String,
+    },
     Escape,
     Mapped,
 }
@@ -122,8 +125,10 @@ fn scrub_cmdline(text: &str) -> String {
     format!("{}{name}{args}", &text[..lead])
 }
 
-fn insert_name(k: InsertKey) -> &'static str {
+fn insert_name(k: InsertKey) -> String {
     match k {
+        InsertKey::Ctrl(c) => return format!("ctrl-{c}"),
+        InsertKey::Then(a, b) => return format!("then-{a}{b}"),
         InsertKey::Text => "text",
         InsertKey::Backspace => "backspace",
         InsertKey::CtrlW => "ctrl-w",
@@ -138,6 +143,7 @@ fn insert_name(k: InsertKey) -> &'static str {
         InsertKey::Enter => "enter",
         InsertKey::Other => "other",
     }
+    .into()
 }
 
 fn insert_key(name: &str) -> InsertKey {
@@ -154,7 +160,14 @@ fn insert_key(name: &str) -> InsertKey {
         "right" => InsertKey::Arrow(Sym::Right),
         "arrow" => InsertKey::Arrow(Sym::Other),
         "enter" => InsertKey::Enter,
-        _ => InsertKey::Other,
+        _ => {
+            let chars: Vec<char> = name.chars().collect();
+            match (name.strip_prefix("ctrl-"), name.strip_prefix("then-")) {
+                (Some(_), _) if chars.len() == 6 => InsertKey::Ctrl(chars[5]),
+                (_, Some(_)) if chars.len() == 7 => InsertKey::Then(chars[5], chars[6]),
+                _ => InsertKey::Other,
+            }
+        }
     }
 }
 
@@ -181,7 +194,7 @@ impl Event {
                 }
             }
             VimEvent::Insert(k) => Event::Insert {
-                key: insert_name(*k).into(),
+                key: insert_name(*k),
             },
             VimEvent::Cmdline { kind, text } => Event::Cmdline {
                 cmd: *kind,
@@ -192,6 +205,9 @@ impl Event {
                         "x".into()
                     }
                 }),
+            },
+            VimEvent::CmdlineKey(k) => Event::CmdlineKey {
+                key: insert_name(*k),
             },
             VimEvent::Escape => Event::Escape,
             VimEvent::Mapped => Event::Mapped,
@@ -216,6 +232,7 @@ impl Event {
             },
             Event::Escape => VimEvent::Escape,
             Event::Mapped => VimEvent::Mapped,
+            Event::CmdlineKey { key } => VimEvent::CmdlineKey(insert_key(key)),
         })
     }
 }

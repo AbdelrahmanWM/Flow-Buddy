@@ -1,0 +1,36 @@
+# Commands from Vim's index that Flow Buddy deliberately doesn't teach, and
+# why: niche, useless for editing, or deprecated. One reason per line, then
+# the help tags it covers (% around a word matches any tag containing it). Everything not
+# here is meant to be taught: `flowbuddy learn --coverage` lists what's left.
+mouse and scroll wheel: tips are about the keyboard	%Mouse% %ScrollWheel% c_<LeftMouse> g<LeftMouse> g<RightMouse> <C-LeftMouse> <S-LeftMouse> <MiddleMouse> <RightMouse> <LeftMouse>
+help keys: not an editing skill	<F1> <Help> i_<F1> i_<Help> <Undo>
+Ex mode: obsolete line-editor mode	Q gQ :visual :open :insert :append :change :ex :z :# :number :print :list :Print :=
+Select mode: for people who don't use Vim's operators	gh gH g_CTRL-H v_CTRL-G v_CTRL-O v_<BS> v_CTRL-H
+'insertmode' and right-to-left language keys: rarely used settings	i_CTRL-L i_CTRL-Z i_CTRL-_ c_CTRL-_ i_CTRL-^ c_CTRL-^ CTRL-\_CTRL-G
+interrupts, suspending and redrawing: not editing	CTRL-C CTRL-Z CTRL-L v_CTRL-C i_CTRL-C c_CTRL-C :suspend :stop :redraw :redrawstatus :sleep :sleep! gs
+curiosities: rot13, byte info, sleeping, memory dumps	g? g?g? ga g8 g_CTRL-A gV go :goto :smile :intro :ascii :version
+C preprocessor and include-file jumps: C-only	[# ]# [_CTRL-D ]_CTRL-D [d ]d [D ]D :djump :dlist :dsearch :dsplit :checkpath :ijump :ilist :isearch :isplit CTRL-W_d CTRL-W_CTRL-D CTRL-W_i CTRL-W_CTRL-I
+preview window: rarely used	CTRL-W_P CTRL-W_z CTRL-W_CTRL-Z CTRL-W_} CTRL-W_g} :pedit :pclose :ptag :ptNext :ptfirst :ptjump :ptlast :ptnext :ptprevious :ptrewind :ptselect :ppop :psearch :pbuffer
+block paste without trailing spaces, and set-the-height variants: niche	zp zP zy zN<CR> z+ z^ CTRL-W_CTRL-_
+Vim script: programming Vim, not editing with it	:abstract :class :enum :interface :endclass :endenum :endinterface :def :enddef :defcompile :disassemble :defer :function :endfunction :delfunction :return :call :if :else :elseif :endif :for :endfor :while :endwhile :try :catch :finally :endtry :throw :break :continue :let :unlet :const :var :final :static :public :this :type :export :import :eval :execute :echo :echoconsole :echoerr :echohl :echomsg :echon :echowindow :lockvar :unlockvar :vim9cmd :vim9script :legacy :finish :command :comclear :delcommand :autocmd :augroup :doautocmd :doautoall :noautocmd :sandbox :silent :unsilent :verbose :redir :scriptnames :runtime :startinsert :startreplace :stopinsert :wincmd :undojoin :rundo :wundo :keepalt :keepmarks :keepjumps :keeppatterns :lockmarks :filter :confirm :browse :@ :@@ :star
+other languages inside Vim	:lua :luado :luafile :mzscheme :mzfile :perl :perldo :py3 :python3 :py3do :py3file :python :pydo :pyfile :pyx :pythonx :pyxdo :pyxfile :ruby :rubydo :rubyfile :tcl :tcldo :tclfile
+mappings, menus and keymaps: configuration, not editing	:map :nmap :vmap :xmap :smap :omap :imap :cmap :lmap :tmap :noremap :nnoremap :vnoremap :xnoremap :snoremap :onoremap :inoremap :cnoremap :lnoremap :tnoremap :unmap :nunmap :vunmap :xunmap :sunmap :ounmap :iunmap :cunmap :lunmap :tunmap :mapclear :nmapclear :vmapclear :xmapclear :smapclear :omapclear :imapclear :cmapclear :lmapclear :tmapclear :menu :amenu :anoremenu :aunmenu :nmenu :nnoremenu :nunmenu :vmenu :vnoremenu :vunmenu :xmenu :xnoremenu :xunmenu :smenu :snoremenu :sunmenu :omenu :onoremenu :ounmenu :imenu :inoremenu :iunmenu :cmenu :cnoremenu :cunmenu :tmenu :tunmenu :tlmenu :tlnoremenu :tlunmenu :noremenu :unmenu :emenu :popup :tearoff :loadkeymap :cabbrev :cabclear :cunabbrev :abclear :iabclear :noreabbrev :inoreabbrev :cnoreabbrev :unabbreviate :iunabbrev
+GUI, printing and the window system	:gui :gvim :simalt :winpos :winsize :promptfind :promptrepl :behave :hardcopy :clipreset :wlrestore
+debugging and profiling Vim	:debug :debuggreedy :breakadd :breakdel :breaklist :profile :profdel :syntime
+cscope, NetBeans and signs: tools few use	:cscope :cstag :lcscope :scscope :nbclose :nbkey :nbstart :sign
+highlighting, syntax and colours: configuration	:2match :3match :match :highlight :syntax :colorscheme :ownsyntax :filetype :setfiletype :language :options :setglobal
+swap, viminfo and recovery files: housekeeping	:X :preserve :recover :swapname :noswapfile :rviminfo :wviminfo :mkexrc :mkvimrc :mkview :loadview
+spell-file maintenance	:mkspell :spelldump :spellinfo :spellrare :spellrepall :spellundo :spellgood :spellwrong zuw zug zuW zuG zG zW
+help-file maintenance	:helptags :helpclose :exusage :viusage
+split variants of other commands: :sp then the command does it	:sNext :sargument :sall :sbuffer :sbNext :sball :sbfirst :sblast :sbmodified :sbnext :sbprevious :sbrewind :sfind :sfirst :slast :snext :sprevious :srewind :sview :stag :stjump :stselect :sunhide
+argument-list and buffer-list details: rarely needed	:argadd :argdedupe :argdelete :argedit :argglobal :arglocal :argument :wNext :wnext :wprevious :all :ball :badd :balt :bunload :bmodified :hide :unhide :drop :view :fixdel :mode :tags :tab
+quickfix lists from files and expressions, and their location-list twins	:caddbuffer :caddexpr :caddfile :cbuffer :cexpr :cfile :cgetbuffer :cgetexpr :cgetfile :chistory :cquit :cabove :cbelow :cafter :cbefore :cbottom :laddexpr :laddbuffer :laddfile :lbuffer :lexpr :lfile :lgetbuffer :lgetexpr :lgetfile :lhistory :labove :lbelow :lafter :lbefore :lbottom :lNext :lNfile :lnfile :lpfile :lrewind :lfirst :llast :lnewer :lolder :ldo :lfdo :lgrep :lgrepadd :lmake :lhelpgrep :ltag :llist :lwindow :lvimgrepadd :ll :cNext :cNfile :crewind :cwindow :vimgrepadd :grepadd
+window-layout modifiers: niche beyond :vert	:aboveleft :belowright :leftabove :rightbelow :horizontal
+tag-stack details	:tNext :tfirst :tlast :trewind :tjump :tselect g_CTRL-] g]
+prefix keys and no-ops: counted by the commands they start	[ ] g z CTRL-W CTRL-\_CTRL-N N<Del> CTRL-W_CTRL-C
+mark versions of ( ) { }: the motions themselves are taught	'( ') '{ '} `( `) `{ `}
+toggling Replace mode from Insert mode: R is taught	i_<Insert> c_<Insert>
+plugin packages, magic-style substitutes and scroll binding: configuration and niche variants	:packadd :packloadall :smagic :snomagic :syncbind
+the command line itself: every : command teaches it	:
+typing Ctrl-w into a terminal window: niche	t_CTRL-W_.
+variants of marks that keep the jump list, virtual Replace mode, and forcing a motion's kind: niche	g' g` gR gr o_v o_V o_CTRL-V CTRL-W_g]

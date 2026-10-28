@@ -834,7 +834,12 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("(learned)"), "{out}");
-        assert!(out.contains("level 1  ██○○○○○○○○○○○○○○○  2 of 17"), "{out}");
+        let level1 = flowbuddy_core::curriculum::CURRICULUM
+            .iter()
+            .filter(|i| i.level == 1)
+            .count();
+        let bar = format!("level 1  ██{}  2 of {level1}", "○".repeat(level1 - 2));
+        assert!(out.contains(&bar), "{out}");
         assert!(
             out.contains("Later: # after *; n after / and a few letters"),
             "{out}"

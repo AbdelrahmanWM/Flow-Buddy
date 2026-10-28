@@ -1589,8 +1589,233 @@ impl Rule for SearchAgain {
     fn reset(&mut self) {}
 }
 
+// Finding back -------------------------------------------------------------
+
+/// `fx` then `Fx` to go back to the one just passed: `,` does it.
+#[derive(Default)]
+pub struct FindBack {
+    /// The last forward find's target key, and when. Kept in memory only,
+    /// for comparing; never put in a tip.
+    last: Option<(Key, u64)>,
+}
+
+impl FindBack {
+    const ID: &'static str = "vim.find-back";
+}
+
+impl Rule for FindBack {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Finding a character forward, then finding it again backwards (f then F)"
+    }
+
+    fn title(&self) -> &'static str {
+        "Back with ,"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        LINE_AND_SHELL
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        let Some(c) = command(step).filter(|_| step.before == VimMode::Normal) else {
+            return;
+        };
+        let last = self.last.take();
+        if c.is(",") {
+            out.push(adoption(Self::ID, step));
+            return;
+        }
+        let (Some(first), Some(target)) =
+            (c.keys.first().and_then(|k| k.plain_char()), c.keys.get(1))
+        else {
+            return;
+        };
+        if c.keys.len() != 2 {
+            return;
+        }
+        match first {
+            'f' | 't' => self.last = Some((*target, step.at_ms)),
+            'F' | 'T'
+                if last.is_some_and(|(k, at)| {
+                    k == *target && step.at_ms.saturating_sub(at) <= GESTURE_MS * 2
+                }) =>
+            {
+                let back = if first == 'F' { "F<char>" } else { "T<char>" };
+                out.push(finding(
+                    Self::ID,
+                    "Back with ,",
+                    format!("`{back}` for the character you just found: `,` goes back to it, and `;` forward again."),
+                    Shape::fixed("f then F"),
+                    step,
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    fn reset(&mut self) {
+        self.last = None;
+    }
+}
+
+// Selecting everything --------------------------------------------------------
+
+/// `ggVG` then an operator: `ggdG`, `ggyG`, `gg=G` do it without selecting.
+#[derive(Default)]
+pub struct SelectAll {
+    /// How far into `gg`, `V`, `G` the last commands got.
+    progress: u8,
+}
+
+impl SelectAll {
+    const ID: &'static str = "vim.select-all";
+}
+
+impl Rule for SelectAll {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Selecting the whole file to run one operator on it (ggVG then d, y or =)"
+    }
+
+    fn title(&self) -> &'static str {
+        "No need to select"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        let Some(c) = command(step) else {
+            return;
+        };
+        let progress = std::mem::take(&mut self.progress);
+        if c.count.is_none() && c.is("gg") {
+            self.progress = 1;
+        } else if progress == 1 && c.is("V") {
+            self.progress = 2;
+        } else if progress == 2 && c.count.is_none() && c.is("G") {
+            self.progress = 3;
+        } else if progress == 3 && step.before.is_visual() {
+            let better = match c.single().and_then(|k| k.plain_char()) {
+                Some('d') => "`ggdG`",
+                Some('y') => "`ggyG` (or `:%y`)",
+                Some('=') => "`gg=G`",
+                Some('>') => "`gg>G`",
+                Some('<') => "`gg<lt>G`",
+                Some('c') => "`ggcG`",
+                _ => return,
+            };
+            out.push(finding(
+                Self::ID,
+                "No need to select",
+                format!(
+                    "Selecting the whole file first takes a key more: {better} does it in one go."
+                ),
+                Shape::fixed("ggVG then an operator"),
+                step,
+            ));
+        } else if progress == 1
+            && c.keys.len() == 2
+            && c.keys[1].plain_char() == Some('G')
+            && "dy=<>c".contains(c.keys[0].plain_char().unwrap_or(' '))
+        {
+            out.push(adoption(Self::ID, step));
+        }
+    }
+
+    fn reset(&mut self) {
+        self.progress = 0;
+    }
+}
+
+// Walking through buffers -----------------------------------------------------
+
+/// `:bn` again and again to reach a file: `:b` and part of its name, or
+/// `Ctrl-^` for the last one.
+#[derive(Default)]
+pub struct BufferWalk {
+    run: Vec<u64>,
+}
+
+impl BufferWalk {
+    const ID: &'static str = "vim.buffer-walk";
+    const RUN: usize = 3;
+}
+
+impl Rule for BufferWalk {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Stepping through open files with :bn or :bp to find one"
+    }
+
+    fn title(&self) -> &'static str {
+        "Straight to the file"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        let Some(VimEvent::Cmdline {
+            kind: ':',
+            text: Some(t),
+        }) = &step.event
+        else {
+            if command(step)
+                .is_some_and(|c| c.single().is_some_and(|k| k.is_ctrl('^') || k.is_ctrl('6')))
+            {
+                out.push(adoption(Self::ID, step));
+            }
+            return;
+        };
+        let t = t.trim();
+        let walking = matches!(
+            t,
+            "bn" | "bnext" | "bp" | "bprevious" | "bprev" | "bN" | "bNext"
+        );
+        if !walking {
+            if t.starts_with("b ") || t.starts_with("buffer ") {
+                out.push(adoption(Self::ID, step));
+            }
+            self.run.clear();
+            return;
+        }
+        self.run
+            .retain(|at| step.at_ms.saturating_sub(*at) <= 10_000);
+        self.run.push(step.at_ms);
+        if self.run.len() == Self::RUN {
+            out.push(finding(
+                Self::ID,
+                "Straight to the file",
+                "`:bn` again and again: `:b` and part of the file's name goes straight there (`Tab` completes it), and `Ctrl-^` back to the last file.".into(),
+                Shape::fixed(":bn ×3"),
+                step,
+            ));
+        }
+    }
+
+    fn reset(&mut self) {
+        self.run.clear();
+    }
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
     vec![
+        Box::new(FindBack::default()),
+        Box::new(SelectAll::default()),
+        Box::new(BufferWalk::default()),
         Box::new(Macro::default()),
         Box::new(DeleteThenInsert::default()),
         Box::new(Shorthand::default()),
@@ -1628,6 +1853,28 @@ mod tests {
             .iter()
             .map(|f| glossary::plain(&f.text))
             .collect()
+    }
+
+    #[test]
+    fn find_back_select_all_buffer_walk() {
+        assert_eq!(
+            texts(&vim(FindBack::default(), "fxFx")),
+            ["F<char> for the character you just found: , goes back to it, and ; forward again."]
+        );
+        assert!(
+            texts(&vim(FindBack::default(), "fxFy")).is_empty(),
+            "another character"
+        );
+        assert_eq!(adoptions(&vim(FindBack::default(), "fx;,")), 1);
+        assert_eq!(
+            texts(&vim(SelectAll::default(), "ggVGy")),
+            ["Selecting the whole file first takes a key more: ggyG (or :%y) does it in one go."]
+        );
+        assert!(texts(&vim(SelectAll::default(), "ggVjy")).is_empty());
+        assert_eq!(adoptions(&vim(SelectAll::default(), "ggdG")), 1);
+        let walk = vim(BufferWalk::default(), ":bn<CR>:bn<CR>:bn<CR>");
+        assert_eq!(findings(&walk).len(), 1);
+        assert!(findings(&vim(BufferWalk::default(), ":bn<CR>:bn<CR>")).is_empty());
     }
 
     #[test]

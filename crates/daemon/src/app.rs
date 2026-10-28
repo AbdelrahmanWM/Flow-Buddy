@@ -803,7 +803,7 @@ impl App {
         } else {
             "Something new"
         };
-        self.show(RULE, title, &text, false, now_ms);
+        self.show(RULE, title, &text, item.while_typing(), now_ms);
         self.memory.learn_shown(item.id, now_ms);
         self.todays_lesson = Some(item.id);
     }

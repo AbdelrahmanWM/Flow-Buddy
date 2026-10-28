@@ -13,7 +13,7 @@ use crate::ipc::CommandShape;
 use crate::key::Sym;
 use crate::rules::vim::command;
 use crate::rules::vscode::UiWhat;
-use crate::vim::{Command, Step, VimEvent};
+use crate::vim::{Command, InsertKey, Step, VimEvent};
 
 pub struct Item {
     /// Stable id, kept in the database: `ci-quote`.
@@ -49,6 +49,12 @@ const IN_SHELL: &[ContextKind] = &[ContextKind::BashVi, ContextKind::Shell];
 impl Item {
     pub fn used_in(&self, step: &Step) -> bool {
         (self.recognise)(step)
+    }
+
+    /// Used while typing, in Insert mode: its keys mean their Insert-mode
+    /// things.
+    pub fn while_typing(&self) -> bool {
+        self.keys.contains("while typing")
     }
 
     pub fn applies_in(&self, ctx: ContextKind) -> bool {
@@ -125,6 +131,93 @@ fn cmdline(step: &Step, prefixes: &[&str]) -> bool {
         }
         _ => false,
     }
+}
+
+/// The Ex command typed, by name: `names` holds (shortest, full)
+/// spellings, as `:help` writes them (`ri[ght]` is ("ri", "right")); a
+/// range before it is fine.
+fn ex(step: &Step, names: &[(&str, &str)]) -> bool {
+    let Some(VimEvent::Cmdline {
+        kind: ':',
+        text: Some(t),
+    }) = &step.event
+    else {
+        return false;
+    };
+    ex_word(t).is_some_and(|w| {
+        names
+            .iter()
+            .any(|(short, full)| w.starts_with(short) && full.starts_with(w))
+    })
+}
+
+/// The command name in a command line: `:.,+3>` → `>`, `:'<,'>sort` →
+/// `sort`, `:5,10m 0` → `m`.
+fn ex_word(text: &str) -> Option<&str> {
+    let mut rest = text.trim_start();
+    // A range: numbers, . $ %, marks, patterns, offsets.
+    loop {
+        let before = rest.len();
+        rest = rest.trim_start_matches(|c: char| c.is_ascii_digit() || ".$%,;+- ".contains(c));
+        if let Some(r) = rest.strip_prefix('\'') {
+            rest = r.get(1..).unwrap_or("");
+        }
+        for delim in ['/', '?'] {
+            if let Some(r) = rest.strip_prefix(delim) {
+                rest = r.split_once(delim).map_or("", |(_, after)| after);
+            }
+        }
+        if rest.len() == before {
+            break;
+        }
+    }
+    let first = rest.chars().next()?;
+    let end = if first.is_ascii_alphabetic() {
+        rest.find(|c: char| !c.is_ascii_alphabetic())
+            .unwrap_or(rest.len())
+    } else if matches!(first, '<' | '>') {
+        // `:<` and `:>` repeat: `:>>>`.
+        rest.len() - rest.trim_start_matches(first).len()
+    } else if "&!=~#@*".contains(first) {
+        1
+    } else {
+        0
+    };
+    (end > 0).then(|| &rest[..end])
+}
+
+/// A window command: `Ctrl-w` then one of `keys` (or its Ctrl- twin).
+fn wincmd(step: &Step, keys: &str) -> bool {
+    cmd(step).is_some_and(|c| {
+        c.keys.len() == 2
+            && c.keys[0].is_ctrl('w')
+            && match c.keys[1].sym {
+                Sym::Char(k) => keys.contains(k),
+                _ => false,
+            }
+    })
+}
+
+const VIM_AND_VSCODE: &[ContextKind] = &[ContextKind::TerminalVim, ContextKind::VsCodeVim];
+const VIM_ONLY: &[ContextKind] = &[ContextKind::TerminalVim];
+
+fn insert_key(step: &Step) -> Option<InsertKey> {
+    crate::rules::vim::insert_key(step)
+}
+
+fn insert_ctrl(step: &Step, keys: &str) -> bool {
+    matches!(insert_key(step), Some(InsertKey::Ctrl(c)) if keys.contains(c))
+}
+
+fn cmdline_key(step: &Step) -> Option<InsertKey> {
+    match step.event {
+        Some(VimEvent::CmdlineKey(k)) => Some(k),
+        _ => None,
+    }
+}
+
+fn cmdline_ctrl(step: &Step, keys: &str) -> bool {
+    matches!(cmdline_key(step), Some(InsertKey::Ctrl(c)) if keys.contains(c))
 }
 
 fn visual_then(step: &Step, keys: &str) -> bool {
@@ -271,12 +364,53 @@ pub static CURRICULUM: &[Item] = &[
         |s| head(s, "fF") || is(s, &[";", ","])
     ),
     item!(
+        "save-quit",
+        1,
+        "`:w` and `:q`",
+        "save, and quit (`:wq` or `:x` both at once)",
+        "Save often: `:w` takes a second.",
+        |s| ex(
+            s,
+            &[
+                ("w", "write"),
+                ("q", "quit"),
+                ("wq", "wq"),
+                ("x", "xit"),
+                ("exi", "exit")
+            ]
+        )
+    ),
+    item!(
         "dot",
         1,
         "`.`",
         "repeat the last change",
         "Fix the same thing in several places: change it once, then `.` each time.",
         |s| is(s, &["."])
+    ),
+    item!(
+        "operator",
+        1,
+        "`d}` and `yw`",
+        "an operator then a motion: delete, change or copy as far as the motion goes",
+        "Delete to the end of the paragraph, or copy a word, without selecting first.",
+        |s| op_motion(s, "dcy", "wbeWBE$0^{}()GfFtTnN%HLM`'jk")
+    ),
+    item!(
+        "yank-put",
+        1,
+        "`yy` and `p`",
+        "copy (yank) the line, and put it after the cursor (`P` before)",
+        "Duplicate a line: `yy` then `p`.",
+        |s| (head(s, "y") && !s.before.is_visual()) || is(s, &["Y", "p", "P"])
+    ),
+    item!(
+        "replace-char",
+        1,
+        "`r<char>`",
+        "replace the character under the cursor (or every selected one), staying in Normal mode",
+        "Fix a typo'd letter in two keys.",
+        |s| cmd(s).is_some_and(|c| c.keys.len() == 2 && c.keys[0].plain_char() == Some('r'))
     ),
     // Level 2: bigger moves and text objects.
     item!(
@@ -325,9 +459,7 @@ pub static CURRICULUM: &[Item] = &[
         "`Ctrl-n`",
         "complete the word you're typing from words in your files",
         "Type the start of a long name and let Vim finish it.",
-        // Insert-mode Ctrl-n isn't told apart from other keys: said with
-        // `flowbuddy learn --know completion`.
-        |_| false
+        |s| matches!(insert_key(s), Some(InsertKey::Ctrl('n' | 'p')))
     ),
     item!(
         "screen-lines",
@@ -457,9 +589,137 @@ pub static CURRICULUM: &[Item] = &[
         "substitute",
         2,
         "`s` and `S`",
-        "replace a character, or the whole line, and type",
+        "replace a character, or the whole line (also `cc`), and type",
         "Fix one wrong letter and keep typing.",
-        |s| is(s, &["s", "S"])
+        |s| is(s, &["s", "S", "cc"])
+    ),
+    item!(
+        "clipboard",
+        2,
+        "`\"+y` and `\"+p`",
+        "copy to and paste from the system clipboard",
+        "Copy a function to paste into a chat or another program.",
+        |s| cmd(s).is_some_and(|c| c.register.is_some_and(|r| "+*".contains(r)))
+    ),
+    item!(
+        "goto-def",
+        2,
+        "`gd`",
+        "go to where the word under the cursor is defined (`gD` for the whole file)",
+        "Jump from a variable's use to where it was declared.",
+        |s| is(s, &["gd", "gD"])
+    ),
+    item!(
+        "last-nonblank",
+        2,
+        "`g_`",
+        "to the last character of the line that isn't a space",
+        "Land on the semicolon, not on trailing spaces.",
+        |s| is(s, &["g_"])
+    ),
+    item!(
+        "insert-delete",
+        2,
+        "`Ctrl-w` and `Ctrl-u` while typing",
+        "delete the word, or everything, you typed before the cursor",
+        "Retype a word without holding Backspace.",
+        |s| matches!(insert_key(s), Some(InsertKey::CtrlW | InsertKey::CtrlU))
+    ),
+    item!(
+        "cmdline-complete",
+        2,
+        "`Tab` on the command line",
+        "complete a command or file name (`Ctrl-d` lists the choices)",
+        "Type `:e src/ma` then `Tab` for the file name.",
+        |s| cmdline_ctrl(s, "idnpla")
+    ),
+    item!(
+        "cmdline-history",
+        2,
+        "`:` then a few letters and `Up`",
+        "bring back an earlier command that starts with those letters",
+        "Rerun last hour's `:%s` without retyping it.",
+        |s| matches!(cmdline_key(s), Some(InsertKey::Arrow(_)))
+    ),
+    item!(
+        "edit-file",
+        2,
+        "`:e` and `:e!`",
+        "open a file by name, or reload this one throwing away changes",
+        "Open the file next to this one with `:e %:h/other.rs`.",
+        |s| ex(
+            s,
+            &[
+                ("e", "edit"),
+                ("ene", "enew"),
+                ("fin", "find"),
+                ("checkt", "checktime")
+            ]
+        )
+    ),
+    item!(
+        "no-highlight",
+        2,
+        "`:noh`",
+        "clear the search highlighting until the next search",
+        "Get rid of yellow matches all over the screen.",
+        |s| ex(s, &[("noh", "nohlsearch")])
+    ),
+    item!(
+        "help",
+        2,
+        "`:h`",
+        "Vim's own help on any command: `:h ciw`",
+        "Look up what a key does without leaving Vim.",
+        |s| ex(
+            s,
+            &[("h", "help"), ("helpg", "helpgrep"), ("helpf", "helpfind")]
+        ),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "find-back",
+        2,
+        "`,`",
+        "back to the character you last found with `f`, `t`, `F` or `T`",
+        "Went one comma too far with `;`? `,` goes back.",
+        |s| is(s, &[","])
+    ),
+    item!(
+        "page",
+        2,
+        "`Ctrl-f` and `Ctrl-b`",
+        "a whole screen forward or back",
+        "Page through a long file you're reading.",
+        |s| ctrl(s, "fb")
+    ),
+    item!(
+        "delete-back",
+        2,
+        "`X`",
+        "delete the character before the cursor",
+        "Remove the letter you just passed without moving back first.",
+        |s| is(s, &["X"]) && !s.before.is_visual()
+    ),
+    item!(
+        "shift",
+        2,
+        "`>>` and `<<`",
+        "indent or unindent the line (`>` with a motion for more)",
+        "Indent a line one level from anywhere in it.",
+        |s| is(s, &[">>", "<<"]) || op_motion(s, "<>", "wbeWBE$0^{}()GjkLHM%")
+    ),
+    item!(
+        "reindent",
+        2,
+        "`==` and `=ap`",
+        "re-indent the line, or a paragraph, the way the file's indenting says",
+        "Fix a pasted line's indentation in two keys.",
+        |s| is(s, &["=="])
+            || op_motion(s, "=", "wbeWBE$0^{}()GjkLHM%")
+            || object(s, "=", "pwsb(){}B[]")
     ),
     item!(
         "join",
@@ -486,6 +746,14 @@ pub static CURRICULUM: &[Item] = &[
         |s| ctrl(s, "o") && s.before == VimMode::Normal
     ),
     item!(
+        "jump-last",
+        2,
+        "``` `` ```",
+        "back to where you jumped from, and again to swap back",
+        "Flip between two places after a search or `G`.",
+        |s| is(s, &["``", "''"])
+    ),
+    item!(
         "jump-forward",
         2,
         "`Ctrl-i`",
@@ -499,7 +767,13 @@ pub static CURRICULUM: &[Item] = &[
         "`zz`, `zt` and `zb`",
         "scroll so this line is in the middle, top or bottom",
         "Bring the line you're on into the middle of the screen.",
-        |s| is(s, &["zz", "zt", "zb"])
+        // `z.`, `z<CR>` and `z-` do the same, landing on the first non-blank.
+        |s| is(s, &["zz", "zt", "zb", "z.", "z-"])
+            || cmd(s).is_some_and(|c| {
+                c.keys.len() == 2
+                    && c.keys[0].plain_char() == Some('z')
+                    && c.keys[1].sym == Sym::Enter
+            })
     ),
     item!(
         "dap",
@@ -539,7 +813,7 @@ pub static CURRICULUM: &[Item] = &[
         "the next or previous editor tab",
         "Flip between two files you're working on.",
         |s| is(s, &["gt", "gT"]),
-        IN_VSCODE,
+        VIM_AND_VSCODE,
         None,
         None
     ),
@@ -596,10 +870,269 @@ pub static CURRICULUM: &[Item] = &[
     item!(
         "till",
         3,
-        "`dt<char>`",
-        "delete up to just before a character",
+        "`t<char>` and `dt<char>`",
+        "move to just before a character (`T` backwards), or delete up to it",
         "Remove the rest of an argument up to the comma.",
         |s| op_motion(s, "dcy", "tT")
+            || (head(s, "tT") && cmd(s).is_some_and(|c| c.keys.len() == 2))
+    ),
+    item!(
+        "format",
+        3,
+        "`gqip` and `gw`",
+        "wrap lines to the text width, over a motion (`gw` keeps the cursor)",
+        "Rewrap a comment paragraph after editing it.",
+        |s| cmd(s).is_some_and(|c| {
+            let k: Vec<char> = c.keys.iter().filter_map(|k| k.plain_char()).collect();
+            k.len() >= 2 && k[0] == 'g' && matches!(k[1], 'q' | 'w')
+        })
+    ),
+    item!(
+        "join-raw",
+        3,
+        "`gJ`",
+        "join the next line on without adding a space",
+        "Glue a split identifier back together.",
+        |s| is(s, &["gJ"])
+    ),
+    item!(
+        "change-marks",
+        3,
+        "`` `[ `` and `` `] ``",
+        "the start or end of what you last changed or pasted",
+        "Jump to the end of a block you just pasted.",
+        |s| is(s, &["`[", "`]", "'[", "']"])
+    ),
+    item!(
+        "put-more",
+        3,
+        "`gp` and `]p`",
+        "paste and land after it, or paste with the indent of this line",
+        "Paste several lines in a row with `gp gp`, or paste code into a deeper block.",
+        |s| is(s, &["gp", "gP", "]p", "[p", "]P", "[P"])
+    ),
+    item!(
+        "visual-put",
+        3,
+        "`P` in Visual mode",
+        "replace the selection with what you copied, and keep it copied",
+        "Paste the same word over several others: `viwP`, move, `viwP`.",
+        |s| visual_then(s, "pP")
+    ),
+    item!(
+        "black-hole",
+        3,
+        "`\"_d`",
+        "delete without overwriting what you copied",
+        "Clear a line and still paste the word you yanked.",
+        |s| cmd(s).is_some_and(|c| c.register.is_some_and(|r| "_".contains(r)))
+    ),
+    item!(
+        "word-end-back",
+        3,
+        "`ge`",
+        "back to the end of the previous word (`gE` for WORDs)",
+        "Fix the end of the word you just passed.",
+        |s| is(s, &["ge", "gE"])
+    ),
+    item!(
+        "insert-col1",
+        3,
+        "`gI`",
+        "start typing in column one, before the indentation",
+        "Comment out a line at its very start.",
+        |s| is(s, &["gI"])
+    ),
+    item!(
+        "goto-file",
+        3,
+        "`gf`",
+        "open the file whose name is under the cursor (`gF` at its line number)",
+        "Follow an import or an error message's path.",
+        |s| is(s, &["gf", "gF"])
+    ),
+    item!(
+        "star-partial",
+        3,
+        "`g*`",
+        "like `*`, but matching inside longer words too",
+        "Find `count` in `countWords` as well.",
+        |s| is(s, &["g*", "g#"])
+    ),
+    item!(
+        "file-info",
+        3,
+        "`Ctrl-g` and `g Ctrl-g`",
+        "show the file name and where you are, or count words",
+        "Check a draft's word count.",
+        |s| !s.before.is_visual()
+            && (ctrl(s, "g")
+                || cmd(s).is_some_and(|c| c.keys.len() == 2
+                    && c.keys[0].plain_char() == Some('g')
+                    && c.keys[1].is_ctrl('g'))
+                || ex(s, &[("f", "file")]))
+    ),
+    item!(
+        "spell",
+        3,
+        "`]s` and `z=`",
+        "the next misspelled word, and suggestions for it (`zg` adds a word)",
+        "Fix the typos in a README one by one.",
+        |s| is(s, &["]s", "[s", "]S", "[S", "z=", "zg", "zw"])
+    ),
+    item!(
+        "visual-swap",
+        3,
+        "`o` in Visual mode",
+        "jump to the other end of the selection, to grow it from there",
+        "Selected one line too few at the top? `o` and extend it.",
+        |s| visual_then(s, "oO")
+    ),
+    item!(
+        "visual-linewise",
+        3,
+        "`Y` and `D` in Visual mode",
+        "copy or delete the selected lines whole, wherever the selection starts",
+        "Delete every line a selection touches.",
+        |s| visual_then(s, "YDXR")
+    ),
+    item!(
+        "insert-indent",
+        3,
+        "`Ctrl-t` and `Ctrl-d` while typing",
+        "indent or unindent the line without leaving Insert mode",
+        "Fix the indent of the line you're writing as you go.",
+        |s| insert_ctrl(s, "td")
+    ),
+    item!(
+        "cmdline-word",
+        3,
+        "`Ctrl-r Ctrl-w` on the command line",
+        "put the word under the cursor into the command you're typing",
+        "Start `:%s/` and pull in the name you're on instead of typing it.",
+        |s| matches!(cmdline_key(s), Some(InsertKey::Then('r', _)))
+    ),
+    item!(
+        "cmdline-edit",
+        3,
+        "`Ctrl-b`, `Ctrl-e` and `Ctrl-w` on the command line",
+        "to the start or end of the command, or delete the word before the cursor",
+        "Fix the start of a long command without arrowing back.",
+        |s| cmdline_ctrl(s, "bewuvkq")
+    ),
+    item!(
+        "save-more",
+        3,
+        "`:wa` and `:up`",
+        "save every file, or save only if something changed (`:sav` saves as a new name)",
+        "Save everything before running the tests.",
+        |s| ex(
+            s,
+            &[
+                ("wa", "wall"),
+                ("qa", "qall"),
+                ("quita", "quitall"),
+                ("wqa", "wqall"),
+                ("xa", "xall"),
+                ("up", "update"),
+                ("sav", "saveas")
+            ]
+        )
+    ),
+    item!(
+        "buffers",
+        3,
+        "`:ls` and `:b`",
+        "list the files you have open, and switch to one by number or part of its name",
+        "Get back to a file you opened an hour ago with `:b conf`.",
+        |s| ex(
+            s,
+            &[
+                ("ls", "ls"),
+                ("files", "files"),
+                ("buffers", "buffers"),
+                ("b", "buffer"),
+                ("bn", "bnext"),
+                ("bN", "bNext"),
+                ("bp", "bprevious"),
+                ("bf", "bfirst"),
+                ("br", "brewind"),
+                ("bl", "blast"),
+                ("bd", "bdelete"),
+                ("bw", "bwipeout")
+            ]
+        )
+    ),
+    item!(
+        "set-option",
+        3,
+        "`:set`",
+        "change a setting for now: `:set wrap!`, `:set list`, `:set spell`",
+        "Turn line wrapping off to read a wide table.",
+        |s| ex(s, &[("se", "set"), ("setl", "setlocal")])
+    ),
+    item!(
+        "dirs",
+        3,
+        "`:cd` and `:pwd`",
+        "change the folder Vim works in, or show it (`:lcd` for this window)",
+        "Make `:e` and `:grep` work from the project's root.",
+        |s| ex(
+            s,
+            &[
+                ("cd", "cd"),
+                ("chd", "chdir"),
+                ("lc", "lcd"),
+                ("lch", "lchdir"),
+                ("tc", "tcd"),
+                ("tch", "tchdir"),
+                ("pw", "pwd")
+            ]
+        ),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "shell-cmd",
+        3,
+        "`:!` and `:r !`",
+        "run a shell command, or put what it prints into the file",
+        "Insert today's date with `:r !date`, or run `:!make`.",
+        |s| ex(
+            s,
+            &[
+                ("!", "!"),
+                ("sh", "shell"),
+                ("ter", "terminal"),
+                ("r", "read")
+            ]
+        )
+    ),
+    item!(
+        "scroll-line",
+        3,
+        "`Ctrl-e` and `Ctrl-y`",
+        "scroll the view a line down or up, leaving the cursor where it is",
+        "Show one more line of context below without moving.",
+        |s| ctrl(s, "ey")
+    ),
+    item!(
+        "line-first",
+        3,
+        "`+` and `-`",
+        "the first character of the next or previous line (Enter and `_` too)",
+        "Go down a line and land on its text, not its indentation.",
+        |s| is(s, &["+", "-", "_"])
+            || cmd(s).is_some_and(|c| c.single().is_some_and(|k| k.sym == Sym::Enter))
+    ),
+    item!(
+        "column",
+        3,
+        "`20|`",
+        "go to a column of the line",
+        "Line up with column 80 to check a line's length.",
+        |s| is(s, &["|"])
     ),
     item!(
         "bigword",
@@ -688,15 +1221,17 @@ pub static CURRICULUM: &[Item] = &[
         "`:earlier 1m` and `g-`",
         "go back through undo history by time, or step by step across branches",
         "Get back to how the file was before the last few minutes of edits.",
-        |s| is(s, &["g-", "g+"]) || cmdline(s, &["earlier", "later"])
+        |s| is(s, &["g-", "g+"])
+            || cmdline(s, &["earlier", "later"])
+            || ex(s, &[("u", "undo"), ("red", "redo"), ("undol", "undolist")])
     ),
     item!(
         "case",
         3,
         "`~` and `gU`",
-        "switch case, or make upper case over a motion",
+        "switch case, or make upper case over a motion (`U` and `u` on a selection)",
         "Turn `const` into `CONST` with `gUiw`.",
-        |s| is(s, &["~"]) || op_motion(s, "g", "Uu~")
+        |s| is(s, &["~"]) || op_motion(s, "g", "Uu~") || visual_then(s, "uU~")
     ),
     item!(
         "increment",
@@ -720,7 +1255,8 @@ pub static CURRICULUM: &[Item] = &[
         "`Ctrl-v`",
         "select a rectangle of text",
         "Add the same text at the start of several lines.",
-        |s| ctrl(s, "v") && s.before == VimMode::Normal
+        // From Visual mode too: `v` then `Ctrl-v` makes it a block.
+        |s| ctrl(s, "v") && (s.before == VimMode::Normal || s.before.is_visual())
     ),
     item!(
         "block-append",
@@ -821,10 +1357,70 @@ pub static CURRICULUM: &[Item] = &[
         "`Ctrl-w v`",
         "a second editor side by side",
         "Read the test while you write the code.",
-        |s| cmd(s).is_some_and(|c| {
-            c.keys.len() == 2 && c.keys[0].is_ctrl('w') && c.keys[1].plain_char() == Some('v')
-        }),
-        &[ContextKind::VsCodeVim, ContextKind::TerminalVim],
+        |s| wincmd(s, "vsSn")
+            || ex(
+                s,
+                &[
+                    ("sp", "split"),
+                    ("vs", "vsplit"),
+                    ("new", "new"),
+                    ("vne", "vnew")
+                ]
+            ),
+        VIM_AND_VSCODE,
+        None,
+        None
+    ),
+    item!(
+        "window-close",
+        3,
+        "`Ctrl-w o` and `Ctrl-w q`",
+        "keep only this window, or close it",
+        "Close every split but the one you're in.",
+        |s| wincmd(s, "ocq") || ex(s, &[("on", "only"), ("clo", "close")]),
+        VIM_AND_VSCODE,
+        None,
+        None
+    ),
+    item!(
+        "window-cycle",
+        3,
+        "`Ctrl-w w`",
+        "to the next window, round and round (`Ctrl-w p`: the last one)",
+        "Hop between splits without thinking about where they are.",
+        |s| wincmd(s, "wWptb")
+            || cmd(s).is_some_and(|c| c.keys.len() == 2
+                && c.keys[0].is_ctrl('w')
+                && c.keys[1].is_ctrl('w')),
+        VIM_AND_VSCODE,
+        None,
+        None
+    ),
+    item!(
+        "tab-cmds",
+        3,
+        "`:tabnew` and `:tabonly`",
+        "open a tab, or close all the others (`:tabclose`, `:tabmove` too)",
+        "Clear out tabs you no longer need.",
+        |s| ex(
+            s,
+            &[
+                ("tabnew", "tabnew"),
+                ("tabe", "tabedit"),
+                ("tabo", "tabonly"),
+                ("tabc", "tabclose"),
+                ("tabm", "tabmove"),
+                ("tabn", "tabnext"),
+                ("tabp", "tabprevious"),
+                ("tabfir", "tabfirst"),
+                ("tabl", "tablast"),
+                ("tabs", "tabs"),
+                ("tabf", "tabfind"),
+                ("tabr", "tabrewind"),
+                ("tabN", "tabNext")
+            ]
+        ),
+        VIM_AND_VSCODE,
         None,
         None
     ),
@@ -851,6 +1447,22 @@ pub static CURRICULUM: &[Item] = &[
         "to the next or previous error or search result in the quickfix list",
         "After `:make` or `:grep`, walk through the results.",
         |s| cmdline(s, &["cn", "cp", "cnext", "cprev", "copen", "cc"])
+            || ex(
+                s,
+                &[
+                    ("cope", "copen"),
+                    ("ccl", "cclose"),
+                    ("col", "colder"),
+                    ("cnew", "cnewer"),
+                    ("cl", "clist"),
+                    ("cfir", "cfirst"),
+                    ("cla", "clast"),
+                    ("lop", "lopen"),
+                    ("lcl", "lclose"),
+                    ("lne", "lnext"),
+                    ("lp", "lprevious")
+                ]
+            )
     ),
     item!(
         "global",
@@ -882,7 +1494,558 @@ pub static CURRICULUM: &[Item] = &[
         "`:sort`",
         "sort the selected lines",
         "Sort a list of imports.",
-        |s| cmdline(s, &["sort", "'<,'>sort"])
+        |s| cmdline(s, &["sort", "'<,'>sort"]) || ex(s, &[("sor", "sort"), ("uni", "uniq")])
+    ),
+    item!(
+        "filter",
+        4,
+        "`!!` and `!ip`",
+        "run lines through a shell command and put back what it prints",
+        "Sort a paragraph with `!ip sort`, or format JSON with `!!jq .`.",
+        |s| head(s, "!")
+            || cmdline_is(s, |t| t.contains('!')
+                && !t.starts_with('!')
+                && ex_word(t) == Some("!"))
+    ),
+    item!(
+        "retab",
+        4,
+        "`:retab`",
+        "turn tabs into spaces (or back) by the file's settings",
+        "Clean up a file with mixed tabs and spaces.",
+        |s| ex(s, &[("ret", "retab")])
+    ),
+    item!(
+        "align",
+        4,
+        "`:center`, `:right` and `:left`",
+        "line up lines in the middle, on the right or the left",
+        "Center a heading in a plain-text file.",
+        |s| ex(s, &[("ce", "center"), ("ri", "right"), ("le", "left")])
+    ),
+    item!(
+        "visual-marks",
+        4,
+        "`` `< `` and `` `> ``",
+        "the start or end of the last selection",
+        "Go back to where a selection began after working on it.",
+        |s| is(s, &["`<", "`>", "'<", "'>"])
+    ),
+    item!(
+        "mark-lists",
+        4,
+        "`:marks` and `:jumps`",
+        "list your marks, or the places you jumped from (`:changes` for edits)",
+        "Find the mark you set an hour ago.",
+        |s| ex(
+            s,
+            &[
+                ("marks", "marks"),
+                ("ju", "jumps"),
+                ("changes", "changes"),
+                ("delm", "delmarks"),
+                ("cle", "clearjumps")
+            ]
+        )
+    ),
+    item!(
+        "mark-hop",
+        4,
+        "`]'` and `['`",
+        "to the next or previous line with a mark",
+        "Walk through the places you've marked in a file.",
+        |s| is(s, &["]'", "['", "]`", "[`"])
+    ),
+    item!(
+        "special-registers",
+        4,
+        "`\".p`, `\":p` and `\"%p`",
+        "paste what you last typed, your last command, or the file's name",
+        "Paste the file name into a comment.",
+        |s| cmd(s).is_some_and(|c| c.register.is_some_and(|r| ".:%/".contains(r)))
+    ),
+    item!(
+        "register-list",
+        4,
+        "`:reg`",
+        "show what every register holds",
+        "Find which register has the text you copied earlier.",
+        |s| ex(s, &[("reg", "registers"), ("di", "display")])
+    ),
+    item!(
+        "put-cmd",
+        4,
+        "`:put`",
+        "paste on a line of its own, whatever was copied",
+        "Paste a word as a new line under this one: `:put`.",
+        |s| ex(s, &[("pu", "put"), ("ip", "iput")])
+    ),
+    item!(
+        "repeat-sub",
+        4,
+        "`&` and `g&`",
+        "repeat the last `:s` on this line, or on every line",
+        "Ran a substitute on one line and want it on others too.",
+        |s| is(s, &["&", "g&"]) || ex(s, &[("&", "&"), ("&&", "&&"), ("~", "~")])
+    ),
+    item!(
+        "line-middle",
+        4,
+        "`gM`",
+        "to the middle of the line (`gm` the middle of the screen width)",
+        "Jump into the middle of a long line, then refine.",
+        |s| is(s, &["gm", "gM"])
+    ),
+    item!(
+        "screen-line-ends",
+        4,
+        "`g0` and `g$`",
+        "the start or end of the line as shown on screen, when lines wrap",
+        "Get to the end of the visible part of a wrapped line.",
+        |s| is(s, &["g0", "g^", "g$"])
+    ),
+    item!(
+        "last-output",
+        4,
+        "`g<`",
+        "show the last command's output again",
+        "Read a message that scrolled away.",
+        |s| is(s, &["g<"])
+    ),
+    item!(
+        "side-scroll",
+        4,
+        "`zl`, `zh`, `zs` and `ze`",
+        "scroll sideways when long lines don't wrap",
+        "Read the end of a wide log line without moving the cursor along it.",
+        |s| is(s, &["zh", "zl", "zH", "zL", "zs", "ze"])
+    ),
+    item!(
+        "fold-move",
+        4,
+        "`zj` and `zk`",
+        "to the next or previous fold (`[z` and `]z`: this fold's start and end)",
+        "Step from one folded function to the next.",
+        |s| is(s, &["zj", "zk", "[z", "]z"])
+    ),
+    item!(
+        "fold-levels",
+        4,
+        "`zm` and `zr`",
+        "fold one level more or less everywhere (`zv` shows the cursor's line)",
+        "See a file's outline, then open it a level at a time.",
+        |s| is(
+            s,
+            &[
+                "zm", "zr", "zv", "zx", "zX", "zi", "zn", "zN", "zA", "zC", "zO"
+            ]
+        )
+    ),
+    item!(
+        "fold-make",
+        4,
+        "`zfap` and `zd`",
+        "make a fold over a motion, or remove one (with manual folding)",
+        "Fold away a long block you don't need to see.",
+        |s| ex(
+            s,
+            &[
+                ("fo", "fold"),
+                ("foldc", "foldclose"),
+                ("foldo", "foldopen"),
+                ("foldd", "folddoopen"),
+                ("folddoc", "folddoclosed")
+            ]
+        ) || head(s, "z")
+            && cmd(s).is_some_and(|c| c
+                .keys
+                .get(1)
+                .and_then(|k| k.plain_char())
+                .is_some_and(|k| "fFdDE".contains(k)))
+    ),
+    item!(
+        "window-size",
+        4,
+        "`Ctrl-w =` and `Ctrl-w _`",
+        "make windows the same size, or this one as tall as it goes (`+`, `-`, `<`, `>` step)",
+        "Even out splits after resizing the terminal.",
+        |s| wincmd(s, "=_|+-<>") || ex(s, &[("res", "resize")]),
+        VIM_AND_VSCODE,
+        None,
+        None
+    ),
+    item!(
+        "window-move",
+        4,
+        "`Ctrl-w H` and `Ctrl-w T`",
+        "move this window to the far left (or J, K, L), or out to a tab of its own",
+        "Turn a horizontal split into a vertical one.",
+        |s| wincmd(s, "HJKLTrRx"),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "window-under",
+        4,
+        "`Ctrl-w f` and `Ctrl-w ]`",
+        "open the file, or the tag, under the cursor in a new window",
+        "Peek at an imported file beside the one you're in.",
+        |s| wincmd(s, "fF]^")
+            || cmd(s).is_some_and(|c| c.keys.len() == 3
+                && c.keys[0].is_ctrl('w')
+                && c.keys[1].plain_char() == Some('g')
+                && c.keys[2].plain_char().is_some_and(|k| "fF".contains(k))),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "last-tab",
+        4,
+        "`g<Tab>`",
+        "back to the tab you were in last",
+        "Flip between two tabs among many.",
+        |s| cmd(s).is_some_and(|c| c.keys.last().is_some_and(|k| k.sym == Sym::Tab)
+            && c.keys.iter().any(|k| k.plain_char() == Some('g'))),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "diff",
+        4,
+        "`]c`, `do` and `dp`",
+        "to the next change between files being compared; take it from, or give it to, the other",
+        "Merge a conflict side by side with `vimdiff`.",
+        |s| is(s, &["]c", "[c", "do", "dp"])
+            || ex(
+                s,
+                &[
+                    ("diffthis", "diffthis"),
+                    ("diffo", "diffoff"),
+                    ("dif", "diffupdate"),
+                    ("diffs", "diffsplit"),
+                    ("diffg", "diffget"),
+                    ("diffpu", "diffput"),
+                    ("diffp", "diffpatch")
+                ]
+            ),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "method-jump",
+        4,
+        "`]m` and `[m`",
+        "to the start of the next or previous method (`]M`, `[M`: their ends)",
+        "Step through a class's methods.",
+        |s| is(s, &["]m", "[m", "]M", "[M"]),
+        VIM_AND_VSCODE,
+        None,
+        None
+    ),
+    item!(
+        "comment-jump",
+        4,
+        "`[/` and `]/`",
+        "to the start or end of a /* */ comment",
+        "Get past a long block comment.",
+        |s| is(s, &["[/", "]/", "[*", "]*"]),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "word-in-files",
+        4,
+        "`[I`",
+        "list every line with the word under the cursor, here and in included files",
+        "See every use of a constant without searching.",
+        |s| is(s, &["[I", "]I", "[i", "]i"])
+            || cmd(s).is_some_and(|c| c.keys.len() == 2
+                && matches!(c.keys[0].plain_char(), Some('[' | ']'))
+                && c.keys[1].is_ctrl('i')),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "tags",
+        4,
+        "`Ctrl-]` and `Ctrl-t`",
+        "jump to a definition through the tags file, and back again",
+        "Follow a function call into another file and return (run `ctags -R` first).",
+        |s| ctrl(s, "]t")
+            || ex(
+                s,
+                &[
+                    ("ta", "tag"),
+                    ("tn", "tnext"),
+                    ("tp", "tprevious"),
+                    ("ts", "tselect"),
+                    ("po", "pop")
+                ]
+            ),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "keyword-help",
+        4,
+        "`K`",
+        "look up the word under the cursor (its man page, or Vim's help)",
+        "Check what a shell command's flag does from inside a script.",
+        |s| is(s, &["K"]),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "visual-increment",
+        4,
+        "`g Ctrl-a` in Visual mode",
+        "count up down the selected lines: 1, 2, 3…",
+        "Number a list: select the zeros, `g Ctrl-a`.",
+        |s| s.before.is_visual()
+            && cmd(s).is_some_and(|c| {
+                c.keys.len() == 2
+                    && c.keys[0].plain_char() == Some('g')
+                    && (c.keys[1].is_ctrl('a') || c.keys[1].is_ctrl('x'))
+            }),
+        VIM_AND_VSCODE,
+        None,
+        None
+    ),
+    item!(
+        "insert-again",
+        4,
+        "`Ctrl-a` while typing",
+        "type again what you typed last time in Insert mode",
+        "Add the same closing text in several places.",
+        |s| insert_ctrl(s, "a@")
+    ),
+    item!(
+        "insert-copy",
+        4,
+        "`Ctrl-y` and `Ctrl-e` while typing",
+        "copy the character from the line above, or below",
+        "Repeat most of the line above, a character at a time.",
+        |s| insert_ctrl(s, "ye")
+    ),
+    item!(
+        "completion-kinds",
+        4,
+        "`Ctrl-x Ctrl-f` and `Ctrl-x Ctrl-l`",
+        "complete a file name, or a whole line (`Ctrl-x Ctrl-o` for code)",
+        "Type a path without looking it up.",
+        |s| matches!(
+            insert_key(s),
+            Some(InsertKey::Then('x', _) | InsertKey::Ctrl('x'))
+        )
+    ),
+    item!(
+        "insert-literal",
+        4,
+        "`Ctrl-v` and `Ctrl-k` while typing",
+        "type a key as it is (a real Tab), or a special character (`Ctrl-k e'` is é)",
+        "Type a Tab in a file that turns tabs into spaces.",
+        |s| insert_ctrl(s, "vkq") || ex(s, &[("dig", "digraphs")])
+    ),
+    item!(
+        "insert-undo-break",
+        4,
+        "`Ctrl-g u` while typing",
+        "start a new undo step without leaving Insert mode",
+        "Keep one undo from wiping out a whole paragraph you typed.",
+        |s| matches!(insert_key(s), Some(InsertKey::Then('g', _)))
+    ),
+    item!(
+        "insert-expr",
+        4,
+        "`Ctrl-r =` while typing",
+        "work out a sum and type the answer",
+        "Type `Ctrl-r =` 60*24 Enter to insert 1440.",
+        |s| matches!(insert_key(s), Some(InsertKey::Then('r', '=')))
+    ),
+    item!(
+        "cmdline-window",
+        4,
+        "`q:` and `Ctrl-f`",
+        "edit earlier commands (or searches with `q/`) in a window, with all of Vim",
+        "Change one part of a long command you ran an hour ago.",
+        |s| is(s, &["q:", "q/", "q?"]) || cmdline_ctrl(s, "f"),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "search-step",
+        4,
+        "`Ctrl-g` and `Ctrl-t` while searching",
+        "to the next or previous match before pressing Enter",
+        "Search for a word and step to its third use, then Enter.",
+        |s| cmdline_ctrl(s, "gt"),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "line-cmds",
+        4,
+        "`:m` and `:t`",
+        "move or copy lines somewhere else, without going there: `:t.` copies this one below",
+        "Move a function to the top of the file with `:m 0`.",
+        |s| ex(s, &[("m", "move"), ("t", "t"), ("co", "copy")])
+    ),
+    item!(
+        "line-ex",
+        4,
+        "`:d`, `:y` and `:j` on a range",
+        "delete, copy or join lines by number, without moving there",
+        "Delete lines 10 to 20 with `:10,20d`.",
+        |s| ex(
+            s,
+            &[
+                ("d", "delete"),
+                ("dl", "dl"),
+                ("y", "yank"),
+                ("j", "join"),
+                (">", ">>>>>>>>"),
+                ("<", "<<<<<<<<"),
+                ("ma", "mark"),
+                ("k", "k")
+            ]
+        )
+    ),
+    item!(
+        "batch",
+        4,
+        "`:bufdo` and `:argdo`",
+        "run a command in every open file (or window, tab, or quickfix match)",
+        "Rename something across files: `:argdo %s/old/new/ge | update`.",
+        |s| ex(
+            s,
+            &[
+                ("argdo", "argdo"),
+                ("bufd", "bufdo"),
+                ("wind", "windo"),
+                ("tabd", "tabdo"),
+                ("cdo", "cdo"),
+                ("cfd", "cfdo")
+            ]
+        ),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "arglist",
+        4,
+        "`:args` and `:next`",
+        "a list of files to work through: set it, then step along",
+        "Edit every test file in turn: `:args **/*_test.go`, then `:next`.",
+        |s| ex(
+            s,
+            &[
+                ("ar", "args"),
+                ("n", "next"),
+                ("N", "Next"),
+                ("prev", "previous"),
+                ("fir", "first"),
+                ("la", "last"),
+                ("rew", "rewind")
+            ]
+        ),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "grep",
+        4,
+        "`:vimgrep` and `:grep`",
+        "search many files, with the matches in the quickfix list",
+        "Find every TODO in the project: `:vimgrep /TODO/ **`.",
+        |s| ex(s, &[("vim", "vimgrep"), ("gr", "grep"), ("lv", "lvimgrep")])
+    ),
+    item!(
+        "make",
+        4,
+        "`:make`",
+        "build, and step through the errors with `:cn`",
+        "Fix compile errors one by one without reading the log.",
+        |s| ex(s, &[("mak", "make"), ("comp", "compiler")]),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "session",
+        4,
+        "`:mksession`",
+        "save your windows and files, to open them all again later",
+        "Pick up tomorrow exactly where you stopped: `vim -S`.",
+        |s| ex(s, &[("mks", "mksession"), ("so", "source")]),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "abbreviations",
+        4,
+        "`:iabbrev`",
+        "a short word that expands as you type it",
+        "Make `teh` turn into `the` as you type.",
+        |s| ex(s, &[("ab", "abbreviate"), ("ia", "iabbrev")])
+            || insert_ctrl(s, "]")
+            || cmdline_ctrl(s, "]")
+    ),
+    item!(
+        "ex-lists",
+        4,
+        "`:oldfiles` and `:messages`",
+        "the files you opened recently, or the messages you missed",
+        "Reopen a file from yesterday without remembering its path.",
+        |s| ex(
+            s,
+            &[("ol", "oldfiles"), ("mes", "messages"), ("his", "history")]
+        )
+    ),
+    item!(
+        "vertical",
+        4,
+        "`:vert`",
+        "make the next split side by side: `:vert h motion`",
+        "Read help beside your file instead of above it.",
+        |s| ex(
+            s,
+            &[("vert", "vertical"), ("bo", "botright"), ("to", "topleft")]
+        ),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "vim-terminal",
+        4,
+        "`Ctrl-w N` in `:terminal`",
+        "stop the terminal to scroll and copy its output like text (`i` to go back)",
+        "Copy an error message out of a test run inside Vim.",
+        |s| matches!(insert_key(s), Some(InsertKey::Then('\\', 'n'))),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "line-undo",
+        4,
+        "`U`",
+        "undo every change on the last changed line at once",
+        "Put a line back the way it was after several edits to it.",
+        |s| is(s, &["U"]) && !s.before.is_visual()
     ),
     item!(
         "write-quit",
@@ -904,6 +2067,55 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("word-end", &["word"]),
     ("bigword", &["word"]),
     ("till", &["find"]),
+    ("find-back", &["find"]),
+    ("scroll-line", &["half-page"]),
+    ("vim-terminal", &["shell-cmd"]),
+    ("save-more", &["save-quit"]),
+    ("buffers", &["edit-file"]),
+    ("line-cmds", &["range"]),
+    ("line-ex", &["range"]),
+    ("batch", &["substitute-all"]),
+    ("arglist", &["edit-file"]),
+    ("grep", &["quickfix"]),
+    ("make", &["quickfix"]),
+    ("cmdline-word", &["search"]),
+    ("cmdline-edit", &["cmdline-history"]),
+    ("cmdline-window", &["cmdline-history"]),
+    ("search-step", &["search"]),
+    ("insert-again", &["insert-keys"]),
+    ("insert-copy", &["insert-keys"]),
+    ("completion-kinds", &["completion"]),
+    ("insert-literal", &["insert-keys"]),
+    ("insert-undo-break", &["insert-keys"]),
+    ("insert-expr", &["insert-keys"]),
+    ("visual-swap", &["visual-line"]),
+    ("visual-linewise", &["visual-line"]),
+    ("visual-increment", &["increment", "visual-block"]),
+    ("window-close", &["split"]),
+    ("window-cycle", &["split"]),
+    ("window-size", &["split"]),
+    ("window-move", &["split"]),
+    ("window-under", &["split"]),
+    ("last-tab", &["tabs"]),
+    ("fold-move", &["fold"]),
+    ("fold-levels", &["fold"]),
+    ("fold-make", &["fold"]),
+    ("word-end-back", &["word-end"]),
+    ("star-partial", &["star"]),
+    ("repeat-sub", &["substitute-cmd"]),
+    ("screen-line-ends", &["screen-lines"]),
+    ("put-more", &["yank-put"]),
+    ("visual-put", &["yank-put", "visual-line"]),
+    ("black-hole", &["registers"]),
+    ("special-registers", &["registers"]),
+    ("register-list", &["registers"]),
+    ("put-cmd", &["yank-put"]),
+    ("clipboard", &["yank-put"]),
+    ("format", &["dap"]),
+    ("filter", &["range"]),
+    ("indent-object", &["shift"]),
+    ("column", &["count"]),
+    ("line-undo", &["undo-redo"]),
     ("screen", &["half-page"]),
     ("screen-middle", &["screen"]),
     ("jump-forward", &["jump-back"]),
@@ -923,6 +2135,10 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("visual-object", &["visual-line", "ciw"]),
     ("visual-indent", &["visual-line"]),
     ("last-change", &["marks"]),
+    ("change-marks", &["marks"]),
+    ("visual-marks", &["marks"]),
+    ("mark-lists", &["marks"]),
+    ("mark-hop", &["marks"]),
     ("gi", &["append"]),
     ("macro", &["dot"]),
     ("replay-macro", &["macro"]),
@@ -958,7 +2174,7 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("vim.repeat-x", &["word", "d-to-end"]),
     ("vim.arrows-normal", &[]),
     ("vim.arrows-insert", &[]),
-    ("vim.backspace-streak", &[]),
+    ("vim.backspace-streak", &["insert-delete"]),
     ("vim.repeat-dd", &["count", "dap"]),
     ("vim.w-then-q", &["write-quit"]),
     (
@@ -980,10 +2196,22 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("vim.overshoot", &["count"]),
     ("vim.find-repeat", &["find", "search"]),
     ("vim.operator-run", &["count"]),
-    ("vim.scroll-run", &["half-page", "center"]),
-    ("vim.search-again", &["search-next"]),
+    ("vim.scroll-run", &["half-page", "center", "scroll-line"]),
+    ("vim.search-again", &["search-next", "repeat-sub"]),
+    ("vim.find-back", &["find-back"]),
+    ("vim.select-all", &["operator"]),
+    ("vim.buffer-walk", &["buffers"]),
     ("vim.change-matches", &["cgn", "substitute-all"]),
-    ("vim.shorthand", &["append", "open-line", "d-to-end"]),
+    (
+        "vim.shorthand",
+        &[
+            "append",
+            "open-line",
+            "d-to-end",
+            "insert-col1",
+            "delete-back",
+        ],
+    ),
     ("vim.visual-operator", &["ciw", "visual-object"]),
     ("motion.count", &["count"]),
     ("motion.paragraph", &["paragraph"]),
@@ -1086,18 +2314,29 @@ pub fn items_of_command(cmd: &str) -> Vec<&'static str> {
         .filter(|w| !matches!(*w, "then" | "or" | "and" | "…"))
         .map(|w| w.split('×').next().unwrap_or(w).trim_end_matches(','))
     {
-        let mut t = crate::vim::Tracker::new(crate::vim::Flavor::Vim);
-        t.reset_known(VimMode::Normal);
-        for (i, key) in command_keys(press).into_iter().enumerate() {
-            let step = t.feed(crate::key::KeyStroke {
-                key,
-                repeat: false,
-                at_ms: i as u64,
-            });
-            for item in CURRICULUM {
-                if item.used_in(&step) && !out.contains(&item.id) {
-                    out.push(item.id);
-                }
+        for id in items_of_keys(&command_keys(press)) {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
+/// The curriculum items these keys are, typed from Normal mode.
+pub fn items_of_keys(keys: &[crate::key::Key]) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    let mut t = crate::vim::Tracker::new(crate::vim::Flavor::Vim);
+    t.reset_known(VimMode::Normal);
+    for (i, key) in keys.iter().enumerate() {
+        let step = t.feed(crate::key::KeyStroke {
+            key: *key,
+            repeat: false,
+            at_ms: i as u64,
+        });
+        for item in CURRICULUM {
+            if item.used_in(&step) && !out.contains(&item.id) {
+                out.push(item.id);
             }
         }
     }
@@ -1523,6 +2762,134 @@ mod tests {
             (":g/TODO/d<CR>", "global"),
             ("Vj>", "visual-indent"),
             ("ZZ", "write-quit"),
+            ("dw", "operator"),
+            ("y}", "operator"),
+            ("yy", "yank-put"),
+            ("p", "yank-put"),
+            ("rx", "replace-char"),
+            ("cc", "substitute"),
+            ("tx", "till"),
+            ("<C-f>", "page"),
+            ("X", "delete-back"),
+            ("<C-e>", "scroll-line"),
+            ("+", "line-first"),
+            ("<CR>", "line-first"),
+            ("20|", "column"),
+            ("U", "line-undo"),
+            (">>", "shift"),
+            ("<lt><lt>", "shift"),
+            ("==", "reindent"),
+            ("=ap", "reindent"),
+            ("gqip", "format"),
+            ("gJ", "join-raw"),
+            ("!!sort<CR>", "filter"),
+            (":retab<CR>", "retab"),
+            (":ce<CR>", "align"),
+            (":'<lt>,'>right<CR>", "align"),
+            ("``", "jump-last"),
+            ("`]", "change-marks"),
+            ("'<lt>", "visual-marks"),
+            (":marks<CR>", "mark-lists"),
+            (":ju<CR>", "mark-lists"),
+            ("]'", "mark-hop"),
+            ("\"+yy", "clipboard"),
+            ("gp", "put-more"),
+            ("]p", "put-more"),
+            ("viwP", "visual-put"),
+            ("\"_dd", "black-hole"),
+            ("\"%p", "special-registers"),
+            (":reg<CR>", "register-list"),
+            (":pu<CR>", "put-cmd"),
+            ("gd", "goto-def"),
+            ("g_", "last-nonblank"),
+            ("ge", "word-end-back"),
+            ("gIx<Esc>", "insert-col1"),
+            ("gf", "goto-file"),
+            ("g*", "star-partial"),
+            ("&", "repeat-sub"),
+            ("g&", "repeat-sub"),
+            ("<C-g>", "file-info"),
+            ("g<C-g>", "file-info"),
+            ("gM", "line-middle"),
+            ("g$", "screen-line-ends"),
+            ("g<lt>", "last-output"),
+            ("z.", "center"),
+            ("z<CR>", "center"),
+            ("]s", "spell"),
+            ("z=", "spell"),
+            ("zl", "side-scroll"),
+            ("zj", "fold-move"),
+            ("zm", "fold-levels"),
+            ("zfap", "fold-make"),
+            ("zd", "fold-make"),
+            ("<C-w>s", "split"),
+            (":vs<CR>", "split"),
+            ("<C-w>o", "window-close"),
+            (":only<CR>", "window-close"),
+            ("<C-w>w", "window-cycle"),
+            ("<C-w><C-w>", "window-cycle"),
+            (":tabnew<CR>", "tab-cmds"),
+            ("<C-w>=", "window-size"),
+            ("<C-w>H", "window-move"),
+            ("<C-w>f", "window-under"),
+            ("<C-w>gf", "window-under"),
+            ("g<Tab>", "last-tab"),
+            ("]c", "diff"),
+            ("do", "diff"),
+            (":diffthis<CR>", "diff"),
+            ("]m", "method-jump"),
+            ("[/", "comment-jump"),
+            ("[I", "word-in-files"),
+            ("<C-]>", "tags"),
+            ("<C-t>", "tags"),
+            ("K", "keyword-help"),
+            ("vjU", "case"),
+            ("vjrx", "replace-char"),
+            ("v<C-v>", "visual-block"),
+            ("vjo", "visual-swap"),
+            ("vjD", "visual-linewise"),
+            ("<C-v>jjg<C-a>", "visual-increment"),
+            ("ia<C-n>", "completion"),
+            ("ia<C-w>", "insert-delete"),
+            ("ia<C-t>", "insert-indent"),
+            ("i<C-a>", "insert-again"),
+            ("i<C-y>", "insert-copy"),
+            ("i<C-x><C-f>", "completion-kinds"),
+            ("i<C-v><Tab>", "insert-literal"),
+            ("i<C-g>u", "insert-undo-break"),
+            ("i<C-r>=", "insert-expr"),
+            (":e<Tab><CR>", "cmdline-complete"),
+            (":s<Up><CR>", "cmdline-history"),
+            (":%s/<C-r><C-w><CR>", "cmdline-word"),
+            (":abc<C-b><CR>", "cmdline-edit"),
+            ("q:", "cmdline-window"),
+            ("/ab<C-g><CR>", "search-step"),
+            (":w<CR>", "save-quit"),
+            (":e!<CR>", "edit-file"),
+            (":noh<CR>", "no-highlight"),
+            (":h ciw<CR>", "help"),
+            (":wa<CR>", "save-more"),
+            (":b 2<CR>", "buffers"),
+            (":ls<CR>", "buffers"),
+            (":set wrap!<CR>", "set-option"),
+            (":cd ..<CR>", "dirs"),
+            (":!make<CR>", "shell-cmd"),
+            (":r !date<CR>", "shell-cmd"),
+            (":m 0<CR>", "line-cmds"),
+            (":t.<CR>", "line-cmds"),
+            (":10,20d<CR>", "line-ex"),
+            (":>><CR>", "line-ex"),
+            (":bufdo e<CR>", "batch"),
+            (":args *.rs<CR>", "arglist"),
+            (":vimgrep /x/ **<CR>", "grep"),
+            (":make<CR>", "make"),
+            (":mks<CR>", "session"),
+            (":iab teh the<CR>", "abbreviations"),
+            (":ol<CR>", "ex-lists"),
+            (":vert sp<CR>", "vertical"),
+            (":copen<CR>", "quickfix"),
+            (":undo 0<CR>", "undo-time"),
+            ("i<C-\\><C-n>", "vim-terminal"),
         ];
         for (keys, id) in cases {
             assert!(
@@ -1539,6 +2906,57 @@ mod tests {
         assert!(!used("\"_dd").contains(&"registers") && used("\"ayy").contains(&"registers"));
         assert!(!used("''").contains(&"marks") && !used("'.").contains(&"marks"));
         assert!(!used("vu").contains(&"undo-redo") && used("u").contains(&"undo-redo"));
+    }
+
+    #[test]
+    fn lessons_only_where_they_work() {
+        let teachable = |ctx, id| {
+            let item = find(id).unwrap();
+            item.applies_in(ctx) && crate::support::supports_all(ctx, &tip_text(item))
+        };
+        use ContextKind::{BashVi, ClaudeVim, TerminalVim, VsCodeVim};
+        for id in [
+            "goto-def",
+            "shift",
+            "visual-increment",
+            "buffers",
+            "tab-cmds",
+        ] {
+            assert!(teachable(VsCodeVim, id), "{id} works in vscodevim");
+        }
+        for id in [
+            "spell",
+            "fold-move",
+            "completion-kinds",
+            "ex-lists",
+            "help",
+            "window-move",
+            "diff",
+        ] {
+            assert!(!teachable(VsCodeVim, id), "{id} doesn't work in vscodevim");
+            assert!(teachable(TerminalVim, id), "{id} works in Vim");
+        }
+        assert!(teachable(ClaudeVim, "yank-put") && !teachable(ClaudeVim, "buffers"));
+        assert!(
+            teachable(BashVi, "replace-char") || !find("replace-char").unwrap().applies_in(BashVi)
+        );
+        assert!(!teachable(BashVi, "set-option"));
+    }
+
+    #[test]
+    fn ex_names_by_vims_abbreviations() {
+        assert_eq!(ex_word("sort"), Some("sort"));
+        assert_eq!(ex_word("'<,'>sort u"), Some("sort"));
+        assert_eq!(ex_word(".,+3>"), Some(">"));
+        assert_eq!(ex_word("5,10m 0"), Some("m"));
+        assert_eq!(ex_word("/foo/,/bar/d"), Some("d"));
+        assert_eq!(ex_word("%!jq ."), Some("!"));
+        assert_eq!(ex_word("42"), None);
+        assert!(
+            !used(":let x = 1<CR>").contains(&"align"),
+            ":le is :left, :let isn't"
+        );
+        assert!(!used(":c<CR>").contains(&"align"), "too short for :center");
     }
 
     #[test]
@@ -1640,7 +3058,7 @@ mod tests {
         let k = Known::of(["change-word"]);
         assert!(k.ready_for_command("ciw") && !k.ready_for_command("ci("));
         assert!(!k.ready_for_command("zz"), "zz builds on Ctrl-d");
-        assert!(k.ready_for_command("Ctrl-e"), "not a tree item");
+        assert!(k.ready_for_command("ga"), "not a tree item");
     }
 
     #[test]
@@ -1674,7 +3092,11 @@ mod tests {
             shell_only,
             ["history-search", "cd-back", "last-arg", "quick-sub"]
         );
-        assert!(!find("tabs").unwrap().applies_in(ContextKind::TerminalVim));
+        assert!(
+            !find("quick-open")
+                .unwrap()
+                .applies_in(ContextKind::TerminalVim)
+        );
         assert_eq!(
             used_by_shape(CommandShape::CdBack)
                 .map(|i| i.id)
@@ -1846,7 +3268,7 @@ mod tests {
         for item in CURRICULUM {
             for span in crate::glossary::code_spans(item.keys) {
                 assert!(
-                    !crate::glossary::explain_keys(span, false).is_empty(),
+                    !crate::glossary::explain_keys(span, item.while_typing()).is_empty(),
                     "{}: `{span}` has no explanation",
                     item.id
                 );

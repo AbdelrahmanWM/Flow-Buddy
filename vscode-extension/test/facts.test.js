@@ -24,8 +24,11 @@ const FIELDS = [
     'word_hops', 'word_end_hops', 'bigword_hops', 'find_hops', 'till_hops',
     'line_start', 'first_nonblank', 'line_end', 'bracket_match', 'star_hops',
     'jump_back', 'last_change', 'search_hops', 'relative_numbers', 'view_scrolled',
-    'revisits', 'line_number_digits',
+    'revisits', 'line_number_digits', 'paragraph_lines', 'section_hops', 'unmatched_paren',
+    'sentence_hops', 'screen_line_hops', 'search_chars',
 ];
+
+const LATER = ['paragraph_lines', 'search_chars', 'section_hops', 'unmatched_paren'];
 
 let failed = 0;
 let passed = 0;
@@ -58,6 +61,10 @@ function facts(name, lines, [sl, sc], [el, ec], opts, expected, keys) {
         }
         check(name, picked, expected);
     } else {
+        // Facts added later have their own checks below.
+        for (const k of LATER)
+            if (!(k in expected))
+                delete got[k];
         check(name, got, expected);
     }
 }
@@ -205,6 +212,17 @@ facts('no move', words, [0, 3], [0, 3], {}, {});
     const got = computeFacts(lines, {line: 4, col: 0}, {line: 149, col: 0}, {lineNumbers: true});
     check('line number digits', {d: got.line_number_digits}, {d: 3});
     check('no numbers shown', {d: computeFacts(lines, {line: 4, col: 0}, {line: 149, col: 0}, {}).line_number_digits}, {d: undefined});
+}
+
+{
+    // As the Vim plugin's test (0-based here).
+    const para = ['a', 'b', '', 'c', 'd', '', 'e', 'f', 'g', 'h'];
+    check('paragraph lines', {p: computeFacts(para, {line: 0, col: 0}, {line: 7, col: 0}).paragraph_lines},
+        {p: [2, 5, 9]});
+    const code = ['int a()', '{', '  x;', '}', 'int b()', '{', 'let z = (1, 2, 3);'];
+    check('sections', {s: computeFacts(code, {line: 0, col: 0}, {line: 5, col: 0}).section_hops}, {s: 2});
+    check('[(', {u: computeFacts(code, {line: 6, col: 13}, {line: 6, col: 8}).unmatched_paren}, {u: true});
+    check('/z', {c: computeFacts(code, {line: 0, col: 0}, {line: 6, col: 4}).search_chars}, {c: 1});
 }
 
 // Operator ranges, as the Vim plugin's tests (0-based here).

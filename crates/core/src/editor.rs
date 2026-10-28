@@ -138,6 +138,21 @@ pub struct MotionFacts {
     /// 'relativenumber'): how many digits the end line's number has, for
     /// `42G`. Never the number itself.
     pub line_number_digits: Option<u32>,
+    /// How far (in lines) the next few blank-line boundaries are, in the
+    /// movement's direction, nearest first: for `}}` then `2j`.
+    pub paragraph_lines: Option<Vec<u32>>,
+    /// `]]` (down) or `[[` (up) presses: sections, lines starting with `{`.
+    pub section_hops: Option<u32>,
+    /// The end is the unmatched `(` before the start (`[(`) or the
+    /// unmatched `)` after it (`])`).
+    pub unmatched_paren: bool,
+    /// `)` (forward) or `(` (back) presses: sentences.
+    pub sentence_hops: Option<u32>,
+    /// `gj` or `gk` presses: screen lines, when lines wrap.
+    pub screen_line_hops: Option<u32>,
+    /// How many characters typed after `/` (or `?`) make the end the first
+    /// match: the text itself is never sent.
+    pub search_chars: Option<u32>,
     /// How many lines the view scrolled during the movement (the top
     /// visible line's delta; positive is further into the file).
     pub view_scrolled: Option<i64>,

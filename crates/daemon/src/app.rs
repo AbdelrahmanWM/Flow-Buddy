@@ -1413,7 +1413,7 @@ impl App {
                     self.update_context(None, now_ms);
                 }
             }
-            ConnEvent::Msg { id, msg } => self.on_msg(id, msg, now_ms),
+            ConnEvent::Msg { id, msg } => self.on_msg(id, *msg, now_ms),
         }
     }
 
@@ -1915,7 +1915,13 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn send(app: &mut App, id: ConnId, msg: ClientMsg, now_ms: u64) {
-        app.on_conn(ConnEvent::Msg { id, msg }, now_ms);
+        app.on_conn(
+            ConnEvent::Msg {
+                id,
+                msg: Box::new(msg),
+            },
+            now_ms,
+        );
     }
 
     fn hello(kind: ClientKind) -> ClientMsg {

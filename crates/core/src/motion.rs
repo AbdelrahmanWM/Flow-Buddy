@@ -50,10 +50,15 @@ pub enum Category {
     Search,
     LastChange,
     LineNumber,
+    Section,
+    Unmatched,
+    Sentence,
+    ScreenLine,
+    SearchTo,
 }
 
 impl Category {
-    pub const ALL: [Category; 14] = [
+    pub const ALL: [Category; 19] = [
         Category::Count,
         Category::Paragraph,
         Category::Screen,
@@ -68,6 +73,11 @@ impl Category {
         Category::Search,
         Category::LastChange,
         Category::LineNumber,
+        Category::Section,
+        Category::Unmatched,
+        Category::Sentence,
+        Category::ScreenLine,
+        Category::SearchTo,
     ];
 
     pub fn id(self) -> &'static str {
@@ -86,6 +96,11 @@ impl Category {
             Category::Search => "motion.search",
             Category::LastChange => "motion.last-change",
             Category::LineNumber => "motion.line-number",
+            Category::Section => "motion.section",
+            Category::Unmatched => "motion.unmatched",
+            Category::Sentence => "motion.sentence",
+            Category::ScreenLine => "motion.screen-line",
+            Category::SearchTo => "motion.search-to",
         }
     }
 
@@ -105,6 +120,11 @@ impl Category {
             Category::Search => "Repeat the search",
             Category::LastChange => "Jump to the last change",
             Category::LineNumber => "Jump to the line number",
+            Category::Section => "Jump by section",
+            Category::Unmatched => "Jump to the enclosing bracket",
+            Category::Sentence => "Move by sentence",
+            Category::ScreenLine => "Move by screen line",
+            Category::SearchTo => "Search for it",
         }
     }
 
@@ -133,6 +153,11 @@ impl Category {
             Category::Search => "search-next",
             Category::LastChange => "change-list",
             Category::LineNumber => "goto-line",
+            Category::Section => "section",
+            Category::Unmatched => "unmatched",
+            Category::Sentence => "sentence-motion",
+            Category::ScreenLine => "screen-lines",
+            Category::SearchTo => "search",
         }
     }
 
@@ -156,6 +181,11 @@ impl Category {
             Category::Search => "Moving to the next search match without n or N",
             Category::LastChange => "Moving back to where you last changed something without g;",
             Category::LineNumber => "Moving far to a line whose number is on screen without 42G",
+            Category::Section => "Moving line by line to the next function or block where ]] lands",
+            Category::Unmatched => "Moving to the bracket around the cursor without [( or ])",
+            Category::Sentence => "Moving word by word through prose where ( or ) lands",
+            Category::ScreenLine => "Moving through a wrapped line without gj or gk",
+            Category::SearchTo => "Moving far to text you can see without searching for it",
         }
     }
 
@@ -176,6 +206,11 @@ impl Category {
             Category::Search => "keys for n/N",
             Category::LastChange => "keys for g;",
             Category::LineNumber => "keys for 42G",
+            Category::Section => "keys for ]]",
+            Category::Unmatched => "keys for [(",
+            Category::Sentence => "keys for )",
+            Category::ScreenLine => "keys for gj",
+            Category::SearchTo => "keys for /",
         }
     }
 }
@@ -308,6 +343,55 @@ fn vertical(lines: i64, f: &MotionFacts) -> Vec<Part> {
             keys,
             cost: k + finish.cost,
         });
+    }
+    // Blank lines then a few more: `}}` then `2j`, or one too far and back.
+    if let Some(bounds) = &f.paragraph_lines {
+        let (para, back) = if down { ("}", "k") } else { ("{", "j") };
+        let best = bounds
+            .iter()
+            .take(GLANCE as usize)
+            .enumerate()
+            .filter_map(|(i, &d)| {
+                let k = i as u32 + 1;
+                let (key, r) = if d <= n { (fwd, n - d) } else { (back, d - n) };
+                (r > 0).then(|| {
+                    (
+                        k,
+                        repeated(Category::Count, key, 1, r, readable_lines(r, f)),
+                    )
+                })
+            })
+            .min_by_key(|(k, rest)| k + rest.cost);
+        if let Some((k, rest)) = best {
+            let paras = if k == 1 {
+                para.to_string()
+            } else {
+                format!("{para}×{k}")
+            };
+            parts.push(Part {
+                category: Category::Paragraph,
+                keys: format!("{paras} then {}", rest.keys),
+                cost: k + rest.cost,
+            });
+        }
+    }
+    if let Some(k) = f.section_hops {
+        parts.push(repeated(
+            Category::Section,
+            if down { "]]" } else { "[[" },
+            2,
+            k,
+            k <= GLANCE,
+        ));
+    }
+    if let Some(k) = f.screen_line_hops {
+        parts.push(repeated(
+            Category::ScreenLine,
+            if down { "gj" } else { "gk" },
+            2,
+            k,
+            k <= GLANCE,
+        ));
     }
     // The number is right there in the margin: type it.
     if let Some(d) = f.line_number_digits.filter(|_| n > GLANCE) {
@@ -452,6 +536,35 @@ pub fn plans_for(m: &Motion, known: &Known) -> Vec<Plan> {
             category: Category::JumpBack,
             keys: "Ctrl-o".into(),
             cost: 1,
+        });
+    }
+    if f.unmatched_paren {
+        plans.push(Plan {
+            category: Category::Unmatched,
+            keys: if back { "[(" } else { "])" }.into(),
+            cost: 2,
+        });
+    }
+    if let Some(k) = f.sentence_hops {
+        let p = repeated(
+            Category::Sentence,
+            if back { "(" } else { ")" },
+            1,
+            k,
+            k <= GLANCE,
+        );
+        plans.push(Plan {
+            category: p.category,
+            keys: p.keys,
+            cost: p.cost,
+        });
+    }
+    // Type a few letters of what's there: `/`, them, Enter.
+    if let Some(c) = f.search_chars {
+        plans.push(Plan {
+            category: Category::SearchTo,
+            keys: if back { "?<text>" } else { "/<text>" }.into(),
+            cost: c + 2,
         });
     }
     if f.last_change && m.lines != 0 {
@@ -1742,5 +1855,40 @@ mod tests {
         );
         // A change: `cw` from the word ends, as Vim does it.
         assert_eq!(keys(Operator::Change, &bracket, false), ["c%", "cW", "c3w"]);
+    }
+
+    #[test]
+    fn wider_search_for_the_cheapest_way() {
+        // 26 lines down; blank lines at 10 and 24: `}}` then `2j` (4 keys).
+        let f = MotionFacts {
+            paragraph_lines: Some(vec![10, 24, 40]),
+            ..Default::default()
+        };
+        assert_eq!(
+            plan(26, 0, f),
+            (Category::Paragraph, "}×2 then jj".into(), 4)
+        );
+        // One past the target and back.
+        let f = MotionFacts {
+            paragraph_lines: Some(vec![13]),
+            ..Default::default()
+        };
+        assert_eq!(plan(12, 0, f), (Category::Paragraph, "} then k".into(), 2));
+        // Far away and visible: three letters of it.
+        let f = MotionFacts {
+            search_chars: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(plan(40, 12, f), (Category::SearchTo, "/<text>".into(), 5));
+        let f = MotionFacts {
+            section_hops: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(plan(30, 0, f), (Category::Section, "]]".into(), 2));
+        let f = MotionFacts {
+            unmatched_paren: true,
+            ..Default::default()
+        };
+        assert_eq!(plan(0, -14, f), (Category::Unmatched, "[(".into(), 2));
     }
 }

@@ -95,6 +95,21 @@ function! Test_same_selection() abort
   call assert_false(flowbuddy#same_selection([], sel, 5000))
 endfunction
 
+function! Test_wider_facts() abort
+  call s:buf(['a', 'b', '', 'c', 'd', '', 'e', 'f', 'g', 'h'])
+  let f = s:facts([1, 1], [8, 1])
+  call assert_equal([2, 5, 9], f.paragraph_lines)
+  " Sections are lines starting with {, C style.
+  call s:buf(['int a()', '{', '  x;', '}', 'int b()', '{', 'let z = (1, 2, 3);'])
+  call assert_equal(2, s:facts([1, 1], [6, 1]).section_hops)
+  " From inside the parentheses back to the (.
+  call assert_true(s:facts([7, 14], [7, 9]).unmatched_paren)
+  " Searching for 'z' from line 1 finds it first: one letter.
+  call assert_equal(1, s:facts([1, 1], [7, 5]).search_chars)
+  call s:buf(['One sentence. Two sentences here. Three.'])
+  call assert_equal(2, s:facts([1, 1], [1, 35]).sentence_hops)
+endfunction
+
 function! Test_time_budget() abort
   call s:buf(['a', 'b', '', 'c', 'd', '', 'e'])
   call assert_equal(1, s:facts([1, 1], [3, 1]).paragraph_hops)

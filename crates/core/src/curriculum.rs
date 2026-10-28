@@ -280,6 +280,20 @@ pub static CURRICULUM: &[Item] = &[
     ),
     // Level 2: bigger moves and text objects.
     item!(
+        "search",
+        1,
+        "`/` and a few letters",
+        "jump to the next place those letters appear",
+        "See the word you want three screens down? Search for it.",
+        |s| matches!(
+            &s.event,
+            Some(VimEvent::Cmdline {
+                kind: '/' | '?',
+                text: Some(_)
+            })
+        )
+    ),
+    item!(
         "history-search",
         1,
         "`Ctrl-r`",
@@ -314,6 +328,14 @@ pub static CURRICULUM: &[Item] = &[
         // Insert-mode Ctrl-n isn't told apart from other keys: said with
         // `flowbuddy learn --know completion`.
         |_| false
+    ),
+    item!(
+        "screen-lines",
+        2,
+        "`gj` and `gk`",
+        "down or up a line as it's shown, when long lines wrap",
+        "Move through a long paragraph of prose line by line.",
+        |s| is(s, &["gj", "gk"])
     ),
     item!(
         "paragraph",
@@ -725,6 +747,30 @@ pub static CURRICULUM: &[Item] = &[
         |s| is(s, &["gn", "gN"]) && !s.before.is_visual()
     ),
     item!(
+        "section",
+        3,
+        "`]]` and `[[`",
+        "the next or previous section: a line starting with `{`",
+        "Hop between functions in C, where `{` starts the line.",
+        |s| is(s, &["]]", "[[", "][", "[]"])
+    ),
+    item!(
+        "unmatched",
+        3,
+        "`[(` and `])`",
+        "the opening or closing bracket around the cursor",
+        "From inside a long argument list, back to its `(`.",
+        |s| is(s, &["[(", "])", "[{", "]}"])
+    ),
+    item!(
+        "sentence-motion",
+        3,
+        "`(` and `)`",
+        "back or forward a sentence",
+        "Move through comments and documentation a sentence at a time.",
+        |s| is(s, &["(", ")"])
+    ),
+    item!(
         "fold",
         3,
         "`za`, `zc` and `zo`",
@@ -882,6 +928,8 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("replay-macro", &["macro"]),
     ("cgn", &["dot", "star"]),
     ("gn-select", &["cgn"]),
+    ("search-next", &["search"]),
+    ("unmatched", &["percent"]),
     ("sentence", &["ciw"]),
     ("block-append", &["visual-block"]),
     ("undo-time", &["undo-redo"]),
@@ -949,6 +997,11 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("motion.search", &["search-next"]),
     ("motion.last-change", &["change-list"]),
     ("motion.line-number", &["goto-line"]),
+    ("motion.section", &["section"]),
+    ("motion.unmatched", &["unmatched"]),
+    ("motion.sentence", &["sentence-motion"]),
+    ("motion.screen-line", &["screen-lines"]),
+    ("motion.search-to", &["search"]),
     ("motion.scroll", &["center"]),
     ("motion.mark", &["marks"]),
     ("motion.text-object", &["ciw"]),

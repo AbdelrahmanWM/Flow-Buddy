@@ -15,6 +15,8 @@ Flow Buddy coaches in five places. Each one supports a different part of Vim, so
 | Undo runs, searches again, `:s` again | ✓ (no `:earlier`, no `g&`) | ✓ | | | |
 | Text objects (`ciw`, `di(`) and shorter operator motions | ✓ with the companion | ✓ with the plugin | | | |
 | Scrolling, marks, `g;`, `Ctrl-o`, `42G` | ✓ | ✓ with the plugin | | | |
+| `}}` then `2j`, `/` a few letters, `]]`, `[(` | ✓ | ✓ with the plugin | | | |
+| `(` `)` sentences, `gj` `gk` on wrapped lines | | ✓ with the plugin | | | |
 | The same selection again (`gv`) | ✓ with the companion | ✓ with the plugin | | | |
 | Windows and buffers | ✓ (editor groups) | ✓ | | | |
 | Editor UI: files, terminal, tabs and splits by click | ✓ | | | | |

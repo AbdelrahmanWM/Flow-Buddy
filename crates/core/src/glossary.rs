@@ -145,6 +145,11 @@ fn phrase(keys: &str) -> Option<&'static str> {
     Some(match keys {
         "cd ../.." => "go up two folders at once (add more ../ for more)",
         "cd -" => "go back to the folder you were in before",
+        "Ctrl-x Ctrl-f" => "while typing: complete a file name",
+        "Ctrl-x Ctrl-l" => "while typing: complete a whole line",
+        "Ctrl-x Ctrl-o" => "while typing: complete code (omni completion)",
+        "Ctrl-r =" => "while typing: work out a sum and type the answer",
+        "Ctrl-g u" => "while typing: start a new undo step",
         "g Ctrl-a" => "on a selection: count up line by line (1, 2, 3…)",
         "g Ctrl-g" => "count the words, lines and characters",
         "cd .." => "go up one folder",
@@ -201,6 +206,15 @@ fn whole(word: &str, insert: bool) -> Option<&'static str> {
             "Ctrl-l" => return Some("clear the screen, keeping what you've typed (shell)"),
             "Ctrl-n" => return Some("complete the word from words in your open files"),
             "Ctrl-a" => return Some("insert the text you typed last time"),
+            "Ctrl-t" => return Some("indent the line"),
+            "Ctrl-d" => return Some("unindent the line"),
+            "Ctrl-e" => return Some("copy the character below the cursor"),
+            "Ctrl-y" => return Some("copy the character above the cursor"),
+            "Ctrl-v" => return Some("type the next key as it is (a real Tab, say)"),
+            "Ctrl-k" => return Some("type a special character from two keys (e' is é)"),
+            "Ctrl-p" => return Some("complete the word from earlier words"),
+            "Ctrl-x" => return Some("start a kind of completion: the next key says which"),
+            "Ctrl-f" => return Some("after Ctrl-x: complete a file name"),
             "Esc" => return Some("leave Insert mode"),
             _ => {}
         }

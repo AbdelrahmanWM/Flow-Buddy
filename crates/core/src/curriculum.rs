@@ -13,7 +13,7 @@ use crate::ipc::CommandShape;
 use crate::key::Sym;
 use crate::rules::vim::command;
 use crate::rules::vscode::UiWhat;
-use crate::vim::{Command, Step, VimEvent};
+use crate::vim::{Command, InsertKey, Step, VimEvent};
 
 pub struct Item {
     /// Stable id, kept in the database: `ci-quote`.
@@ -49,6 +49,12 @@ const IN_SHELL: &[ContextKind] = &[ContextKind::BashVi, ContextKind::Shell];
 impl Item {
     pub fn used_in(&self, step: &Step) -> bool {
         (self.recognise)(step)
+    }
+
+    /// Used while typing, in Insert mode: its keys mean their Insert-mode
+    /// things.
+    pub fn while_typing(&self) -> bool {
+        self.keys.contains("while typing")
     }
 
     pub fn applies_in(&self, ctx: ContextKind) -> bool {
@@ -194,6 +200,14 @@ fn wincmd(step: &Step, keys: &str) -> bool {
 
 const VIM_AND_VSCODE: &[ContextKind] = &[ContextKind::TerminalVim, ContextKind::VsCodeVim];
 const VIM_ONLY: &[ContextKind] = &[ContextKind::TerminalVim];
+
+fn insert_key(step: &Step) -> Option<InsertKey> {
+    crate::rules::vim::insert_key(step)
+}
+
+fn insert_ctrl(step: &Step, keys: &str) -> bool {
+    matches!(insert_key(step), Some(InsertKey::Ctrl(c)) if keys.contains(c))
+}
 
 fn visual_then(step: &Step, keys: &str) -> bool {
     step.before.is_visual() && head(step, keys)
@@ -417,9 +431,7 @@ pub static CURRICULUM: &[Item] = &[
         "`Ctrl-n`",
         "complete the word you're typing from words in your files",
         "Type the start of a long name and let Vim finish it.",
-        // Insert-mode Ctrl-n isn't told apart from other keys: said with
-        // `flowbuddy learn --know completion`.
-        |_| false
+        |s| matches!(insert_key(s), Some(InsertKey::Ctrl('n' | 'p')))
     ),
     item!(
         "screen-lines",
@@ -576,6 +588,14 @@ pub static CURRICULUM: &[Item] = &[
         "to the last character of the line that isn't a space",
         "Land on the semicolon, not on trailing spaces.",
         |s| is(s, &["g_"])
+    ),
+    item!(
+        "insert-delete",
+        2,
+        "`Ctrl-w` and `Ctrl-u` while typing",
+        "delete the word, or everything, you typed before the cursor",
+        "Retype a word without holding Backspace.",
+        |s| matches!(insert_key(s), Some(InsertKey::CtrlW | InsertKey::CtrlU))
     ),
     item!(
         "page",
@@ -885,6 +905,14 @@ pub static CURRICULUM: &[Item] = &[
         "copy or delete the selected lines whole, wherever the selection starts",
         "Delete every line a selection touches.",
         |s| visual_then(s, "YDXR")
+    ),
+    item!(
+        "insert-indent",
+        3,
+        "`Ctrl-t` and `Ctrl-d` while typing",
+        "indent or unindent the line without leaving Insert mode",
+        "Fix the indent of the line you're writing as you go.",
+        |s| insert_ctrl(s, "td")
     ),
     item!(
         "scroll-line",
@@ -1566,6 +1594,57 @@ pub static CURRICULUM: &[Item] = &[
         None
     ),
     item!(
+        "insert-again",
+        4,
+        "`Ctrl-a` while typing",
+        "type again what you typed last time in Insert mode",
+        "Add the same closing text in several places.",
+        |s| insert_ctrl(s, "a@")
+    ),
+    item!(
+        "insert-copy",
+        4,
+        "`Ctrl-y` and `Ctrl-e` while typing",
+        "copy the character from the line above, or below",
+        "Repeat most of the line above, a character at a time.",
+        |s| insert_ctrl(s, "ye")
+    ),
+    item!(
+        "completion-kinds",
+        4,
+        "`Ctrl-x Ctrl-f` and `Ctrl-x Ctrl-l`",
+        "complete a file name, or a whole line (`Ctrl-x Ctrl-o` for code)",
+        "Type a path without looking it up.",
+        |s| matches!(
+            insert_key(s),
+            Some(InsertKey::Then('x', _) | InsertKey::Ctrl('x'))
+        )
+    ),
+    item!(
+        "insert-literal",
+        4,
+        "`Ctrl-v` and `Ctrl-k` while typing",
+        "type a key as it is (a real Tab), or a special character (`Ctrl-k e'` is é)",
+        "Type a Tab in a file that turns tabs into spaces.",
+        |s| insert_ctrl(s, "vkq")
+    ),
+    item!(
+        "insert-undo-break",
+        4,
+        "`Ctrl-g u` while typing",
+        "start a new undo step without leaving Insert mode",
+        "Keep one undo from wiping out a whole paragraph you typed.",
+        |s| matches!(insert_key(s), Some(InsertKey::Then('g', _)))
+    ),
+    item!(
+        "insert-expr",
+        4,
+        "`Ctrl-r =` while typing",
+        "work out a sum and type the answer",
+        "Type `Ctrl-r =` 60*24 Enter to insert 1440.",
+        |s| matches!(insert_key(s), Some(InsertKey::Then('r', '=')))
+    ),
+    item!(
         "line-undo",
         4,
         "`U`",
@@ -1594,6 +1673,12 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("bigword", &["word"]),
     ("till", &["find"]),
     ("scroll-line", &["half-page"]),
+    ("insert-again", &["insert-keys"]),
+    ("insert-copy", &["insert-keys"]),
+    ("completion-kinds", &["completion"]),
+    ("insert-literal", &["insert-keys"]),
+    ("insert-undo-break", &["insert-keys"]),
+    ("insert-expr", &["insert-keys"]),
     ("visual-swap", &["visual-line"]),
     ("visual-linewise", &["visual-line"]),
     ("visual-increment", &["increment", "visual-block"]),
@@ -1680,7 +1765,7 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("vim.repeat-x", &["word", "d-to-end"]),
     ("vim.arrows-normal", &[]),
     ("vim.arrows-insert", &[]),
-    ("vim.backspace-streak", &[]),
+    ("vim.backspace-streak", &["insert-delete"]),
     ("vim.repeat-dd", &["count", "dap"]),
     ("vim.w-then-q", &["write-quit"]),
     (
@@ -2342,6 +2427,15 @@ mod tests {
             ("vjo", "visual-swap"),
             ("vjD", "visual-linewise"),
             ("<C-v>jjg<C-a>", "visual-increment"),
+            ("ia<C-n>", "completion"),
+            ("ia<C-w>", "insert-delete"),
+            ("ia<C-t>", "insert-indent"),
+            ("i<C-a>", "insert-again"),
+            ("i<C-y>", "insert-copy"),
+            ("i<C-x><C-f>", "completion-kinds"),
+            ("i<C-v><Tab>", "insert-literal"),
+            ("i<C-g>u", "insert-undo-break"),
+            ("i<C-r>=", "insert-expr"),
         ];
         for (keys, id) in cases {
             assert!(
@@ -2685,7 +2779,7 @@ mod tests {
         for item in CURRICULUM {
             for span in crate::glossary::code_spans(item.keys) {
                 assert!(
-                    !crate::glossary::explain_keys(span, false).is_empty(),
+                    !crate::glossary::explain_keys(span, item.while_typing()).is_empty(),
                     "{}: `{span}` has no explanation",
                     item.id
                 );

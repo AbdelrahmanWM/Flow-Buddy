@@ -72,6 +72,12 @@ pub enum InsertKey {
     CtrlR,
     /// Ctrl-o: run one Normal-mode command (Vim).
     CtrlO,
+    /// Another Ctrl key, by its letter: `Ctrl-t` indents, `Ctrl-n`
+    /// completes.
+    Ctrl(char),
+    /// A two-key command: `Ctrl-x` then `f` (file names), `Ctrl-g` then
+    /// `u`, `Ctrl-r` then `=`. The second key's letter, never text.
+    Then(char, char),
     Arrow(Sym),
     Enter,
     Other,
@@ -165,6 +171,10 @@ pub struct Tracker {
     /// Ctrl-r in Insert mode: the next key is a register name (Vim) or
     /// search text follows until Enter/Esc (readline).
     after_ctrl_r: bool,
+    /// After Insert-mode `Ctrl-x`/`Ctrl-g` (the next key says what), or
+    /// `Ctrl-v`/`Ctrl-k` (the next keys are text, not kept): the prefix and
+    /// how many keys it takes.
+    insert_prefix: Option<(char, u8)>,
     mappings: Mappings,
     /// The last character typed in Insert mode, for two-key mappings.
     last_text: Option<(char, u64)>,
@@ -188,6 +198,7 @@ impl Tracker {
             cmdline_return: VimMode::Normal,
             insert_once: false,
             after_ctrl_r: false,
+            insert_prefix: None,
             mappings: Mappings::default(),
             last_text: None,
             now_ms: 0,
@@ -225,6 +236,7 @@ impl Tracker {
         self.cmdline.clear();
         self.insert_once = false;
         self.after_ctrl_r = false;
+        self.insert_prefix = None;
     }
 
     pub fn feed(&mut self, stroke: KeyStroke) -> Step {
@@ -267,9 +279,42 @@ impl Tracker {
     }
 
     fn insert_key(&mut self, key: Key) -> Option<VimEvent> {
+        if let Some((prefix, left)) = self.insert_prefix.take() {
+            if left > 1 {
+                self.insert_prefix = Some((prefix, left - 1));
+            }
+            return Some(VimEvent::Insert(match (prefix, key.sym) {
+                // Literal keys and digraphs are text: not kept.
+                ('v' | 'k', _) => InsertKey::Other,
+                ('g', Sym::Down) => InsertKey::Then('g', 'j'),
+                ('g', Sym::Up) => InsertKey::Then('g', 'k'),
+                // Only the keys that mean something after the prefix: any
+                // other is text, and isn't kept.
+                (_, Sym::Char(c)) => {
+                    let c = c.to_ascii_lowercase();
+                    let known = match prefix {
+                        'x' => "defiklnoprstuvyz]",
+                        'g' => "ujk",
+                        _ => "",
+                    };
+                    if known.contains(c) {
+                        InsertKey::Then(prefix, c)
+                    } else {
+                        InsertKey::Other
+                    }
+                }
+                _ => InsertKey::Other,
+            }));
+        }
         if self.after_ctrl_r {
             match self.flavor {
-                Flavor::Vim => self.after_ctrl_r = false,
+                Flavor::Vim => {
+                    self.after_ctrl_r = false;
+                    // `Ctrl-r =`: work something out and insert it.
+                    if key.sym == Sym::Char('=') {
+                        return Some(VimEvent::Insert(InsertKey::Then('r', '=')));
+                    }
+                }
                 Flavor::Readline => {
                     if key == Key::ENTER {
                         self.after_ctrl_r = false;
@@ -292,6 +337,18 @@ impl Tracker {
             InsertKey::CtrlO
         } else if key.is_arrow() {
             InsertKey::Arrow(key.sym)
+        } else if key.mods.ctrl
+            && self.flavor == Flavor::Vim
+            && let Sym::Char(c) = key.sym
+            && (c.is_ascii_alphabetic() || matches!(c, '@' | ']'))
+        {
+            let c = c.to_ascii_lowercase();
+            self.insert_prefix = match c {
+                'x' | 'g' | 'v' | 'q' => Some((if c == 'q' { 'v' } else { c }, 1)),
+                'k' => Some(('k', 2)),
+                _ => None,
+            };
+            InsertKey::Ctrl(c)
         } else {
             match key.sym {
                 Sym::Backspace if key.mods.is_empty() => InsertKey::Backspace,
@@ -857,6 +914,38 @@ mod tests {
         t.reset_known(VimMode::Insert);
         run(&mut t, "<Esc>v");
         assert!(!t.confident());
+    }
+
+    #[test]
+    fn insert_ctrl_keys_are_told_apart_and_literal_text_is_not_kept() {
+        let mut t = Tracker::new(Flavor::Vim);
+        t.reset_known(VimMode::Insert);
+        let ev = |t: &mut Tracker, keys| {
+            run(t, keys)
+                .into_iter()
+                .filter_map(|s| s.event)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ev(&mut t, "<C-t><C-x><C-f>"),
+            [
+                VimEvent::Insert(InsertKey::Ctrl('t')),
+                VimEvent::Insert(InsertKey::Ctrl('x')),
+                VimEvent::Insert(InsertKey::Then('x', 'f')),
+            ]
+        );
+        // What follows Ctrl-v, Ctrl-k, or a prefix it doesn't mean
+        // anything after, is text: only "other" is kept.
+        for keys in ["<C-v>a", "<C-k>e'", "<C-g>q"] {
+            let events = ev(&mut t, keys);
+            assert!(
+                events[1..]
+                    .iter()
+                    .all(|e| *e == VimEvent::Insert(InsertKey::Other)),
+                "{keys}: {events:?}"
+            );
+        }
+        assert_eq!(t.mode(), VimMode::Insert);
     }
 
     #[test]

@@ -34,7 +34,7 @@ export default class FlowBuddyExtension extends Extension {
             },
             onDisconnected: () => this._indicator.setConnected(false),
         });
-        this._indicator = new Indicator(this._link);
+        this._indicator = new Indicator(this._link, () => this.openPreferences());
         Main.panel.addToStatusArea(this.uuid, this._indicator);
         this._card = new Card();
         // Shortcuts for the current tip, so it's never a trip to the menu.

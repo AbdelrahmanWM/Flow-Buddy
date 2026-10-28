@@ -32,7 +32,7 @@ jobs:
           gjs vscode-extension/test/facts.test.js
           gjs vscode-extension/test/textguard.test.js
       - name: Test the GNOME extension's tip markup
-        run: gjs -m gnome-extension/test/markup.test.js
+        run: gjs -m gnome-extension/test/markup.test.js && gjs -m gnome-extension/test/settings-model.test.js
       - name: Test the Vim plugin's motion facts
         run: |
           command -v vim >/dev/null || sudo apt-get install -yq vim

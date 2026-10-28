@@ -2380,7 +2380,7 @@ pub(crate) mod tests {
         type_at(
             &mut app,
             "<Esc>isecretpassword hunter2<BS><BS><BS><BS><BS><BS><BS><Esc>\
-             :e secretfile.txt<CR>/secretsearch<CR>jjjjjjjxxxxxdddddd:w<CR>:q<CR>w",
+             :e secretfile.txt<CR>/secretsearch<CR>jjjjjjjjjjjjxxxxxdddddd:w<CR>:q<CR>w",
             1_000,
         );
         focus(&mut app, "org.gnome.Terminal", 100);

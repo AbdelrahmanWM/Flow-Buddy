@@ -93,6 +93,7 @@ pub fn repeat_jk() -> RepeatRule {
         },
     })
     .replaced_by_editor()
+    .skip_deliberate()
     .when_held(|unit, secs| {
         let (page, para) = if unit == "j" { ("Ctrl-d", "}") } else { ("Ctrl-u", "{") };
         format!("You held {unit} for {secs:.1} s. `{page}` moves half a page per press, `{para}` jumps to the next blank line.")
@@ -127,6 +128,7 @@ pub fn repeat_hl() -> RepeatRule {
         },
     })
     .replaced_by_editor()
+    .skip_deliberate()
     .when_held(|unit, secs| {
         let (word, find) = if unit == "l" { ("w", "f<char>") } else { ("b", "F<char>") };
         format!("You held {unit} for {secs:.1} s. `{word}` moves a word per press; `{find}` jumps straight to a character.")

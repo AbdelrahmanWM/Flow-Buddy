@@ -733,6 +733,14 @@ impl Rule for MotionRule {
         if ev.keys_used == 0 {
             return;
         }
+        // Slow and steady: reading through, not trying to get somewhere.
+        let m = &ev.motion;
+        if m.moves >= 3
+            && m.end_ms.saturating_sub(m.start_ms) / u64::from(m.moves - 1)
+                >= crate::rules::repeat::READING_MS
+        {
+            return;
+        }
         // Only what you're ready for: a plan a step too far gives way to
         // the next best.
         let all = plans_for(&ev.motion, &self.known);
@@ -1890,5 +1898,29 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(plan(0, -14, f), (Category::Unmatched, "[(".into(), 2));
+    }
+
+    #[test]
+    fn reading_through_gets_no_tip() {
+        let mut ev = MotionEvent {
+            motion: Motion {
+                start_ms: 0,
+                end_ms: 5_600,
+                moves: 8,
+                mode: EditorMode::Normal,
+                lines: 8,
+                cols: 0,
+                facts: MotionFacts::default(),
+            },
+            keys_used: 8,
+        };
+        let tips = |ev: &MotionEvent| {
+            let mut out = Vec::new();
+            MotionRule::new(Category::Count).on_motion(ev, &mut out);
+            crate::rules::testing::findings(&out).len()
+        };
+        assert_eq!(tips(&ev), 0, "a line every 0.8 s: reading");
+        ev.motion.end_ms = 800;
+        assert_eq!(tips(&ev), 1);
     }
 }

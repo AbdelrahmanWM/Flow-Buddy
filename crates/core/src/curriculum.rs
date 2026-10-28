@@ -643,7 +643,13 @@ pub static CURRICULUM: &[Item] = &[
         "`zz`, `zt` and `zb`",
         "scroll so this line is in the middle, top or bottom",
         "Bring the line you're on into the middle of the screen.",
-        |s| is(s, &["zz", "zt", "zb"])
+        // `z.`, `z<CR>` and `z-` do the same, landing on the first non-blank.
+        |s| is(s, &["zz", "zt", "zb", "z.", "z-"])
+            || cmd(s).is_some_and(|c| {
+                c.keys.len() == 2
+                    && c.keys[0].plain_char() == Some('z')
+                    && c.keys[1].sym == Sym::Enter
+            })
     ),
     item!(
         "dap",
@@ -841,6 +847,14 @@ pub static CURRICULUM: &[Item] = &[
                     && c.keys[0].plain_char() == Some('g')
                     && c.keys[1].is_ctrl('g'))
                 || ex(s, &[("f", "file")]))
+    ),
+    item!(
+        "spell",
+        3,
+        "`]s` and `z=`",
+        "the next misspelled word, and suggestions for it (`zg` adds a word)",
+        "Fix the typos in a README one by one.",
+        |s| is(s, &["]s", "[s", "]S", "[S", "z=", "zg", "zw"])
     ),
     item!(
         "scroll-line",
@@ -1266,6 +1280,48 @@ pub static CURRICULUM: &[Item] = &[
         |s| is(s, &["g<"])
     ),
     item!(
+        "side-scroll",
+        4,
+        "`zl`, `zh`, `zs` and `ze`",
+        "scroll sideways when long lines don't wrap",
+        "Read the end of a wide log line without moving the cursor along it.",
+        |s| is(s, &["zh", "zl", "zH", "zL", "zs", "ze"])
+    ),
+    item!(
+        "fold-move",
+        4,
+        "`zj` and `zk`",
+        "to the next or previous fold (`[z` and `]z`: this fold's start and end)",
+        "Step from one folded function to the next.",
+        |s| is(s, &["zj", "zk", "[z", "]z"])
+    ),
+    item!(
+        "fold-levels",
+        4,
+        "`zm` and `zr`",
+        "fold one level more or less everywhere (`zv` shows the cursor's line)",
+        "See a file's outline, then open it a level at a time.",
+        |s| is(
+            s,
+            &[
+                "zm", "zr", "zv", "zx", "zX", "zi", "zn", "zN", "zA", "zC", "zO"
+            ]
+        )
+    ),
+    item!(
+        "fold-make",
+        4,
+        "`zfap` and `zd`",
+        "make a fold over a motion, or remove one (with manual folding)",
+        "Fold away a long block you don't need to see.",
+        |s| head(s, "z")
+            && cmd(s).is_some_and(|c| c
+                .keys
+                .get(1)
+                .and_then(|k| k.plain_char())
+                .is_some_and(|k| "fFdDE".contains(k)))
+    ),
+    item!(
         "line-undo",
         4,
         "`U`",
@@ -1294,6 +1350,9 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("bigword", &["word"]),
     ("till", &["find"]),
     ("scroll-line", &["half-page"]),
+    ("fold-move", &["fold"]),
+    ("fold-levels", &["fold"]),
+    ("fold-make", &["fold"]),
     ("word-end-back", &["word-end"]),
     ("star-partial", &["star"]),
     ("repeat-sub", &["substitute-cmd"]),
@@ -1995,6 +2054,15 @@ mod tests {
             ("gM", "line-middle"),
             ("g$", "screen-line-ends"),
             ("g<lt>", "last-output"),
+            ("z.", "center"),
+            ("z<CR>", "center"),
+            ("]s", "spell"),
+            ("z=", "spell"),
+            ("zl", "side-scroll"),
+            ("zj", "fold-move"),
+            ("zm", "fold-levels"),
+            ("zfap", "fold-make"),
+            ("zd", "fold-make"),
         ];
         for (keys, id) in cases {
             assert!(

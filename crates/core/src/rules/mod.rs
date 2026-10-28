@@ -13,6 +13,7 @@ use crate::rule::Rule;
 /// wins: the more of the gesture its advice covers, the earlier. Rules
 /// not listed come after, in [`all`] order.
 pub const PRECEDENCE: &[&str] = &[
+    "vim.overshoot",
     "vim.visual-block",
     "vim.macro",
     "vim.change-matches",

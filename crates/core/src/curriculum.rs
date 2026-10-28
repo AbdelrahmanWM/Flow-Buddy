@@ -977,6 +977,8 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("vim.increment", &["increment"]),
     ("vim.insert-keys", &["insert-keys"]),
     ("vim.windows", &["windows"]),
+    ("vim.overshoot", &["count"]),
+    ("vim.find-repeat", &["find", "search"]),
     ("vim.operator-run", &["count"]),
     ("vim.scroll-run", &["half-page", "center"]),
     ("vim.search-again", &["search-next"]),

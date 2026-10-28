@@ -946,21 +946,22 @@ fn learn_coverage() -> String {
     use flowbuddy_core::inventory;
     let mut out = String::from("Vim's command index (:help index)\n\n");
     out += &format!(
-        "{:<10} {:>8} {:>8} {:>8}\n",
-        "mode", "commands", "taught", "coached"
+        "{:<10} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8}\n",
+        "mode", "commands", "coached", "taught", "starting", "skipped", "missing"
     );
-    let pct = |n: usize, of: usize| format!("{}%", n * 100 / of.max(1));
-    for (mode, (all, taught, coached)) in inventory::coverage() {
+    for (mode, t) in inventory::coverage() {
         out += &format!(
-            "{mode:<10} {all:>8} {:>8} {:>8}\n",
-            pct(taught, all),
-            pct(coached, all)
+            "{mode:<10} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8}\n",
+            t.commands, t.coached, t.taught, t.starting, t.skipped, t.missing
         );
     }
     let gaps = inventory::gaps();
     if !gaps.is_empty() {
         const SHOWN: usize = 40;
-        out += &format!("\nNot covered yet ({}):\n", gaps.len());
+        out += &format!(
+            "\nNot covered yet, nor left out on purpose ({}):\n",
+            gaps.len()
+        );
         for e in gaps.iter().take(SHOWN) {
             out += &format!("  {:<8} {:<7} {}\n", e.keys, e.mode, e.what);
         }

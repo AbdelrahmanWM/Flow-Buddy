@@ -1086,18 +1086,29 @@ pub fn items_of_command(cmd: &str) -> Vec<&'static str> {
         .filter(|w| !matches!(*w, "then" | "or" | "and" | "…"))
         .map(|w| w.split('×').next().unwrap_or(w).trim_end_matches(','))
     {
-        let mut t = crate::vim::Tracker::new(crate::vim::Flavor::Vim);
-        t.reset_known(VimMode::Normal);
-        for (i, key) in command_keys(press).into_iter().enumerate() {
-            let step = t.feed(crate::key::KeyStroke {
-                key,
-                repeat: false,
-                at_ms: i as u64,
-            });
-            for item in CURRICULUM {
-                if item.used_in(&step) && !out.contains(&item.id) {
-                    out.push(item.id);
-                }
+        for id in items_of_keys(&command_keys(press)) {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
+/// The curriculum items these keys are, typed from Normal mode.
+pub fn items_of_keys(keys: &[crate::key::Key]) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    let mut t = crate::vim::Tracker::new(crate::vim::Flavor::Vim);
+    t.reset_known(VimMode::Normal);
+    for (i, key) in keys.iter().enumerate() {
+        let step = t.feed(crate::key::KeyStroke {
+            key: *key,
+            repeat: false,
+            at_ms: i as u64,
+        });
+        for item in CURRICULUM {
+            if item.used_in(&step) && !out.contains(&item.id) {
+                out.push(item.id);
             }
         }
     }

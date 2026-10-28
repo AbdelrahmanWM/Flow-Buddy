@@ -467,15 +467,54 @@ fn horizontal(lines: i64, cols: i64, f: &MotionFacts) -> Vec<Part> {
     parts
 }
 
-/// Counting characters or lines by eye is hard, so on a tie any other
-/// motion wins over a count; otherwise the earlier one.
-fn better(a_cost: u32, a: Category, b_cost: u32, b: Category) -> bool {
-    (b_cost, b == Category::Count) < (a_cost, a == Category::Count)
+/// How much effort typing `keys` takes, in half-keys: each key is 2,
+/// and a shifted key (`}`, `$`, `G`), a `Ctrl` chord, or a count digit
+/// (counted by eye) is 1 more. `cost` is the plan's key count.
+pub fn effort(keys: &str, cost: u32) -> u32 {
+    let mut extra = 0;
+    for word in keys.split_whitespace() {
+        if matches!(word, "then" | "or" | "and") {
+            continue;
+        }
+        let word = word.trim_end_matches(',');
+        let (cmd, times) = match word.split_once('×') {
+            Some((c, n)) => (c, n.parse().unwrap_or(1)),
+            None => (word, 1),
+        };
+        let chords = cmd.matches("Ctrl-").count() as u32;
+        let rest = cmd
+            .replace("Ctrl-", "")
+            .replace("<char>", "")
+            .replace("<text>", "");
+        let line = u32::from(rest.contains("<line>")) * 2;
+        let rest = rest.replace("<line>", "");
+        let shifted = rest
+            .chars()
+            .filter(|c| c.is_ascii_uppercase() || "{}$%^~#*:()?_+<>|\"&!@".contains(*c))
+            .count() as u32;
+        let digits = rest
+            .chars()
+            .filter(|c| c.is_ascii_digit() && *c != '0')
+            .count() as u32;
+        extra += (chords + shifted + digits + line) * times;
+    }
+    2 * cost + extra
+}
+
+/// Less effort wins. Counting characters or lines by eye is hard, so on a
+/// tie any other motion wins over a count; otherwise the earlier one.
+fn better(a_effort: u32, a: Category, b_effort: u32, b: Category) -> bool {
+    (b_effort, b == Category::Count) < (a_effort, a == Category::Count)
 }
 
 fn cheapest_part(parts: Vec<Part>) -> Option<Part> {
     parts.into_iter().reduce(|a, b| {
-        if better(a.cost, a.category, b.cost, b.category) {
+        if better(
+            effort(&a.keys, a.cost),
+            a.category,
+            effort(&b.keys, b.cost),
+            b.category,
+        ) {
             b
         } else {
             a
@@ -623,9 +662,10 @@ pub fn plans_for(m: &Motion, known: &Known) -> Vec<Plan> {
     }
     plans.retain(|p| p.cost > 0 && known.ready(p.skill()));
     plans.sort_by(|a, b| {
-        if better(a.cost, a.category, b.cost, b.category) {
+        let (ea, eb) = (effort(&a.keys, a.cost), effort(&b.keys, b.cost));
+        if better(ea, a.category, eb, b.category) {
             std::cmp::Ordering::Greater
-        } else if better(b.cost, b.category, a.cost, a.category) {
+        } else if better(eb, b.category, ea, a.category) {
             std::cmp::Ordering::Less
         } else {
             std::cmp::Ordering::Equal
@@ -689,6 +729,12 @@ pub struct MotionRule {
 }
 
 impl MotionRule {
+    /// Keys a plan must save to be worth a tip: the threshold, or a quarter
+    /// of a long move (a key or two off forty isn't worth breaking flow).
+    fn saving(&self, used: u32) -> u32 {
+        self.min_saving.max(used / 4)
+    }
+
     pub fn new(category: Category) -> Self {
         MotionRule {
             category,
@@ -748,14 +794,14 @@ impl Rule for MotionRule {
             return;
         };
         // A second way of a different kind, if it's also worth it.
-        let alt = all
-            .iter()
-            .find(|p| p.category != plan.category && ev.keys_used >= p.cost + self.min_saving);
+        let alt = all.iter().find(|p| {
+            p.category != plan.category && ev.keys_used >= p.cost + self.saving(ev.keys_used)
+        });
         if plan.category != self.category {
             return;
         }
         let at_ms = ev.motion.end_ms;
-        if ev.keys_used >= plan.cost + self.min_saving {
+        if ev.keys_used >= plan.cost + self.saving(ev.keys_used) {
             let used = ev.keys_used;
             out.push(RuleEvent::Finding(Finding {
                 rule_id: self.category.id(),
@@ -1922,5 +1968,24 @@ mod tests {
         assert_eq!(tips(&ev), 0, "a line every 0.8 s: reading");
         ev.motion.end_ms = 800;
         assert_eq!(tips(&ev), 1);
+    }
+
+    #[test]
+    fn effort_weighs_shift_chords_and_counting() {
+        assert_eq!(effort("w", 1), 2);
+        assert_eq!(effort("}", 1), 3, "shifted");
+        assert_eq!(effort("Ctrl-d", 1), 3, "a chord");
+        assert_eq!(effort("7j", 2), 5, "a digit to count");
+        assert_eq!(effort("Ctrl-d×3 then 4j", 5), 10 + 3 + 1);
+        assert_eq!(effort("f<char>", 2), 4);
+        // Two plain keys beat two shifted ones at the same key count.
+        assert!(effort("ww", 2) < effort("}}", 2));
+    }
+
+    #[test]
+    fn a_long_move_must_save_more() {
+        let r = MotionRule::new(Category::Count);
+        assert_eq!(r.saving(8), 3);
+        assert_eq!(r.saving(40), 10);
     }
 }

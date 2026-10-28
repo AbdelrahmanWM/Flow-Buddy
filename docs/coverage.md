@@ -24,7 +24,7 @@ Flow Buddy coaches in five places. Each one supports a different part of Vim, so
 
 ## What each one can't do
 
-- **vscodevim** has no `:earlier`/`:later`, `:g`/`:v`, `:wincmd`, `:changes`, `:undolist`, `g-`/`g+` or `g&`. This was checked against vscodevim 1.32.4's command table.
+- **vscodevim** has no `:earlier`/`:later`, `:g`/`:v`, `:wincmd`, `:changes`, `:undolist`, `g-`/`g+` or `g&`; no `gw`, `g<`, `gM`, `g Ctrl-g`, spelling (`]s`, `z=`), fold moves and levels (`zj`, `zk`, `zm`, `zr`), `zs`/`ze`, window moves (`Ctrl-w H`, `Ctrl-w T`), diff, tags or `K`; no `Ctrl-x Ctrl-f` or `Ctrl-r =` while typing; and no `:help`, `:j`, `:cd`, `:args`/`:argdo`/`:bufdo`, `:make`, `:mksession`, `:vert`, `:iabbrev`, `:oldfiles` or `:messages`. This was checked against vscodevim 1.32.4's own key tables and its Ex table, where those have no handler.
 - **Claude Code's Vim mode** (checked against Claude Code 2.1.312's own key tables) has counts, motions including `%`, `gg`, `gj`/`gk`, `f`/`t` with `;`, operators with text objects, Visual and Visual Line mode, `x`, `s`, `r`, `~`, `J`, `p`, `.` and `u`. It has no search (`/` searches the prompt history), `*`/`n`, marks, macros, registers, redo, `:` commands, or other `g` commands (`gv`, `g;`, `gI`, `g~`).
 - **vi-mode shells** edit one line. They have no text objects (bash and fish), Visual mode, registers, `o`/`O` or `:` commands.
 
@@ -33,12 +33,17 @@ Flow Buddy coaches in five places. Each one supports a different part of Vim, so
 These are in the curriculum, so the daily "something new" teaches them and `flowbuddy learn` tracks them, but no rule spots a habit that calls for them:
 
 - Folding (`za`, `zc`, `zo`), the quickfix list (`:cn`, `:cp`), `gn` on its own, sentence objects (`das`, `cis`) and `Ctrl-v` then `$A`.
-- Insert-mode completion (`Ctrl-n`): Flow Buddy can't see that you used it, so say so with `flowbuddy learn --know completion`.
+- Most of the rest of Vim: see below.
 - In the shell, `Alt-.` and `^old^new` the same way; `cd -` is seen through the shell hook.
 
 ## Not coached yet
 
-- `:make` and spelling.
 - `42G` when absolute line numbers aren't shown (the number would have to be sent).
 - In VS Code: the command palette and sidebar by mouse (VS Code doesn't tell extensions), and multi-cursor.
 - KDE on Wayland, browsers (Vimium) and JetBrains (IdeaVim): #123–#125.
+
+## All of Vim
+
+The curriculum is measured against Vim's own command index (`:help index`, 1,295 commands): `flowbuddy learn --coverage` shows, by mode, how many are coached, taught, where everyone starts (`hjkl`, `i`, arrows), or left out on purpose. Nothing is left undecided: a test fails if a command in the index is none of these.
+
+What's left out, and why, is in `crates/core/data/vim-skip.tsv`: Ex mode and Select mode, the mouse, Vim script and other languages inside Vim, mappings, menus and the GUI, debugging, cscope and NetBeans, the C preprocessor jumps, the preview window, swap and viminfo files, and a few curiosities (`g?`, `ga`, `gs`). Everything else is taught, in the places where it works.

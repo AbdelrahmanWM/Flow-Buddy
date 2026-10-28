@@ -1876,7 +1876,10 @@ pub static CURRICULUM: &[Item] = &[
         "`q:` and `Ctrl-f`",
         "edit earlier commands (or searches with `q/`) in a window, with all of Vim",
         "Change one part of a long command you ran an hour ago.",
-        |s| is(s, &["q:", "q/", "q?"]) || cmdline_ctrl(s, "f")
+        |s| is(s, &["q:", "q/", "q?"]) || cmdline_ctrl(s, "f"),
+        VIM_ONLY,
+        None,
+        None
     ),
     item!(
         "search-step",
@@ -1884,7 +1887,10 @@ pub static CURRICULUM: &[Item] = &[
         "`Ctrl-g` and `Ctrl-t` while searching",
         "to the next or previous match before pressing Enter",
         "Search for a word and step to its third use, then Enter.",
-        |s| cmdline_ctrl(s, "gt")
+        |s| cmdline_ctrl(s, "gt"),
+        VIM_ONLY,
+        None,
+        None
     ),
     item!(
         "line-cmds",
@@ -2900,6 +2906,41 @@ mod tests {
         assert!(!used("\"_dd").contains(&"registers") && used("\"ayy").contains(&"registers"));
         assert!(!used("''").contains(&"marks") && !used("'.").contains(&"marks"));
         assert!(!used("vu").contains(&"undo-redo") && used("u").contains(&"undo-redo"));
+    }
+
+    #[test]
+    fn lessons_only_where_they_work() {
+        let teachable = |ctx, id| {
+            let item = find(id).unwrap();
+            item.applies_in(ctx) && crate::support::supports_all(ctx, &tip_text(item))
+        };
+        use ContextKind::{BashVi, ClaudeVim, TerminalVim, VsCodeVim};
+        for id in [
+            "goto-def",
+            "shift",
+            "visual-increment",
+            "buffers",
+            "tab-cmds",
+        ] {
+            assert!(teachable(VsCodeVim, id), "{id} works in vscodevim");
+        }
+        for id in [
+            "spell",
+            "fold-move",
+            "completion-kinds",
+            "ex-lists",
+            "help",
+            "window-move",
+            "diff",
+        ] {
+            assert!(!teachable(VsCodeVim, id), "{id} doesn't work in vscodevim");
+            assert!(teachable(TerminalVim, id), "{id} works in Vim");
+        }
+        assert!(teachable(ClaudeVim, "yank-put") && !teachable(ClaudeVim, "buffers"));
+        assert!(
+            teachable(BashVi, "replace-char") || !find("replace-char").unwrap().applies_in(BashVi)
+        );
+        assert!(!teachable(BashVi, "set-option"));
     }
 
     #[test]

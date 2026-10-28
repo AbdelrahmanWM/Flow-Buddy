@@ -17,6 +17,9 @@ use crate::vim::{Command, Step};
 #[derive(Clone, Debug, PartialEq)]
 pub struct OperatorEvent {
     pub report: OperatorReport,
+    /// The operator's motion went backwards (`db`, `dF`): the cursor was
+    /// just after the range.
+    pub backward: bool,
     /// Keys for the operator and anything that moved into place first.
     pub keys_used: u32,
     /// Keys for the operator command alone (`d3w`: 3).
@@ -925,6 +928,7 @@ impl OperatorMotionRule {
 pub fn range_plans(
     op: crate::editor::Operator,
     range: &crate::editor::OperatorRange,
+    backward: bool,
 ) -> Vec<(String, u32, &'static str)> {
     use crate::editor::Operator;
     let o = op.key();
@@ -957,6 +961,32 @@ pub fn range_plans(
         out.sort_by_key(|(_, c, _)| *c);
         return out;
     }
+    // From just after the range, going back: only if that's where you were.
+    if backward {
+        if let Some(b) = &range.back {
+            let mut add = |n: Option<u32>, motion: &str, cost: u32, skill: &'static str| {
+                if let Some(n) = n.filter(|n| *n <= GLANCE) {
+                    let (k, c) = counted(n, motion, cost);
+                    out.push((k, c, skill));
+                }
+            };
+            add(b.words, "b", 1, "word");
+            add(b.bigwords, "B", 1, "bigword");
+            add(b.find_hops, "F<char>", 2, "find");
+            add(b.till_hops, "T<char>", 2, "till");
+            if b.line_start {
+                out.push((format!("{o}0"), 2, "line-start"));
+            }
+            if b.first_nonblank {
+                out.push((format!("{o}^"), 2, "first-nonblank"));
+            }
+        }
+        out.sort_by_key(|(_, c, _)| *c);
+        return out;
+    }
+    if range.bracket {
+        out.push((format!("{o}%"), 2, "percent"));
+    }
     if f.line_end {
         match op {
             Operator::Delete => out.push(("D".to_string(), 1, "d-to-end")),
@@ -964,17 +994,34 @@ pub fn range_plans(
             Operator::Yank => out.push((format!("{o}$"), 2, "line-ends")),
         }
     }
-    // `cw` works like `ce`, so for a change the word-start count is left out.
-    if let Some(n) = range
-        .words
-        .filter(|n| *n <= GLANCE && op != Operator::Change)
-    {
-        let (k, c) = counted(n, "w", 1);
-        out.push((k, c, "word"));
-    }
-    if let Some(n) = f.word_end_hops.filter(|n| *n <= GLANCE) {
-        let (k, c) = counted(n, "e", 1);
-        out.push((k, c, "word-end"));
+    // `cw` works like `ce` (to the end of the word, not the next one), so
+    // a change's `w` comes from the word ends.
+    if op == Operator::Change {
+        if let Some(n) = f.word_end_hops.filter(|n| *n <= GLANCE) {
+            let (k, c) = counted(n, "w", 1);
+            out.push((k, c, "change-word"));
+        }
+        if let Some(n) = range.bigword_ends.filter(|n| *n <= GLANCE) {
+            let (k, c) = counted(n, "W", 1);
+            out.push((k, c, "bigword"));
+        }
+    } else {
+        if let Some(n) = range.words.filter(|n| *n <= GLANCE) {
+            let (k, c) = counted(n, "w", 1);
+            out.push((k, c, "word"));
+        }
+        if let Some(n) = f.word_end_hops.filter(|n| *n <= GLANCE) {
+            let (k, c) = counted(n, "e", 1);
+            out.push((k, c, "word-end"));
+        }
+        if let Some(n) = range.bigwords.filter(|n| *n <= GLANCE) {
+            let (k, c) = counted(n, "W", 1);
+            out.push((k, c, "bigword"));
+        }
+        if let Some(n) = range.bigword_ends.filter(|n| *n <= GLANCE) {
+            let (k, c) = counted(n, "E", 1);
+            out.push((k, c, "bigword"));
+        }
     }
     if let Some(n) = f.till_hops.filter(|n| *n <= GLANCE) {
         let (k, c) = counted(n, "t<char>", 2);
@@ -1017,7 +1064,7 @@ impl Rule for OperatorMotionRule {
             return;
         };
         let used = ev.op_keys;
-        let Some((keys, cost, _)) = range_plans(ev.report.op, range)
+        let Some((keys, cost, _)) = range_plans(ev.report.op, range, ev.backward)
             .into_iter()
             .find(|(_, _, skill)| self.known.ready(skill))
         else {
@@ -1074,7 +1121,7 @@ pub fn best_for_edit(ev: &OperatorEvent, known: &Known) -> Vec<(String, u32)> {
         .collect();
     if let Some(range) = &ev.report.range {
         out.extend(
-            range_plans(ev.report.op, range)
+            range_plans(ev.report.op, range, ev.backward)
                 .into_iter()
                 .filter(|(_, _, skill)| known.ready(skill))
                 .map(|(k, c, _)| (k, c)),
@@ -1380,6 +1427,7 @@ mod tests {
     fn text_objects_instead_of_positioning() {
         use crate::editor::{Operator, TextObject};
         let ev = |keys_used, objects: Vec<TextObject>| OperatorEvent {
+            backward: false,
             op_keys: 2,
             report: OperatorReport {
                 op: Operator::Delete,
@@ -1549,11 +1597,12 @@ mod tests {
     fn shorter_motions_for_an_operator() {
         use crate::editor::{Operator, OperatorRange};
         let ev = |op, op_keys, range| OperatorEvent {
+            backward: false,
             report: OperatorReport {
                 op,
                 at_ms: 9,
                 objects: vec![],
-                range: Some(range),
+                range: Some(Box::new(range)),
             },
             keys_used: op_keys,
             op_keys,
@@ -1588,13 +1637,13 @@ mod tests {
             words: Some(4),
             ..Default::default()
         };
-        let plans = range_plans(Operator::Change, &to_end);
+        let plans = range_plans(Operator::Change, &to_end, false);
         assert_eq!(plans[0].0, "C");
         assert!(
             plans.iter().all(|p| !p.0.contains('w')),
             "cw is ce: {plans:?}"
         );
-        let keys: Vec<_> = range_plans(Operator::Delete, &to_end)
+        let keys: Vec<_> = range_plans(Operator::Delete, &to_end, false)
             .into_iter()
             .map(|p| p.0)
             .collect();
@@ -1636,7 +1685,7 @@ mod tests {
             ..Default::default()
         };
         // 11 lines up to a blank line: `d}`, not counting them.
-        let keys: Vec<_> = range_plans(Operator::Delete, &range)
+        let keys: Vec<_> = range_plans(Operator::Delete, &range, false)
             .into_iter()
             .map(|p| p.0)
             .collect();
@@ -1647,8 +1696,51 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            range_plans(Operator::Yank, &three)[0],
+            range_plans(Operator::Yank, &three, false)[0],
             ("3yy".to_string(), 3, "count")
         );
+    }
+
+    #[test]
+    fn backward_bracket_and_bigword_plans() {
+        use crate::editor::{BackRange, Operator, OperatorRange};
+        let keys = |op, range: &OperatorRange, back| -> Vec<String> {
+            range_plans(op, range, back)
+                .into_iter()
+                .map(|p| p.0)
+                .collect()
+        };
+        let back = OperatorRange {
+            back: Some(BackRange {
+                words: Some(2),
+                find_hops: Some(1),
+                line_start: true,
+                ..Default::default()
+            }),
+            words: Some(1),
+            ..Default::default()
+        };
+        // Cursor after the range: only backward motions make sense.
+        assert_eq!(
+            keys(Operator::Delete, &back, true),
+            ["d0", "d2b", "dF<char>"]
+        );
+        assert_eq!(keys(Operator::Delete, &back, false), ["dw"]);
+        let bracket = OperatorRange {
+            bracket: true,
+            bigwords: Some(1),
+            bigword_ends: Some(1),
+            facts: MotionFacts {
+                word_end_hops: Some(3),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            keys(Operator::Delete, &bracket, false),
+            ["d%", "dW", "dE", "d3e"]
+        );
+        // A change: `cw` from the word ends, as Vim does it.
+        assert_eq!(keys(Operator::Change, &bracket, false), ["c%", "cW", "c3w"]);
     }
 }

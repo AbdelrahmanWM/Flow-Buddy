@@ -146,6 +146,25 @@ struct Cmd {
     at_ms: u64,
     keys: u32,
     kind: CmdKind,
+    /// An operator whose motion goes backwards (`db`, `dF<char>`, `d0`).
+    backward: bool,
+}
+
+/// Whether an operator command's motion goes backwards: `db`, `d2B`,
+/// `dF,`, `dT,`, `d0`, `d^`, `dge`.
+fn backward_motion(c: &flowbuddy_core::vim::Command) -> bool {
+    let rest: Vec<char> = c
+        .keys
+        .iter()
+        .skip(1)
+        .filter_map(|k| k.plain_char())
+        .skip_while(|ch| ch.is_ascii_digit() && *ch != '0')
+        .collect();
+    match rest.as_slice() {
+        [m, ..] if "bBFT0^h".contains(*m) => true,
+        ['g', 'e' | 'E', ..] => true,
+        _ => false,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1033,7 +1052,7 @@ impl App {
     /// need them). 0 if the operator isn't in the history.
     /// Keys for the operator that made `at_ms`'s report, and with the
     /// moves into place before it.
-    fn keys_for_operator(&self, at_ms: u64) -> (u32, u32) {
+    fn keys_for_operator(&self, at_ms: u64) -> (u32, u32, bool) {
         let mut recent = self
             .commands
             .iter()
@@ -1043,7 +1062,7 @@ impl App {
             matches!(c.kind, CmdKind::Operator | CmdKind::VisualOp)
                 && at_ms.saturating_sub(c.at_ms) <= MOTION_LEAD_MS
         }) else {
-            return (0, 0);
+            return (0, 0, false);
         };
         // A selection: everything from `v` to the operator is what a
         // better command would replace.
@@ -1052,12 +1071,12 @@ impl App {
             for c in recent {
                 keys += c.keys;
                 match c.kind {
-                    CmdKind::VisualStart => return (keys, keys),
+                    CmdKind::VisualStart => return (keys, keys, false),
                     CmdKind::Motion => {}
                     _ => break,
                 }
             }
-            return (0, 0);
+            return (0, 0, false);
         }
         let mut keys = op.keys;
         let mut next_at = op.at_ms;
@@ -1068,7 +1087,7 @@ impl App {
             keys += c.keys;
             next_at = c.at_ms;
         }
-        (keys, op.keys)
+        (keys, op.keys, op.backward)
     }
 
     /// The mappings for the current context: its editor's, else the config's.
@@ -1275,6 +1294,7 @@ impl App {
                 at_ms: stroke.at_ms,
                 keys: motion::command_keys(c),
                 kind,
+                backward: kind == CmdKind::Operator && backward_motion(c),
             });
         }
         self.record(stroke.at_ms, |t| session::step_entry(t, &step));
@@ -1612,10 +1632,11 @@ impl App {
             // From an editor that isn't the current context.
             ClientMsg::Motion(_) => {}
             ClientMsg::Operator(report) if self.resolved.editor == Some(conn) => {
-                let (keys_used, op_keys) = self.keys_for_operator(report.at_ms);
+                let (keys_used, op_keys, backward) = self.keys_for_operator(report.at_ms);
                 let ev = OperatorEvent {
                     keys_used,
                     op_keys,
+                    backward,
                     report,
                 };
                 self.record(now_ms, |t| {
@@ -1624,6 +1645,7 @@ impl App {
                         report: ev.report.clone(),
                         keys_used: ev.keys_used,
                         op_keys: ev.op_keys,
+                        backward: ev.backward,
                     })
                 });
                 let best = motion::best_for_edit(&ev, self.engine.known());
@@ -3577,7 +3599,7 @@ pub(crate) mod tests {
             op: Operator::Delete,
             at_ms: 2_200,
             objects: vec![],
-            range: Some(OperatorRange {
+            range: Some(Box::new(OperatorRange {
                 linewise: true,
                 lines: 10,
                 facts: flowbuddy_core::editor::MotionFacts {
@@ -3585,7 +3607,7 @@ pub(crate) mod tests {
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
+            })),
         };
         send(&mut app, 3, ClientMsg::Operator(report), 2_250);
         let n = nudges(&mut ext);

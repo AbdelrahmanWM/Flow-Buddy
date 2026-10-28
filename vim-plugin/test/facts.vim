@@ -225,6 +225,21 @@ function! Test_range_facts() abort
   let r = flowbuddy#range_facts('one two three', 1, 8)
   call assert_equal(2, r.words)
   call assert_equal({}, flowbuddy#range_facts('abc', 5, 6))
+  " Backward, W/E and %: 'x = foo(a, b) + 1', the range 'foo(a, b)'.
+  let text = 'x = foo(a, b) + 1'
+  " dW from f takes 'foo(a, ' (up to b); dE takes 'foo(a,'.
+  call assert_equal(1, flowbuddy#range_facts(text, 5, 11).bigwords)
+  call assert_equal(1, flowbuddy#range_facts(text, 5, 10).bigword_ends)
+  " From the space after 'foo(a, b)': B twice gets back to f, F once.
+  let r = flowbuddy#range_facts(text, 5, 13)
+  call assert_equal(2, r.back.bigwords)
+  call assert_equal(1, r.back.find_hops)
+  call assert_false(r.back.line_start)
+  " The bracket part alone: d%.
+  call assert_true(flowbuddy#range_facts('x = foo(a, b) + 1', 8, 13).bracket)
+  " From the start of the line: d0.
+  call assert_true(flowbuddy#range_facts('  abc def', 1, 5).back.line_start)
+  call assert_true(flowbuddy#range_facts('  abc def', 3, 5).back.first_nonblank)
 endfunction
 
 function! Test_line_range() abort

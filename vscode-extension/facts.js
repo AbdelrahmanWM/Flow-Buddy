@@ -661,6 +661,41 @@ function rangeFacts(text, first, last) {
     const out = {cols: last - first, facts};
     if (words)
         out.words = words;
+    // W and E: WORDs are anything between blanks.
+    const big = cls.map(c => c === 0 ? 0 : 1);
+    const bstarts = idx.filter(j => big[j] && (j === 0 || !big[j - 1]));
+    const bends = idx.filter(j => big[j] && (j === n - 1 || !big[j + 1]));
+    if (after >= n)
+        out.bigwords = bstarts.filter(j => j > first).length + 1;
+    else if (bstarts.includes(after))
+        out.bigwords = bstarts.filter(j => j > first && j <= after).length;
+    if (bends.includes(last)) {
+        const k = bends.filter(j => j > first && j <= last).length;
+        if (k)
+            out.bigword_ends = k;
+    }
+    // %: from a bracket to its match.
+    const pair = {'(': ')', '[': ']', '{': '}'};
+    if (pair[chars[first]] && chars[last] === pair[chars[first]] &&
+        balanced(chars.slice(first, last + 1).join(''), chars[first], pair[chars[first]]))
+        out.bracket = true;
+    // Backward from just after the range (where the cursor was for db, dF).
+    if (after < n) {
+        const back = {};
+        if (starts.includes(first))
+            back.words = starts.filter(j => j >= first && j < after).length;
+        if (bstarts.includes(first))
+            back.bigwords = bstarts.filter(j => j >= first && j < after).length;
+        back.find_hops = count(first, after - 1, chars[first]);
+        if (first > 0) {
+            const t = count(first - 1, after - 2, chars[first - 1]);
+            if (t)
+                back.till_hops = t;
+        }
+        back.line_start = first === 0;
+        back.first_nonblank = first === firstNonBlank(text);
+        out.back = back;
+    }
     return out;
 }
 

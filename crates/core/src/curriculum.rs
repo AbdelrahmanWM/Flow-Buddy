@@ -1233,7 +1233,37 @@ pub fn pick_for(
     now_s: u64,
     ctx: crate::context::ContextKind,
 ) -> Option<&'static Item> {
-    CURRICULUM.iter().find(|item| {
+    CURRICULUM
+        .iter()
+        .find(|item| worth_teaching(item, progress, known, now_s, ctx))
+}
+
+/// The day's lesson from your habits: of the rules you tripped most this
+/// week (`habits`, most first), the first skill their advice teaches that
+/// you're ready for and don't know yet; else the curriculum's next.
+pub fn pick_from_habits(
+    progress: &dyn Fn(&str) -> Progress,
+    known: &Known,
+    now_s: u64,
+    ctx: crate::context::ContextKind,
+    habits: &[(String, u64)],
+) -> Option<&'static Item> {
+    habits
+        .iter()
+        .flat_map(|(rule, _)| rule_skills(rule).unwrap_or_default())
+        .filter_map(|id| find(id))
+        .find(|item| worth_teaching(item, progress, known, now_s, ctx))
+        .or_else(|| pick_for(progress, known, now_s, ctx))
+}
+
+fn worth_teaching(
+    item: &Item,
+    progress: &dyn Fn(&str) -> Progress,
+    known: &Known,
+    now_s: u64,
+    ctx: crate::context::ContextKind,
+) -> bool {
+    {
         let p = progress(item.id);
         known.ready(item.id)
             && item.applies_in(ctx)
@@ -1243,7 +1273,7 @@ pub fn pick_for(
             && p.times_shown < MAX_SHOWINGS
             && p.last_shown
                 .is_none_or(|t| now_s.saturating_sub(t) >= AGAIN_AFTER_DAYS * 86_400)
-    })
+    }
 }
 
 /// The tip text for an item, with its commands marked.
@@ -1484,6 +1514,25 @@ mod tests {
                 .map(|i| i.id)
                 .collect::<Vec<_>>(),
             ["quick-open"]
+        );
+    }
+
+    #[test]
+    fn the_lesson_comes_from_your_habits() {
+        let nothing = |_: &str| Progress::default();
+        let known = Known::of(["word", "count"]);
+        // You walked with j a lot this week: } before the curriculum's next.
+        let habits = vec![
+            ("vim.repeat-jk".to_string(), 30),
+            ("vim.repeat-x".to_string(), 2),
+        ];
+        let pick = pick_from_habits(&nothing, &known, 0, ContextKind::TerminalVim, &habits);
+        assert_eq!(pick.map(|i| i.id), Some("paragraph"));
+        // Nothing this week: the curriculum's order.
+        let pick = pick_from_habits(&nothing, &known, 0, ContextKind::TerminalVim, &[]);
+        assert_eq!(
+            pick.map(|i| i.id),
+            pick_for(&nothing, &known, 0, ContextKind::TerminalVim).map(|i| i.id)
         );
     }
 

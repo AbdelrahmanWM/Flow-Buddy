@@ -102,6 +102,8 @@ pub struct App {
     /// (finding, context, when it came).
     holding: Vec<(Finding, ContextKind, u64)>,
     hold_ms: u64,
+    /// Today's "something new", so a tip that uses it can say so.
+    todays_lesson: Option<&'static str>,
     /// When the last key came, for `when = "pause"`.
     last_key_ms: Option<u64>,
     /// When `gv` was last typed, to tell it from reselecting by hand.
@@ -280,6 +282,7 @@ impl App {
             last_slow: None,
             last_gv_ms: None,
             last_key_ms: None,
+            todays_lesson: None,
             holding: Vec::new(),
             hold_ms: HOLD_MS,
             recent_tips: VecDeque::new(),
@@ -607,6 +610,14 @@ impl App {
             Some(personal) => format!("{} {personal}", f.text),
             None => f.text.clone(),
         };
+        // A tip that builds on today's lesson ties the two together.
+        let lesson = self.todays_lesson.filter(|l| {
+            flowbuddy_core::curriculum::rule_skills(f.rule_id).is_some_and(|s| s.contains(l))
+        });
+        let text = match lesson {
+            Some(_) => format!("{text} That's today's something new."),
+            None => text,
+        };
         // Worded for where you are with it.
         let text = flowbuddy_core::learning::adapt(
             &text,
@@ -736,6 +747,7 @@ impl App {
         let text = flowbuddy_core::curriculum::tip_text(item);
         self.show(RULE, "Something new", &text, false, now_ms);
         self.memory.learn_shown(item.id, now_ms);
+        self.todays_lesson = Some(item.id);
     }
 
     fn nudge_rule(&self, nudge_id: &str) -> Option<&'static str> {
@@ -3111,14 +3123,15 @@ pub(crate) mod tests {
         app.tick(at(20, 16) + 120_000);
         let learned = app.memory.store().unwrap().learn_items().unwrap();
         assert!(learned[0].learned_at.is_some(), "{learned:?}");
-        // The next day, the next thing.
+        // A habit this week: walking along lines with l. The next day's
+        // lesson comes from it (`f` is what that tip teaches next), not
+        // from the curriculum's order.
+        type_at(&mut app, "<Esc>llllllll<Esc>", at(20, 17));
+        app.tick(at(20, 17) + 61_000);
+        nudges(&mut ext);
         app.tick(at(21, 10));
         let n = nudges(&mut ext);
-        assert!(
-            n[0].text.starts_with("`$`: the end of the line"),
-            "{}",
-            n[0].text
-        );
+        assert!(n[0].text.starts_with("`f<char>` and `;`"), "{}", n[0].text);
     }
 
     #[test]

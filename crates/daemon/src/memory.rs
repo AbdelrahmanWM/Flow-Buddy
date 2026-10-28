@@ -525,11 +525,21 @@ impl Memory {
         now_ms: u64,
     ) -> Option<&'static curriculum::Item> {
         let progress = self.progress(Some(ctx), now_ms)?;
-        curriculum::pick_for(
+        // This week's habits, most hits first.
+        let (from, to) = flowbuddy_store::days::range(now_ms, 7, 0);
+        let mut hits: HashMap<String, u64> = HashMap::new();
+        for row in self.store.as_ref()?.daily(&from, &to).unwrap_or_default() {
+            *hits.entry(row.rule_id).or_default() += row.hits;
+        }
+        // Rules you tripped, not ones you only did the better way for.
+        let mut habits: Vec<(String, u64)> = hits.into_iter().filter(|(_, n)| *n > 0).collect();
+        habits.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        curriculum::pick_from_habits(
             &progress,
             &self.known(Some(ctx), now_ms),
             now_ms / 1000,
             ctx,
+            &habits,
         )
     }
 

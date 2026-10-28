@@ -146,6 +146,17 @@ const MIGRATIONS: &[&str] = &[
         known   INTEGER NOT NULL
     );
 "#,
+    r#"
+    -- Challenges after lessons ("use it the next time it fits") and how
+    -- they ended: done, missed (the old habit instead) or expired.
+    CREATE TABLE challenges (
+        id      INTEGER PRIMARY KEY,
+        item_id TEXT    NOT NULL,
+        set_at  INTEGER NOT NULL,  -- unix seconds
+        day     TEXT    NOT NULL,  -- local date it ended
+        outcome TEXT    NOT NULL
+    );
+"#,
 ];
 
 /// One tip as it was shown.
@@ -610,7 +621,8 @@ impl Store {
             "DELETE FROM daily_stats; DELETE FROM activity; DELETE FROM patterns;
              DELETE FROM episodes; DELETE FROM typing; DELETE FROM typo_pairs;
              DELETE FROM tip_outcomes; DELETE FROM commands_used; DELETE FROM learn_items;
-             DELETE FROM tip_history; DELETE FROM known_overrides;",
+             DELETE FROM tip_history; DELETE FROM known_overrides;
+             DELETE FROM challenges;",
         )?;
         self.conn.execute_batch("VACUUM")?;
         let _ = self.conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
@@ -699,7 +711,7 @@ impl Store {
              FROM daily_stats WHERE ?2 IS NULL OR context = ?2
              GROUP BY day, rule_id",
         )?;
-        let histories = flowbuddy_core::mastery::histories(
+        let mut histories = flowbuddy_core::mastery::histories(
             uses.iter().map(|(a, i, n)| (*a, i.as_str(), *n)),
             hits.iter().map(|(a, r, n)| (*a, r.as_str(), *n)),
             |rule| {
@@ -708,7 +720,46 @@ impl Store {
                     .to_vec()
             },
         );
+        // A missed challenge is about that one skill: a whole miss.
+        let mut stmt = self.conn.prepare(
+            "SELECT CAST(julianday(?1) - julianday(day) AS INTEGER), item_id
+             FROM challenges WHERE outcome = 'missed'",
+        )?;
+        let missed = stmt
+            .query_map(params![today], |r| {
+                Ok((r.get::<_, i64>(0)?.max(0) as u64, r.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>>>()?;
+        for (ago, item) in missed {
+            flowbuddy_core::mastery::missed(histories.entry(item).or_default(), ago);
+        }
         Ok(flowbuddy_core::mastery::assess(&histories))
+    }
+
+    /// How a challenge ended: `done`, `missed` or `expired`.
+    pub fn challenge_ended(
+        &self,
+        item_id: &str,
+        set_at: u64,
+        day: &str,
+        outcome: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO challenges (item_id, set_at, day, outcome) VALUES (?1, ?2, ?3, ?4)",
+            params![item_id, set_at, day, outcome],
+        )?;
+        Ok(())
+    }
+
+    /// Challenges per item: (done, missed, expired).
+    pub fn challenge_outcomes(&self) -> Result<HashMap<String, (u64, u64, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT item_id, SUM(outcome = 'done'), SUM(outcome = 'missed'),
+                    SUM(outcome = 'expired')
+             FROM challenges GROUP BY item_id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))?;
+        rows.collect()
     }
 
     /// Say an item is known (`Some(true)`), not known, or back to what use

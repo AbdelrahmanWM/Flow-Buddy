@@ -275,6 +275,18 @@ pub fn histories<'a>(
         .collect()
 }
 
+/// Add a whole miss on the day `ago`: a challenge to use it, missed.
+pub fn missed(history: &mut Vec<Day>, ago: u64) {
+    match history.iter_mut().find(|d| d.ago == ago) {
+        Some(d) => d.misses = 1.0,
+        None => history.push(Day {
+            ago,
+            uses: 0,
+            misses: 1.0,
+        }),
+    }
+}
+
 /// Every skill traced, and the half-life model fitted to all of them.
 pub fn assess(histories: &HashMap<String, Vec<Day>>) -> (HashMap<String, Skill>, Model) {
     let samples: Vec<Sample> = histories.values().flat_map(|h| samples(h)).collect();

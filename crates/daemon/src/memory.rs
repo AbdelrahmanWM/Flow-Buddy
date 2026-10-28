@@ -556,6 +556,14 @@ impl Memory {
         )
     }
 
+    /// A challenge ended: `done`, `missed` or `expired`.
+    pub fn challenge_ended(&self, item_id: &str, set_at: u64, outcome: &str, now_ms: u64) {
+        if let Some(store) = &self.store {
+            let _ = store.challenge_ended(item_id, set_at, &day(now_ms), outcome);
+            self.progress_cache.replace(None);
+        }
+    }
+
     pub fn learn_shown(&self, item_id: &str, now_ms: u64) {
         if let Some(store) = &self.store {
             let _ = store.learn_shown(item_id, now_ms / 1000);

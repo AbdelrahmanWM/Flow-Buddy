@@ -430,12 +430,15 @@ impl Memory {
             NudgeAction::FalsePositive | NudgeAction::MuteRule => {
                 self.close_tip(rule_id, Outcome::NotHelpful)
             }
-            NudgeAction::Seen => {}
+            NudgeAction::Seen | NudgeAction::KnowIt | NudgeAction::Another => {}
         }
         let event = match action {
             NudgeAction::Dismiss => Event::Dismissed,
             NudgeAction::FalsePositive => Event::FalsePositive,
-            NudgeAction::Seen | NudgeAction::MuteRule => return,
+            NudgeAction::Seen
+            | NudgeAction::MuteRule
+            | NudgeAction::KnowIt
+            | NudgeAction::Another => return,
         };
         self.record(ctx, rule_id, event, now_ms);
     }

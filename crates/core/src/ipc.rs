@@ -85,6 +85,10 @@ pub enum NudgeAction {
     Dismiss,
     MuteRule,
     FalsePositive,
+    /// On the daily lesson: you know it already.
+    KnowIt,
+    /// On the daily lesson: show a different one.
+    Another,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

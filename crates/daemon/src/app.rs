@@ -61,6 +61,8 @@ fn held_back(share: f64, rule_id: &str, now_ms: u64) -> bool {
 }
 
 const CHALLENGE_RULE: &str = "learn.challenge";
+/// "Show me another" gives at most this many more lessons a day.
+const EXTRA_LESSONS: u8 = 3;
 /// A tip still waiting for a pause after this long is stale: dropped.
 const PAUSE_GIVE_UP_MS: u64 = 120_000;
 
@@ -111,6 +113,8 @@ pub struct App {
     hold_ms: u64,
     /// Today's "something new", so a tip that uses it can say so.
     todays_lesson: Option<&'static str>,
+    /// Lessons asked for with "Show me another" today: (day, how many).
+    extra_lessons: (String, u8),
     /// When the last key came, for `when = "pause"`.
     last_key_ms: Option<u64>,
     /// When `gv` was last typed, to tell it from reselecting by hand.
@@ -307,6 +311,7 @@ impl App {
             last_gv_ms: None,
             last_key_ms: None,
             todays_lesson: None,
+            extra_lessons: (String::new(), 0),
             holding: Vec::new(),
             hold_ms,
             recent_tips: VecDeque::new(),
@@ -773,9 +778,15 @@ impl App {
         let Some(pick) = self.memory.pick_something_new(self.resolved.kind, now_ms) else {
             return;
         };
-        let item = pick.item;
         self.state.last_learn_day = Some(today);
         self.save_state();
+        self.show_lesson(pick, now_ms);
+    }
+
+    /// Show a lesson (or a review), with its challenge.
+    fn show_lesson(&mut self, pick: flowbuddy_core::curriculum::Pick, now_ms: u64) {
+        const RULE: &str = "learn.daily";
+        let item = pick.item;
         let mut text = flowbuddy_core::curriculum::tip_text(item);
         // Producing it beats reading about it: a challenge to use it.
         if self.config.learn.challenges {
@@ -799,6 +810,52 @@ impl App {
         self.show(RULE, title, &text, item.while_typing(), now_ms);
         self.memory.learn_shown(item.id, now_ms);
         self.todays_lesson = Some(item.id);
+    }
+
+    /// "I know this" on the daily lesson: known from now on, like
+    /// `flowbuddy learn --know`, and no challenge for it.
+    fn lesson_known(&mut self, now_ms: u64) {
+        let Some(id) = self.todays_lesson.take() else {
+            return;
+        };
+        self.memory.set_known(&[id.to_string()], Some(true));
+        if self.state.challenge.as_ref().is_some_and(|c| c.item == id) {
+            self.state.challenge = None;
+            self.save_state();
+        }
+        self.engine
+            .set_known(self.memory.known(Some(self.resolved.kind), now_ms));
+    }
+
+    /// "Show me another": the next pick, right away, a few times a day.
+    fn another_lesson(&mut self, now_ms: u64) {
+        let today = memory::day(now_ms);
+        if self.extra_lessons.0 != today {
+            self.extra_lessons = (today, 0);
+        }
+        if self.extra_lessons.1 >= EXTRA_LESSONS {
+            return;
+        }
+        // Not this one again soon: it was shown, and isn't picked again
+        // within `again_after_days`.
+        let Some(pick) = self.memory.pick_something_new(self.resolved.kind, now_ms) else {
+            return;
+        };
+        if Some(pick.item.id) == self.todays_lesson {
+            return;
+        }
+        self.extra_lessons.1 += 1;
+        // Its challenge goes with it.
+        if self
+            .state
+            .challenge
+            .as_ref()
+            .is_some_and(|c| Some(c.item.as_str()) == self.todays_lesson)
+        {
+            self.state.challenge = None;
+            self.save_state();
+        }
+        self.show_lesson(pick, now_ms);
     }
 
     /// The challenge is met when its item is used.
@@ -873,6 +930,13 @@ impl App {
         });
         if action == NudgeAction::MuteRule {
             self.set_rule(rule_id, RuleAction::Mute);
+        }
+        if rule_id == "learn.daily" {
+            match action {
+                NudgeAction::KnowIt => self.lesson_known(now_ms),
+                NudgeAction::Another => self.another_lesson(now_ms),
+                _ => {}
+            }
         }
         if action == NudgeAction::FalsePositive {
             self.raise_threshold(rule_id, now_ms);
@@ -3811,6 +3875,46 @@ pub(crate) mod tests {
         let rows = app.memory.store().unwrap().tips(0).unwrap();
         assert!(!rows.is_empty() && rows.iter().all(|r| r.held), "{rows:?}");
         assert!(!held_back(0.0, "vim.repeat-jk", 1));
+    }
+
+    #[test]
+    fn a_lesson_you_know_or_want_swapped() {
+        use chrono::TimeZone;
+        let (mut app, _) = app_with_store(CoachingMode::Balanced);
+        let mut ext = ext_hello(&mut app, 1);
+        let at = |h, m| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 10, 20, h, m, 0)
+                .unwrap()
+                .timestamp_millis() as u64
+        };
+        focus(&mut app, "code_code", 500);
+        type_at(&mut app, "<Esc>wwwbbb", at(10, 0));
+        app.tick(at(10, 0) + 61_000);
+        let first = nudges(&mut ext).pop().unwrap();
+        assert_eq!(first.rule_id, "learn.daily");
+        let first_item = app.todays_lesson.unwrap();
+        // Show me another: a different one, right away.
+        let respond = |app: &mut App, id: &str, action| {
+            app.on_nudge_response(id, action, at(10, 2));
+        };
+        respond(&mut app, &first.nudge_id, NudgeAction::Another);
+        let second = nudges(&mut ext).pop().unwrap();
+        assert_eq!(second.rule_id, "learn.daily");
+        let second_item = app.todays_lesson.unwrap();
+        assert_ne!(first_item, second_item);
+        assert_eq!(app.state.challenge.as_ref().unwrap().item, second_item);
+        // I know this: known from now on, and its challenge is gone.
+        respond(&mut app, &second.nudge_id, NudgeAction::KnowIt);
+        assert!(app.memory.known(None, at(10, 3)).knows(second_item));
+        assert!(app.state.challenge.is_none());
+        // At most three more a day.
+        for _ in 0..5 {
+            let n = app.nudges.back().unwrap().0.clone();
+            app.todays_lesson = Some(first_item);
+            respond(&mut app, &n, NudgeAction::Another);
+        }
+        assert_eq!(app.extra_lessons.1, EXTRA_LESSONS);
     }
 
     #[test]

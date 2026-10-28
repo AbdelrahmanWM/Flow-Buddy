@@ -158,6 +158,7 @@ fn phrase(keys: &str) -> Option<&'static str> {
         ":.,+5d" => "delete this line and the five after it",
         ":sort" => "sort the selected lines",
         ":earlier 1m" => "go back to how the file was a minute ago",
+        ":%s" => "repeat the last substitute on every line",
         ":cn" => "to the next result in the quickfix list (errors, grep matches)",
         ":cp" => "to the previous result in the quickfix list",
         "<line>G" => "to the line with that number (type the number, then G)",

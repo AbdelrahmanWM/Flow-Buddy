@@ -93,7 +93,8 @@ impl Engine {
                     crate::support::supports(context, c)
                         && (insert || self.known.ready_for_command(c))
                 };
-                match crate::support::fit_by(&f.text, ok) {
+                let text = crate::support::with_equivalents(context, &f.text);
+                match crate::support::fit_by(&text, ok) {
                     Some(text) => {
                         f.text = text;
                         true

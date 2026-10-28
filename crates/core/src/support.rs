@@ -160,6 +160,34 @@ pub fn fit(ctx: ContextKind, text: &str) -> Option<String> {
     fit_by(text, |c| supports(ctx, c))
 }
 
+/// Commands with an exact equivalent where they don't work, so a tip can
+/// say that instead of losing the suggestion. Only true equivalents: a
+/// near one (`7u` for `:earlier 1m`) would make the sentence wrong.
+const EQUIVALENTS: &[(ContextKind, &str, &str)] = &[
+    // `g&` is the last substitute on every line; vscodevim's `:%s` with no
+    // pattern does that (it reuses the last pattern and replacement).
+    (ContextKind::VsCodeVim, "g&", ":%s"),
+];
+
+/// `text` with each command `ctx` lacks swapped for its exact equivalent
+/// there, if it has one.
+pub fn with_equivalents(ctx: ContextKind, text: &str) -> String {
+    segments(text)
+        .into_iter()
+        .map(|seg| match seg {
+            Segment::Text(t) => t.to_string(),
+            Segment::Code(c) => {
+                let swap = EQUIVALENTS
+                    .iter()
+                    .find(|(k, from, _)| *k == ctx && *from == c && !supports(ctx, c))
+                    .map(|(_, _, to)| *to)
+                    .filter(|to| supports(ctx, to));
+                crate::glossary::mark(swap.unwrap_or(c))
+            }
+        })
+        .collect()
+}
+
 /// Separators between alternatives in a list: "`a`, `b` or `c`".
 const LIST_SEPARATORS: &[&str] = &[", ", " or ", ", or ", " and ", ", and "];
 
@@ -332,6 +360,17 @@ mod tests {
         );
         // A rejected command not in a list takes its sentence with it.
         assert_eq!(fit_by("`x` then `i` is `Ctrl-d`.", ok), None);
+    }
+
+    #[test]
+    fn exact_equivalents_stand_in() {
+        let tip =
+            "The same `:s` again. `&` repeats it on this line. `g&` repeats it on every line.";
+        assert_eq!(
+            with_equivalents(ContextKind::VsCodeVim, tip),
+            "The same `:s` again. `&` repeats it on this line. `:%s` repeats it on every line."
+        );
+        assert_eq!(with_equivalents(ContextKind::TerminalVim, tip), tip);
     }
 
     #[test]

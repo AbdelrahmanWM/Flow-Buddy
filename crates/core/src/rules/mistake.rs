@@ -162,8 +162,189 @@ impl Rule for NoCommand {
     fn reset(&mut self) {}
 }
 
+/// Look-alike commands, and how they differ: said when one is undone at
+/// once and the other comes next.
+const LOOK_ALIKES: &[(&str, &str, &str)] = &[
+    (
+        "dw",
+        "de",
+        "`dw` deletes to the start of the next word, taking the space with it; `de` stops at the end of this word.",
+    ),
+    (
+        "cw",
+        "ciw",
+        "`cw` changes from the cursor to the end of the word; `ciw` changes the whole word, wherever the cursor is in it.",
+    ),
+    (
+        "dd",
+        "D",
+        "`dd` deletes the whole line; `D` deletes from the cursor to the end of it.",
+    ),
+    (
+        "cc",
+        "C",
+        "`cc` changes the whole line; `C` changes from the cursor to the end of it.",
+    ),
+    (
+        "p",
+        "P",
+        "`p` puts after the cursor (below, for whole lines); `P` puts before it (above).",
+    ),
+    (
+        "x",
+        "X",
+        "`x` deletes the character under the cursor; `X` the one before it.",
+    ),
+    ("o", "O", "`o` opens a new line below; `O` opens one above."),
+    (
+        "df<char>",
+        "dt<char>",
+        "`df<char>` deletes up to and including the character; `dt<char>` stops just before it.",
+    ),
+    (
+        "cf<char>",
+        "ct<char>",
+        "`cf<char>` changes up to and including the character; `ct<char>` stops just before it.",
+    ),
+    (
+        "J",
+        "gJ",
+        "`J` joins the lines with a space between; `gJ` joins them as they are.",
+    ),
+    (
+        "diw",
+        "daw",
+        "`diw` deletes just the word; `daw` takes the space around it too.",
+    ),
+    (
+        "ciw",
+        "caw",
+        "`ciw` changes just the word; `caw` takes the space around it too.",
+    ),
+    (
+        "di(",
+        "da(",
+        "`di(` deletes inside the brackets; `da(` takes the brackets too.",
+    ),
+    (
+        "ci(",
+        "ca(",
+        "`ci(` changes inside the brackets; `ca(` takes the brackets too.",
+    ),
+    (
+        "di\"",
+        "da\"",
+        "`di\"` deletes inside the quotes; `da\"` takes the quotes too.",
+    ),
+    (
+        "ci\"",
+        "ca\"",
+        "`ci\"` changes inside the quotes; `ca\"` takes the quotes too.",
+    ),
+    (
+        "yy",
+        "yw",
+        "`yy` copies the whole line; `yw` copies to the next word.",
+    ),
+];
+
+/// A command as the table names it: `dfx` → `df<char>`, `2dw` → `dw`.
+fn named(c: &crate::vim::Command) -> Option<String> {
+    let mut out = String::new();
+    let mut after_find = false;
+    for k in &c.keys {
+        let ch = k.plain_char()?;
+        if after_find {
+            out.push_str("<char>");
+            after_find = false;
+        } else {
+            out.push(ch);
+            after_find = matches!(ch, 'f' | 't' | 'F' | 'T') && out.len() > 1;
+        }
+    }
+    Some(out)
+}
+
+/// Undone at once, then its look-alike: "`dw` … `de` …".
+#[derive(Default)]
+pub struct UndoneLookAlike {
+    /// The last command, and when.
+    last: Option<(String, u64)>,
+    /// Undone just after it: the command, and when the undo came.
+    undone: Option<(String, u64)>,
+}
+
+impl UndoneLookAlike {
+    const ID: &'static str = "mistake.look-alike";
+    const TITLE: &'static str = "Not the one you meant?";
+    /// The undo comes this soon after the command (longer for ones that
+    /// start typing, like `o`).
+    const UNDO_MS: u64 = 20_000;
+    /// And the other command this soon after the undo.
+    const NEXT_MS: u64 = 5_000;
+}
+
+impl Rule for UndoneLookAlike {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Undoing a command at once and using its look-alike (dw then u then de): how the two differ"
+    }
+
+    fn title(&self) -> &'static str {
+        Self::TITLE
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        let Some(c) = command(step).filter(|_| step.confident) else {
+            return;
+        };
+        let Some(name) = named(c) else {
+            return;
+        };
+        if name == "u" {
+            self.undone = self
+                .last
+                .take()
+                .filter(|(_, at)| step.at_ms.saturating_sub(*at) <= Self::UNDO_MS)
+                .map(|(n, _)| (n, step.at_ms));
+            return;
+        }
+        let undone = self.undone.take();
+        self.last = Some((name.clone(), step.at_ms));
+        let Some((before, _)) =
+            undone.filter(|(_, at)| step.at_ms.saturating_sub(*at) <= Self::NEXT_MS)
+        else {
+            return;
+        };
+        if let Some((_, _, why)) = LOOK_ALIKES
+            .iter()
+            .find(|(a, b, _)| (*a == before && *b == name) || (*b == before && *a == name))
+        {
+            out.push(finding(
+                Self::ID,
+                Self::TITLE,
+                (*why).into(),
+                Shape::fixed("undone look-alike"),
+                step,
+            ));
+        }
+    }
+
+    fn reset(&mut self) {
+        self.last = None;
+        self.undone = None;
+    }
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
-    vec![Box::new(NoCommand)]
+    vec![Box::new(NoCommand), Box::new(UndoneLookAlike::default())]
 }
 
 #[cfg(test)]
@@ -195,6 +376,27 @@ mod tests {
         assert!(texts("dq")[0].starts_with("d needs a motion"));
         assert!(texts("zq")[0].starts_with("z then that key does nothing"));
         assert!(texts("gy")[0].contains("gg to the top"));
+    }
+
+    #[test]
+    fn undone_then_its_look_alike() {
+        let look = |keys: &str| -> Vec<String> {
+            findings(&run(
+                Box::new(UndoneLookAlike::default()),
+                Flavor::Vim,
+                VimMode::Normal,
+                keys,
+            ))
+            .iter()
+            .map(|f| glossary::plain(&f.text))
+            .collect()
+        };
+        assert!(look("dwude")[0].starts_with("dw deletes to the start of the next word"));
+        assert!(look("dfxudtx")[0].contains("df<char> deletes up to and including"));
+        assert!(look("ohi<Esc>uO")[0].starts_with("o opens a new line below"));
+        assert!(look("dwu").is_empty(), "an undo on its own");
+        assert!(look("dwudd").is_empty(), "not a look-alike");
+        assert!(look("dwjde").is_empty(), "no undo between");
     }
 
     #[test]

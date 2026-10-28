@@ -43,7 +43,7 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         // the recent list.
         this._shownTip = null;
         this._recent = [];
-        this._kept = new Card({kept: true});
+        this._kept = new Card({kept: true, onClose: () => this._stopKeeping()});
         this._keptTip = null;
         this._hideId = 0;
 
@@ -84,6 +84,11 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._keep.connect('activate', () => this._toggleKeep());
         this._keep.visible = false;
         this.menu.addMenuItem(this._keep);
+        // Whatever tip the menu shows, a kept one can always go.
+        this._unkeep = new PopupMenu.PopupMenuItem('Stop keeping it on screen');
+        this._unkeep.connect('activate', () => this._stopKeeping());
+        this._unkeep.visible = false;
+        this.menu.addMenuItem(this._unkeep);
 
         this._gotIt = this._action('Got it', 'dismiss');
         this._mute = this._action('Stop this tip', 'mute_rule');
@@ -149,9 +154,9 @@ class FlowBuddyIndicator extends PanelMenu.Button {
     // Keep the tip in the menu on screen, swap the kept one for it, or
     // stop keeping it.
     _toggleKeep() {
-        if (this._kept.shown && this._keptTip === this._shownTip) {
-            this._kept.hide();
-            this._keptTip = null;
+        if (this._kept.shown && (this._keptTip === this._shownTip || !this._shownTip)) {
+            this._stopKeeping();
+            return;
         } else if (this._shownTip) {
             this._kept.show(this._shownTip);
             this._keptTip = this._shownTip;
@@ -159,14 +164,18 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._updateKeep();
     }
 
+    _stopKeeping() {
+        this._kept.hide();
+        this._keptTip = null;
+        this._updateKeep();
+    }
+
     _updateKeep() {
-        this._keep.visible = this._shownTip !== null || this._kept.shown;
-        if (!this._kept.shown)
-            this._keep.label.text = 'Keep on screen';
-        else if (this._keptTip === this._shownTip || !this._shownTip)
-            this._keep.label.text = 'Stop keeping it on screen';
-        else
-            this._keep.label.text = 'Keep this one on screen instead';
+        const kept = this._kept.shown;
+        // Keep the tip in the menu, or swap the kept one for it.
+        this._keep.visible = this._shownTip !== null && this._keptTip !== this._shownTip;
+        this._keep.label.text = kept ? 'Keep this one on screen instead' : 'Keep on screen';
+        this._unkeep.visible = kept;
     }
 
     _setExplanation(lines) {

@@ -10,6 +10,7 @@ pub mod inventory;
 pub mod ipc;
 pub mod key;
 pub mod learning;
+pub mod links;
 pub mod mastery;
 pub mod motion;
 pub mod paths;

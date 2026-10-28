@@ -504,6 +504,28 @@ pub fn audit(store: &Store, now_ms: u64) -> anyhow::Result<String> {
         &stale.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
     );
     section(&mut out, "Daily tips never taken up", &ignored);
+    // How each link with evidence stands.
+    let links: Vec<String> = store
+        .links()?
+        .into_iter()
+        .filter(|l| l.for_ + l.against > 0)
+        .map(|l| {
+            let verdict = if l.holds() { "kept" } else { "dropped" };
+            format!(
+                "{} builds on {}: {} for, {} against, {:.0}% likely, {verdict}",
+                l.item,
+                l.on,
+                l.for_,
+                l.against,
+                l.strength() * 100.0
+            )
+        })
+        .collect();
+    section(
+        &mut out,
+        "Links, from the order you learned things in each place (dropped ones no longer hold lessons back)",
+        &links,
+    );
     Ok(out)
 }
 
@@ -553,9 +575,11 @@ pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<Str
         .filter(|(_, s)| **s == flowbuddy_core::learning::Stage::Mastered)
         .map(|((rule, _), _)| rule.as_str());
     let overrides = store.known_overrides()?;
+    let unlinked = flowbuddy_core::links::dropped(&store.links()?);
     let tree = Known::from_progress(&progress, mastered)
         .with_levels(known_levels)
-        .with_overrides(&overrides);
+        .with_overrides(&overrides)
+        .with_links(&unlinked);
     let known = |id: &str| tree.knows(id);
     let mut out = String::new();
     if let Some(row) = rows.values().max_by_key(|r| r.last_shown)

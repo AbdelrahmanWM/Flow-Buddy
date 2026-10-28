@@ -805,6 +805,30 @@ impl Store {
         rows.collect()
     }
 
+    /// Per environment (uses from before they were told apart as 'any'),
+    /// the day each curriculum item was first used: the orders
+    /// [`flowbuddy_core::links`] learns from.
+    pub fn first_uses_by_context(&self) -> Result<HashMap<String, HashMap<String, String>>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT context, item_id, MIN(day) FROM commands_used GROUP BY context, item_id",
+        )?;
+        let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?)))?;
+        for row in rows {
+            let (ctx, item, day) = row?;
+            out.entry(ctx).or_default().insert(item, day);
+        }
+        Ok(out)
+    }
+
+    /// The prerequisite links with the evidence from your order of
+    /// learning.
+    pub fn links(&self) -> Result<Vec<flowbuddy_core::links::Link>> {
+        Ok(flowbuddy_core::links::learn(
+            self.first_uses_by_context()?.values(),
+        ))
+    }
+
     /// The environments uses were counted in (not 'any').
     pub fn use_contexts(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
@@ -1448,5 +1472,21 @@ mod tests {
         assert!(all["find"].recall(&model) > 0.0);
         let (here, _) = s.skills("2026-10-27", Some("vscode-vim")).unwrap();
         assert!(!here.contains_key("word"), "{here:?}");
+    }
+
+    #[test]
+    fn links_learn_from_each_places_order() {
+        let s = Store::open_in_memory().unwrap();
+        for ctx in ["vscode-vim", "terminal-vim", "bash-vi"] {
+            s.add_command_use("2026-10-01", ctx, "till", 1).unwrap();
+        }
+        s.add_command_use("2026-10-03", "vscode-vim", "find", 1)
+            .unwrap();
+        let firsts = s.first_uses_by_context().unwrap();
+        assert_eq!(firsts["vscode-vim"]["find"], "2026-10-03");
+        let links = s.links().unwrap();
+        let till = links.iter().find(|l| l.item == "till").unwrap();
+        assert_eq!((till.for_, till.against), (0, 3));
+        assert!(!till.holds());
     }
 }

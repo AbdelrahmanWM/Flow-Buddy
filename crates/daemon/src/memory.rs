@@ -25,6 +25,8 @@ struct ProgressCache {
     overrides: HashMap<String, bool>,
     /// Per environment (`None`: all of them), read when first wanted.
     uses: HashMap<Option<ContextKind>, HashMap<String, flowbuddy_store::ItemUse>>,
+    /// Prerequisite links your order of learning says don't hold.
+    unlinked: Vec<(&'static str, &'static str)>,
     /// Mastery per skill and the fitted half-life model, likewise.
     skills: HashMap<Option<ContextKind>, Skills>,
     items: HashMap<String, flowbuddy_store::LearnRow>,
@@ -483,6 +485,10 @@ impl Memory {
             *cache = Some(ProgressCache {
                 day: today.clone(),
                 overrides: store.known_overrides().unwrap_or_default(),
+                unlinked: store
+                    .links()
+                    .map(|l| flowbuddy_core::links::dropped(&l))
+                    .unwrap_or_default(),
                 uses: HashMap::new(),
                 skills: HashMap::new(),
                 items: store
@@ -548,15 +554,16 @@ impl Memory {
             .iter()
             .filter(|(_, s)| **s == Stage::Mastered)
             .map(|((rule, _), _)| rule.as_str());
-        let overrides = self
+        let (overrides, unlinked) = self
             .progress_cache
             .borrow()
             .as_ref()
-            .map(|c| c.overrides.clone())
+            .map(|c| (c.overrides.clone(), c.unlinked.clone()))
             .unwrap_or_default();
         curriculum::Known::from_progress(&progress, mastered)
             .with_levels(self.known_levels)
             .with_overrides(&overrides)
+            .with_links(&unlinked)
     }
 
     /// The day's "something new", or a review, if anything's left.

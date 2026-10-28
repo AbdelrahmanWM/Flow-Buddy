@@ -1110,6 +1110,9 @@ pub struct Known {
     /// Nothing is known about you (no memory): everything is ready.
     everything: bool,
     ids: HashSet<&'static str>,
+    /// Links your history says don't hold: (item, what it builds on). See
+    /// [`crate::links`].
+    unlinked: HashSet<(&'static str, &'static str)>,
 }
 
 impl Default for Known {
@@ -1124,6 +1127,7 @@ impl Known {
         Known {
             everything: true,
             ids: HashSet::new(),
+            unlinked: HashSet::new(),
         }
     }
 
@@ -1131,6 +1135,7 @@ impl Known {
         Known {
             everything: false,
             ids: ids.into_iter().collect(),
+            unlinked: HashSet::new(),
         }
         .closed()
     }
@@ -1172,6 +1177,7 @@ impl Known {
         Known {
             everything: false,
             ids,
+            unlinked: HashSet::new(),
         }
         .closed()
     }
@@ -1210,7 +1216,21 @@ impl Known {
 
     /// Worth suggesting: known already, or one step up from what is.
     pub fn ready(&self, id: &str) -> bool {
-        self.knows(id) || requires(id).iter().all(|r| self.knows(r))
+        self.knows(id) || self.builds_on(id).all(|r| self.knows(r))
+    }
+
+    /// What `id` builds on, less the links your history says don't hold.
+    pub fn builds_on<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'static str> + 'a {
+        requires(id)
+            .iter()
+            .copied()
+            .filter(move |r| !self.unlinked.contains(&(id, *r)))
+    }
+
+    /// Drop the links your history says don't hold.
+    pub fn with_links(mut self, dropped: &[(&'static str, &'static str)]) -> Self {
+        self.unlinked.extend(dropped.iter().copied());
+        self
     }
 
     /// Whether a tip's command is something you're ready for: every item
@@ -1363,8 +1383,8 @@ pub fn choose(
         .collect();
     let frontier = new.iter().map(|i| i.level).min().unwrap_or(1);
     let lessons = new.into_iter().map(|item| {
-        let base: f64 = requires(item.id)
-            .iter()
+        let base: f64 = known
+            .builds_on(item.id)
             // Mastered counts in full.
             .map(|r| {
                 pct(progress(r).mastery).map_or(1.0, |m| (m / crate::mastery::MASTERED).min(1.0))

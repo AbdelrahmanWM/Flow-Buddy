@@ -1,5 +1,6 @@
 mod client;
 mod coach;
+mod config_cmd;
 mod doctor;
 mod report;
 mod review;
@@ -145,6 +146,12 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<MemoryCmd>,
     },
+    /// Every setting: list them, or get, set or reset one
+    /// (`flowbuddy config set learn.daily false`).
+    Config {
+        #[command(subcommand)]
+        action: Option<config_cmd::ConfigCmd>,
+    },
     /// List rules, or enable/disable/mute one.
     Rules {
         #[command(subcommand)]
@@ -259,6 +266,13 @@ fn main() {
     let result = match args.command {
         Cmd::Status { watch } => status(watch),
         Cmd::Rules { action } => rules(action.unwrap_or(RulesCmd::List)),
+        Cmd::Config { action } => config_cmd::run(
+            action.unwrap_or(config_cmd::ConfigCmd::List {
+                json: false,
+                basic: true,
+            }),
+            &flowbuddy_core::paths::config_file(),
+        ),
         Cmd::Mode { mode } => set_mode(mode),
         Cmd::Summary { week } => summary(week),
         Cmd::Next => next(),

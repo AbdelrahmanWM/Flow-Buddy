@@ -1237,9 +1237,15 @@ pub const REGULAR_USES: u64 = 9;
 pub const FADE_DAYS: u64 = 90;
 
 impl Progress {
-    /// Known: used a few times lately, or regularly and not too long ago,
-    /// or learned from a daily tip and not left unused for long.
+    /// Known: by the mastery model when there's evidence (likely learned
+    /// and likely still recalled: see [`crate::mastery`]). Without it: used
+    /// a few times lately, or regularly and not too long ago, or learned
+    /// from a daily tip and not left unused for long.
     pub fn known(&self) -> bool {
+        if let (Some(m), Some(r)) = (self.mastery, self.recall) {
+            return f64::from(m) / 100.0 >= crate::mastery::MASTERED
+                && f64::from(r) / 100.0 >= crate::mastery::RECALLED;
+        }
         let fresh = self.days_idle.is_none_or(|d| d <= FADE_DAYS);
         self.recent_uses >= KNOWN_USES
             || (fresh && self.uses >= REGULAR_USES)
@@ -1264,6 +1270,10 @@ pub struct Progress {
     /// Unix seconds.
     pub last_shown: Option<u64>,
     pub learned: bool,
+    /// Percent chance it's learned, and that you'd recall it today, from
+    /// [`crate::mastery`]; `None` without evidence.
+    pub mastery: Option<u8>,
+    pub recall: Option<u8>,
 }
 
 /// The day's "something new": the first item you're ready for but don't
@@ -1609,6 +1619,16 @@ mod tests {
             ..Default::default()
         };
         assert!(learned(10).known() && !learned(120).known());
+        let modelled = |mastery, recall| Progress {
+            uses: 50,
+            recent_uses: 50,
+            mastery: Some(mastery),
+            recall: Some(recall),
+            ..Default::default()
+        };
+        assert!(modelled(97, 80).known());
+        assert!(!modelled(97, 30).known(), "likely forgotten");
+        assert!(!modelled(60, 90).known(), "not learned yet");
         // A macro replays its keys without typing them: only `@q` counts.
         let mut t = Tracker::new(Flavor::Vim);
         t.reset_known(VimMode::Normal);

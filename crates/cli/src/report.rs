@@ -435,6 +435,7 @@ pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<Str
     let recent_from =
         flowbuddy_store::days::day(now_ms.saturating_sub(curriculum::RECENT_DAYS * 86_400_000));
     let uses = store.item_uses(&today, &recent_from, None)?;
+    let (skills, model) = store.skills(&today, None)?;
     let rows: BTreeMap<String, flowbuddy_store::LearnRow> = store
         .learn_items()?
         .into_iter()
@@ -443,6 +444,7 @@ pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<Str
     let progress = |id: &str| {
         let row = rows.get(id);
         let u = uses.get(id).copied().unwrap_or_default();
+        let skill = skills.get(id).map(|s| s.percents(&model));
         Progress {
             uses: u.total,
             recent_uses: u.recent,
@@ -450,6 +452,8 @@ pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<Str
             times_shown: row.map_or(0, |r| r.times_shown),
             last_shown: row.map(|r| r.last_shown),
             learned: row.is_some_and(|r| r.learned_at.is_some()),
+            mastery: skill.map(|s| s.0),
+            recall: skill.map(|s| s.1),
         }
     };
     let stages = store.stages()?;
@@ -502,12 +506,16 @@ pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<Str
     let mut places = Vec::new();
     for ctx in store.use_contexts()? {
         let here = store.item_uses(&today, &recent_from, Some(&ctx))?;
+        let (skills_here, model_here) = store.skills(&today, Some(&ctx))?;
         let progress_here = |id: &str| {
             let u = here.get(id).copied().unwrap_or_default();
+            let skill = skills_here.get(id).map(|s| s.percents(&model_here));
             Progress {
                 uses: u.total,
                 recent_uses: u.recent,
                 days_idle: here.contains_key(id).then_some(u.days_idle),
+                mastery: skill.map(|s| s.0),
+                recall: skill.map(|s| s.1),
                 ..progress(id)
             }
         };

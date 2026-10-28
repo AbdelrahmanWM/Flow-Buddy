@@ -670,6 +670,47 @@ impl Store {
         rows.collect()
     }
 
+    /// Each skill's mastery and the half-life model, from every day's uses
+    /// and the habits that speak against them: see
+    /// [`flowbuddy_core::mastery`]. In one environment (and uses from before
+    /// they were told apart), or `None` for all.
+    pub fn skills(
+        &self,
+        today: &str,
+        context: Option<&str>,
+    ) -> Result<(
+        HashMap<String, flowbuddy_core::mastery::Skill>,
+        flowbuddy_core::mastery::Model,
+    )> {
+        let rows = |sql: &str| -> Result<Vec<(u64, String, u64)>> {
+            let mut stmt = self.conn.prepare(sql)?;
+            let rows = stmt.query_map(params![today, context], |r| {
+                Ok((r.get::<_, i64>(0)?.max(0) as u64, r.get(1)?, r.get(2)?))
+            })?;
+            rows.collect()
+        };
+        let uses = rows(
+            "SELECT CAST(julianday(?1) - julianday(day) AS INTEGER), item_id, SUM(count)
+             FROM commands_used WHERE ?2 IS NULL OR context = ?2 OR context = 'any'
+             GROUP BY day, item_id",
+        )?;
+        let hits = rows(
+            "SELECT CAST(julianday(?1) - julianday(day) AS INTEGER), rule_id, SUM(hits)
+             FROM daily_stats WHERE ?2 IS NULL OR context = ?2
+             GROUP BY day, rule_id",
+        )?;
+        let histories = flowbuddy_core::mastery::histories(
+            uses.iter().map(|(a, i, n)| (*a, i.as_str(), *n)),
+            hits.iter().map(|(a, r, n)| (*a, r.as_str(), *n)),
+            |rule| {
+                flowbuddy_core::curriculum::rule_skills(rule)
+                    .unwrap_or_default()
+                    .to_vec()
+            },
+        );
+        Ok(flowbuddy_core::mastery::assess(&histories))
+    }
+
     /// Say an item is known (`Some(true)`), not known, or back to what use
     /// shows (`None`).
     pub fn set_known_override(&self, item_id: &str, known: Option<bool>) -> Result<()> {
@@ -1322,5 +1363,26 @@ mod tests {
         let p = &s.patterns().unwrap()[0];
         assert_eq!(p.adoptions, 56);
         assert!(s.inflated_adoptions("2026-10-26").unwrap().is_empty());
+    }
+
+    #[test]
+    fn skills_come_from_uses_and_habits() {
+        let s = Store::open_in_memory().unwrap();
+        for day in ["2026-10-20", "2026-10-21", "2026-10-22"] {
+            s.add_command_use(day, "vscode-vim", "find", 1).unwrap();
+        }
+        s.add_command_use("2026-10-22", "terminal-vim", "word", 1)
+            .unwrap();
+        // Back on hhhhh three days running: against word and find.
+        for day in ["2026-10-24", "2026-10-25", "2026-10-26"] {
+            s.record(day, "terminal-vim", "vim.repeat-hl", HIT, 0)
+                .unwrap();
+        }
+        let (all, model) = s.skills("2026-10-27", None).unwrap();
+        assert!(all["find"].mastery > all["word"].mastery, "{all:?}");
+        assert_eq!(all["find"].idle, Some(5));
+        assert!(all["find"].recall(&model) > 0.0);
+        let (here, _) = s.skills("2026-10-27", Some("vscode-vim")).unwrap();
+        assert!(!here.contains_key("word"), "{here:?}");
     }
 }

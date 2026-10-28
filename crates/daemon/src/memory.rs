@@ -25,8 +25,15 @@ struct ProgressCache {
     overrides: HashMap<String, bool>,
     /// Per environment (`None`: all of them), read when first wanted.
     uses: HashMap<Option<ContextKind>, HashMap<String, flowbuddy_store::ItemUse>>,
+    /// Mastery per skill and the fitted half-life model, likewise.
+    skills: HashMap<Option<ContextKind>, Skills>,
     items: HashMap<String, flowbuddy_store::LearnRow>,
 }
+
+type Skills = (
+    HashMap<String, flowbuddy_core::mastery::Skill>,
+    flowbuddy_core::mastery::Model,
+);
 
 /// A pattern: (rule id, context).
 type PatternKey = (String, String);
@@ -453,6 +460,7 @@ impl Memory {
                 day: today.clone(),
                 overrides: store.known_overrides().unwrap_or_default(),
                 uses: HashMap::new(),
+                skills: HashMap::new(),
                 items: store
                     .learn_items()
                     .ok()?
@@ -472,10 +480,17 @@ impl Memory {
                 )
                 .clone(),
         };
+        let (skills, model) = match c.skills.entry(ctx) {
+            std::collections::hash_map::Entry::Occupied(e) => e.get().clone(),
+            std::collections::hash_map::Entry::Vacant(e) => e
+                .insert(store.skills(&today, ctx.map(|c| c.as_str())).ok()?)
+                .clone(),
+        };
         let items = c.items.clone();
         Some(move |id: &str| {
             let row = items.get(id);
             let u = uses.get(id).copied().unwrap_or_default();
+            let skill = skills.get(id).map(|s| s.percents(&model));
             curriculum::Progress {
                 uses: u.total,
                 recent_uses: u.recent,
@@ -483,6 +498,8 @@ impl Memory {
                 times_shown: row.map_or(0, |r| r.times_shown),
                 last_shown: row.map(|r| r.last_shown),
                 learned: row.is_some_and(|r| r.learned_at.is_some()),
+                mastery: skill.map(|s| s.0),
+                recall: skill.map(|s| s.1),
             }
         })
     }

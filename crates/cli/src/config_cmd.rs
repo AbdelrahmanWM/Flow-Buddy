@@ -169,8 +169,22 @@ pub fn list_json(config: &Config) -> serde_json::Value {
 
 fn list_text(config: &Config, basic_only: bool) -> String {
     let mut out = String::new();
+    let shown: Vec<&Setting> = settings::SETTINGS
+        .iter()
+        .filter(|s| s.basic || !basic_only)
+        .collect();
+    // Each group once, in the order it first comes.
+    let mut groups: Vec<&str> = Vec::new();
+    for s in &shown {
+        if !groups.contains(&s.group) {
+            groups.push(s.group);
+        }
+    }
+    let ordered = groups
+        .iter()
+        .flat_map(|g| shown.iter().filter(move |s| s.group == *g));
     let mut group = "";
-    for s in settings::SETTINGS.iter().filter(|s| s.basic || !basic_only) {
+    for s in ordered {
         if s.group != group {
             group = s.group;
             out += &format!("\n{group}\n");

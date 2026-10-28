@@ -48,8 +48,6 @@ struct SnippetWait {
     deadline_ms: u64,
 }
 
-/// How long a finding waits for a better one about the same keys.
-const HOLD_MS: u64 = 800;
 /// `when = "pause"`: no keys for this long is a pause.
 /// Whether to hold this tip back: true for a `share` of them, at random.
 fn held_back(share: f64, rule_id: &str, now_ms: u64) -> bool {
@@ -62,10 +60,7 @@ fn held_back(share: f64, rule_id: &str, now_ms: u64) -> bool {
     (h as f64 / u64::MAX as f64) < share
 }
 
-/// A challenge is open this long.
-const CHALLENGE_S: u64 = 2 * 86_400;
 const CHALLENGE_RULE: &str = "learn.challenge";
-const PAUSE_MS: u64 = 1500;
 /// A tip still waiting for a pause after this long is stale: dropped.
 const PAUSE_GIVE_UP_MS: u64 = 120_000;
 
@@ -205,9 +200,6 @@ const UI_CLICK_MS: u64 = 1500;
 /// in the editor a heartbeat follows within about half a second.
 const HELD_MS: u64 = 1000;
 
-/// The daily "something new" waits this long after any other tip.
-const LEARN_GAP_MS: u64 = 5 * 60_000;
-
 /// How often to look at Claude Code's settings for its Vim mode.
 const CLAUDE_CHECK_MS: u64 = 5000;
 
@@ -282,6 +274,7 @@ impl App {
         notifier: Box<dyn Notifier>,
     ) -> Self {
         let resolved = resolver.resolve();
+        let hold_ms = u64::from(config.coaching.hold_ms);
         let mut engine = Engine::standard();
         engine.apply(&config::rule_settings(&config, &state));
         App {
@@ -315,7 +308,7 @@ impl App {
             last_key_ms: None,
             todays_lesson: None,
             holding: Vec::new(),
-            hold_ms: HOLD_MS,
+            hold_ms,
             recent_tips: VecDeque::new(),
             snippet_waits: Vec::new(),
             snippet_seq: 0,
@@ -771,9 +764,9 @@ impl App {
             || !editing
             || self.state.last_learn_day.as_deref() == Some(today.as_str())
             || self.state.muted().contains(RULE)
-            || self
-                .last_nudge_ms
-                .is_some_and(|t| now_ms.saturating_sub(t) < LEARN_GAP_MS)
+            || self.last_nudge_ms.is_some_and(|t| {
+                now_ms.saturating_sub(t) < u64::from(self.config.learn.gap_minutes) * 60_000
+            })
         {
             return;
         }
@@ -822,7 +815,7 @@ impl App {
                 let text = format!("You used {}: challenge done.", item.keys);
                 self.show(CHALLENGE_RULE, "Nice", &text, false, now_ms);
             }
-        } else if now_ms / 1000 >= c.set_at + CHALLENGE_S {
+        } else if now_ms / 1000 >= c.set_at + u64::from(self.config.learn.challenge_days) * 86_400 {
             self.state.challenge = None;
             self.save_state();
             self.memory
@@ -935,6 +928,7 @@ impl App {
             .apply(&config::rule_settings(&config, &self.state));
         self.resolver.set_ids(app_ids(&config));
         self.coach.set_config(PolicyConfig::from(&config.coaching));
+        self.hold_ms = u64::from(config.coaching.hold_ms);
         self.memory.set_config(&config);
         self.engine
             .set_known(self.memory.known(Some(self.resolved.kind), wall_ms()));
@@ -1023,6 +1017,10 @@ impl App {
         self.holding.push((f, ctx, now_ms));
     }
 
+    fn pause_ms(&self) -> u64 {
+        u64::from(self.config.coaching.pause_ms)
+    }
+
     fn wait_for_pause(&self) -> bool {
         self.config.coaching.when == config::TipTiming::Pause
     }
@@ -1033,7 +1031,7 @@ impl App {
         let paused = !self.wait_for_pause()
             || self
                 .last_key_ms
-                .is_none_or(|t| now_ms.saturating_sub(t) >= PAUSE_MS);
+                .is_none_or(|t| now_ms.saturating_sub(t) >= self.pause_ms());
         let stale = |at: u64| now_ms.saturating_sub(at) > PAUSE_GIVE_UP_MS;
         let (ready, wait): (Vec<_>, Vec<_>) = std::mem::take(&mut self.holding)
             .into_iter()
@@ -1292,7 +1290,7 @@ impl App {
         let typing = self.wait_for_pause()
             && self
                 .last_key_ms
-                .is_some_and(|t| now_ms.saturating_sub(t) < PAUSE_MS);
+                .is_some_and(|t| now_ms.saturating_sub(t) < self.pause_ms());
         if !typing {
             let gate = self.gate(now_ms);
             for f in self.coach.on_tick(&gate, now_ms) {
@@ -3657,7 +3655,7 @@ pub(crate) mod tests {
     #[test]
     fn one_tip_when_two_rules_fire_a_moment_apart() {
         let mut app = test_app(CoachingMode::Active);
-        app.hold_ms = HOLD_MS;
+        app.hold_ms = u64::from(Config::default().coaching.hold_ms);
         let mut ext = ext_hello(&mut app, 1);
         focus(&mut app, "org.gnome.Terminal", 100);
         ctx(&mut app, CtxEvent::Fg, Some("vim"), 200);
@@ -3813,6 +3811,22 @@ pub(crate) mod tests {
         let rows = app.memory.store().unwrap().tips(0).unwrap();
         assert!(!rows.is_empty() && rows.iter().all(|r| r.held), "{rows:?}");
         assert!(!held_back(0.0, "vim.repeat-jk", 1));
+    }
+
+    #[test]
+    fn a_challenge_stays_open_as_long_as_you_say() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        app.config.learn.challenge_days = 1;
+        app.state.challenge = Some(config::Challenge {
+            item: "find".into(),
+            set_at: 0,
+        });
+        app.tick(86_400_000 / 2);
+        assert!(app.state.challenge.is_some(), "half a day: still open");
+        app.tick(86_400_000 + 61_000);
+        assert!(app.state.challenge.is_none());
+        let outcomes = app.memory.store().unwrap().challenge_outcomes().unwrap();
+        assert_eq!(outcomes["find"], (0, 0, 1));
     }
 
     #[test]

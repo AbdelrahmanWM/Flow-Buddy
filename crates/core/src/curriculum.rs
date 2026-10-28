@@ -2516,6 +2516,23 @@ pub const MAX_SHOWINGS: u32 = 3;
 /// And not again within this many days.
 pub const AGAIN_AFTER_DAYS: u64 = 7;
 
+/// How often lessons come back: `[learn] again_after_days` and
+/// `max_showings`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pace {
+    pub again_after_days: u64,
+    pub max_showings: u32,
+}
+
+impl Default for Pace {
+    fn default() -> Self {
+        Pace {
+            again_after_days: AGAIN_AFTER_DAYS,
+            max_showings: MAX_SHOWINGS,
+        }
+    }
+}
+
 /// What's known about one item.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Progress {
@@ -2559,7 +2576,7 @@ pub fn pick_for(
 ) -> Option<&'static Item> {
     CURRICULUM
         .iter()
-        .find(|item| worth_teaching(item, progress, known, now_s, ctx))
+        .find(|item| worth_teaching(item, progress, known, now_s, ctx, Pace::default()))
 }
 
 /// The day's lesson from your habits: see [`choose`]; else nothing.
@@ -2605,6 +2622,18 @@ pub fn choose(
     ctx: crate::context::ContextKind,
     habits: &[(String, u64)],
 ) -> Option<Pick> {
+    choose_paced(progress, known, now_s, ctx, habits, Pace::default())
+}
+
+/// [`choose`], at your own pace.
+pub fn choose_paced(
+    progress: &dyn Fn(&str) -> Progress,
+    known: &Known,
+    now_s: u64,
+    ctx: crate::context::ContextKind,
+    habits: &[(String, u64)],
+    pace: Pace,
+) -> Option<Pick> {
     let saves = |id: &str| {
         1.0 + habits
             .iter()
@@ -2618,7 +2647,7 @@ pub fn choose(
     let pct = |p: Option<u8>| p.map(|p| f64::from(p) / 100.0);
     let new: Vec<&Item> = CURRICULUM
         .iter()
-        .filter(|item| worth_teaching(item, progress, known, now_s, ctx))
+        .filter(|item| worth_teaching(item, progress, known, now_s, ctx, pace))
         .collect();
     let frontier = new.iter().map(|i| i.level).min().unwrap_or(1);
     let lessons = new.into_iter().map(|item| {
@@ -2648,7 +2677,7 @@ pub fn choose(
             let due = mastery >= crate::mastery::MASTERED
                 && recall < REVIEW_AT
                 && p.last_shown
-                    .is_none_or(|t| now_s.saturating_sub(t) >= AGAIN_AFTER_DAYS * 86_400);
+                    .is_none_or(|t| now_s.saturating_sub(t) >= pace.again_after_days * 86_400);
             due.then(|| {
                 (
                     saves(item.id) * mastery * (1.0 - recall),
@@ -2671,6 +2700,7 @@ fn worth_teaching(
     known: &Known,
     now_s: u64,
     ctx: crate::context::ContextKind,
+    pace: Pace,
 ) -> bool {
     {
         let p = progress(item.id);
@@ -2681,9 +2711,9 @@ fn worth_teaching(
             // review if it was mastered.
             && !known.knows(item.id)
             && p.mastery.is_none_or(|m| f64::from(m) / 100.0 < crate::mastery::MASTERED)
-            && p.times_shown < MAX_SHOWINGS
+            && p.times_shown < pace.max_showings
             && p.last_shown
-                .is_none_or(|t| now_s.saturating_sub(t) >= AGAIN_AFTER_DAYS * 86_400)
+                .is_none_or(|t| now_s.saturating_sub(t) >= pace.again_after_days * 86_400)
     }
 }
 
@@ -2906,6 +2936,32 @@ mod tests {
         assert!(!used("\"_dd").contains(&"registers") && used("\"ayy").contains(&"registers"));
         assert!(!used("''").contains(&"marks") && !used("'.").contains(&"marks"));
         assert!(!used("vu").contains(&"undo-redo") && used("u").contains(&"undo-redo"));
+    }
+
+    #[test]
+    fn your_pace_decides_when_a_lesson_comes_back() {
+        use crate::context::ContextKind::TerminalVim;
+        let known = Known::of(["word"]);
+        let shown = |id: &str| Progress {
+            times_shown: u32::from(id == "word-end"),
+            last_shown: (id == "word-end").then_some(0),
+            ..Default::default()
+        };
+        let first = |pace| {
+            choose_paced(&shown, &known, 3 * 86_400, TerminalVim, &[], pace).map(|p| p.item.id)
+        };
+        // By default, not again within a week.
+        assert_ne!(first(Pace::default()), Some("word-end"));
+        let soon = Pace {
+            again_after_days: 2,
+            ..Pace::default()
+        };
+        assert_eq!(first(soon), Some("word-end"));
+        let once = Pace {
+            again_after_days: 2,
+            max_showings: 1,
+        };
+        assert_ne!(first(once), Some("word-end"));
     }
 
     #[test]

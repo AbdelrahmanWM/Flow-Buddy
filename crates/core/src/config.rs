@@ -77,6 +77,14 @@ pub struct LearnConfig {
     /// The share of tips held back at random, to measure what tips do
     /// (`flowbuddy learn --report`); 0 shows them all.
     pub holdout: f64,
+    /// No daily lesson within this many minutes of another tip.
+    pub gap_minutes: u32,
+    /// Days a challenge stays open.
+    pub challenge_days: u32,
+    /// Days before a lesson you didn't take up can come again.
+    pub again_after_days: u32,
+    /// Times a lesson is shown at most, if you don't take it up.
+    pub max_showings: u32,
 }
 
 impl Default for LearnConfig {
@@ -86,6 +94,10 @@ impl Default for LearnConfig {
             level: Level::Beginner,
             challenges: true,
             holdout: 0.1,
+            gap_minutes: 5,
+            challenge_days: 2,
+            again_after_days: 7,
+            max_showings: 3,
         }
     }
 }
@@ -214,6 +226,12 @@ pub struct CoachingConfig {
     pub summary_time: String,
     /// When a live tip shows: right away, or once you pause typing.
     pub when: TipTiming,
+    /// How long a habit waits before its tip, in milliseconds, so the tip
+    /// isn't about keys you're still in the middle of.
+    pub hold_ms: u32,
+    /// With `when = "pause"`: how long you stop typing for it to count as
+    /// a pause, in milliseconds.
+    pub pause_ms: u32,
 }
 
 /// When a live tip shows.
@@ -240,6 +258,8 @@ impl Default for CoachingConfig {
             quiet_hours: None,
             summary_time: "18:00".into(),
             when: TipTiming::Now,
+            hold_ms: 800,
+            pause_ms: 1500,
         }
     }
 }

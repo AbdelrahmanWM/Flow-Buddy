@@ -59,6 +59,10 @@ enum Cmd {
         /// Where your history disagrees with the order things are taught in.
         #[arg(long)]
         audit: bool,
+        /// How much of Vim's command index is taught and coached, by mode,
+        /// and the everyday commands not covered yet.
+        #[arg(long)]
+        coverage: bool,
     },
     /// Check everything Flow Buddy needs, and say how to fix what's missing.
     Doctor,
@@ -260,8 +264,12 @@ fn main() {
             reset,
             list,
             audit,
+            coverage,
         } => {
-            if audit {
+            if coverage {
+                print!("{}", learn_coverage());
+                Ok(())
+            } else if audit {
                 learn_audit()
             } else if list {
                 for i in flowbuddy_core::curriculum::CURRICULUM {
@@ -925,6 +933,35 @@ fn ssh_config(host: &str, socket: &std::path::Path) -> String {
          StreamLocalBindUnlink yes\n",
         socket.display()
     )
+}
+
+fn learn_coverage() -> String {
+    use flowbuddy_core::inventory;
+    let mut out = String::from("Vim's command index (:help index)\n\n");
+    out += &format!(
+        "{:<10} {:>8} {:>8} {:>8}\n",
+        "mode", "commands", "taught", "coached"
+    );
+    let pct = |n: usize, of: usize| format!("{}%", n * 100 / of.max(1));
+    for (mode, (all, taught, coached)) in inventory::coverage() {
+        out += &format!(
+            "{mode:<10} {all:>8} {:>8} {:>8}\n",
+            pct(taught, all),
+            pct(coached, all)
+        );
+    }
+    let gaps = inventory::gaps();
+    if !gaps.is_empty() {
+        const SHOWN: usize = 40;
+        out += &format!("\nNot covered yet ({}):\n", gaps.len());
+        for e in gaps.iter().take(SHOWN) {
+            out += &format!("  {:<8} {:<7} {}\n", e.keys, e.mode, e.what);
+        }
+        if gaps.len() > SHOWN {
+            out += &format!("  … and {} more\n", gaps.len() - SHOWN);
+        }
+    }
+    out
 }
 
 fn learn_audit() -> anyhow::Result<()> {

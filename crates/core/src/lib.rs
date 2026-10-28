@@ -6,6 +6,7 @@ pub mod curriculum;
 pub mod editor;
 pub mod engine;
 pub mod glossary;
+pub mod inventory;
 pub mod ipc;
 pub mod key;
 pub mod learning;

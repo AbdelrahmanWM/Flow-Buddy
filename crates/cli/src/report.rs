@@ -541,45 +541,122 @@ fn place_name(ctx: &str) -> &str {
 
 /// `flowbuddy learn`: the latest "something new", progress through the
 /// curriculum, and what's next.
-pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<String> {
-    use flowbuddy_core::curriculum::{self, CURRICULUM, Known, Progress};
-    use flowbuddy_core::glossary::plain;
-    let today = flowbuddy_store::days::day(now_ms);
-    let recent_from =
-        flowbuddy_store::days::day(now_ms.saturating_sub(curriculum::RECENT_DAYS * 86_400_000));
-    let uses = store.item_uses(&today, &recent_from, None)?;
-    let (skills, model) = store.skills(&today, None)?;
-    let rows: BTreeMap<String, flowbuddy_store::LearnRow> = store
-        .learn_items()?
-        .into_iter()
-        .map(|r| (r.item_id.clone(), r))
-        .collect();
-    let progress = |id: &str| {
-        let row = rows.get(id);
-        let u = uses.get(id).copied().unwrap_or_default();
-        let skill = skills.get(id).map(|s| s.percents(&model));
-        Progress {
+/// What's recorded about your use of the curriculum, for the skill tree.
+struct Recorded {
+    uses: std::collections::HashMap<String, flowbuddy_store::ItemUse>,
+    skills: std::collections::HashMap<String, flowbuddy_core::mastery::Skill>,
+    model: flowbuddy_core::mastery::Model,
+    rows: BTreeMap<String, flowbuddy_store::LearnRow>,
+}
+
+impl Recorded {
+    fn read(store: &Store, now_ms: u64) -> anyhow::Result<Recorded> {
+        let today = flowbuddy_store::days::day(now_ms);
+        let recent_from = flowbuddy_store::days::day(
+            now_ms.saturating_sub(flowbuddy_core::curriculum::RECENT_DAYS * 86_400_000),
+        );
+        let (skills, model) = store.skills(&today, None)?;
+        Ok(Recorded {
+            uses: store.item_uses(&today, &recent_from, None)?,
+            skills,
+            model,
+            rows: store
+                .learn_items()?
+                .into_iter()
+                .map(|r| (r.item_id.clone(), r))
+                .collect(),
+        })
+    }
+
+    fn progress(&self, id: &str) -> flowbuddy_core::curriculum::Progress {
+        let row = self.rows.get(id);
+        let u = self.uses.get(id).copied().unwrap_or_default();
+        let skill = self.skills.get(id).map(|s| s.percents(&self.model));
+        flowbuddy_core::curriculum::Progress {
             uses: u.total,
             recent_uses: u.recent,
-            days_idle: uses.contains_key(id).then_some(u.days_idle),
+            days_idle: self.uses.contains_key(id).then_some(u.days_idle),
             times_shown: row.map_or(0, |r| r.times_shown),
             last_shown: row.map(|r| r.last_shown),
             learned: row.is_some_and(|r| r.learned_at.is_some()),
             mastery: skill.map(|s| s.0),
             recall: skill.map(|s| s.1),
         }
-    };
-    let stages = store.stages()?;
-    let mastered = stages
+    }
+
+    /// What you know, as the daemon judges it.
+    fn tree(
+        &self,
+        store: &Store,
+        known_levels: u8,
+    ) -> anyhow::Result<flowbuddy_core::curriculum::Known> {
+        let stages = store.stages()?;
+        let mastered = stages
+            .iter()
+            .filter(|(_, s)| **s == flowbuddy_core::learning::Stage::Mastered)
+            .map(|((rule, _), _)| rule.as_str());
+        let overrides = store.known_overrides()?;
+        let unlinked = flowbuddy_core::links::dropped(&store.links()?);
+        Ok(
+            flowbuddy_core::curriculum::Known::from_progress(&|id| self.progress(id), mastered)
+                .with_levels(known_levels)
+                .with_overrides(&overrides)
+                .with_links(&unlinked),
+        )
+    }
+}
+
+/// `flowbuddy learn --json`: every item with where you are with it.
+pub fn learn_json(
+    store: &Store,
+    now_ms: u64,
+    known_levels: u8,
+) -> anyhow::Result<serde_json::Value> {
+    use flowbuddy_core::curriculum::{self, CURRICULUM};
+    let rec = Recorded::read(store, now_ms)?;
+    let tree = rec.tree(store, known_levels)?;
+    let items: Vec<serde_json::Value> = CURRICULUM
         .iter()
-        .filter(|(_, s)| **s == flowbuddy_core::learning::Stage::Mastered)
-        .map(|((rule, _), _)| rule.as_str());
-    let overrides = store.known_overrides()?;
-    let unlinked = flowbuddy_core::links::dropped(&store.links()?);
-    let tree = Known::from_progress(&progress, mastered)
-        .with_levels(known_levels)
-        .with_overrides(&overrides)
-        .with_links(&unlinked);
+        .map(|i| {
+            let p = rec.progress(i.id);
+            let state = if tree.knows(i.id) {
+                "known"
+            } else if tree.ready(i.id) {
+                "ready"
+            } else {
+                "later"
+            };
+            serde_json::json!({
+                "id": i.id,
+                "level": i.level,
+                "keys": flowbuddy_core::glossary::plain(i.keys),
+                "what": i.what,
+                "state": state,
+                "uses": p.uses,
+                "mastery": p.mastery,
+                "recall": p.recall,
+            })
+        })
+        .collect();
+    let latest = rec
+        .rows
+        .values()
+        .max_by_key(|r| r.last_shown)
+        .and_then(|r| curriculum::find(&r.item_id).map(|i| (i, r.learned_at.is_some())))
+        .map(|(i, learned)| serde_json::json!({"id": i.id, "text": flowbuddy_core::glossary::plain(&curriculum::tip_text(i)), "learned": learned}));
+    Ok(serde_json::json!({ "version": 1, "latest": latest, "items": items }))
+}
+
+pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<String> {
+    use flowbuddy_core::curriculum::{self, CURRICULUM, Known, Progress};
+    use flowbuddy_core::glossary::plain;
+    let today = flowbuddy_store::days::day(now_ms);
+    let recent_from =
+        flowbuddy_store::days::day(now_ms.saturating_sub(curriculum::RECENT_DAYS * 86_400_000));
+    let rec = Recorded::read(store, now_ms)?;
+    let rows = &rec.rows;
+    let progress = |id: &str| rec.progress(id);
+    let tree = rec.tree(store, known_levels)?;
     let known = |id: &str| tree.knows(id);
     let mut out = String::new();
     if let Some(row) = rows.values().max_by_key(|r| r.last_shown)
@@ -905,5 +982,20 @@ mod tests {
         assert!(r.contains("Challenges: 1 done, 0 missed"), "{r}");
         let (d, ci) = effect(5, 10, 5, 10);
         assert!(d == 0.0 && ci > 0.3);
+    }
+
+    #[test]
+    fn learn_as_json() {
+        let s = Store::open_in_memory().unwrap();
+        s.add_command_use(&days::day(at(25, 12)), "vscode-vim", "word", 5)
+            .unwrap();
+        let v = learn_json(&s, at(26, 12), 0).unwrap();
+        let items = v["items"].as_array().unwrap();
+        assert_eq!(items.len(), flowbuddy_core::curriculum::CURRICULUM.len());
+        let word = items.iter().find(|i| i["id"] == "word").unwrap();
+        assert_eq!(word["state"], "known");
+        assert_eq!(word["uses"], 5);
+        assert!(items.iter().any(|i| i["state"] == "ready"));
+        assert!(items.iter().any(|i| i["state"] == "later"));
     }
 }

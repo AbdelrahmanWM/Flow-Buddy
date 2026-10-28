@@ -266,6 +266,10 @@ fn motion(c: char) -> Option<&'static str> {
         '(' => "back to the start of the sentence",
         ')' => "forward to the next sentence",
         ',' => "repeat the last f, t, F or T backwards",
+        '+' => "to the first character of the next line",
+        '-' => "to the first character of the previous line",
+        '_' => "to the first character of this line (a count goes down)",
+        '|' => "to that column (the count) of the line",
         _ => return None,
     })
 }

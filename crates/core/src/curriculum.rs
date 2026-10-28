@@ -278,6 +278,31 @@ pub static CURRICULUM: &[Item] = &[
         "Fix the same thing in several places: change it once, then `.` each time.",
         |s| is(s, &["."])
     ),
+    item!(
+        "operator",
+        1,
+        "`d}` and `yw`",
+        "an operator then a motion: delete, change or copy as far as the motion goes",
+        "Delete to the end of the paragraph, or copy a word, without selecting first.",
+        |s| op_motion(s, "dcy", "wbeWBE$0^{}()GfFtTnN%HLM`'jk")
+    ),
+    item!(
+        "yank-put",
+        1,
+        "`yy` and `p`",
+        "copy (yank) the line, and put it after the cursor (`P` before)",
+        "Duplicate a line: `yy` then `p`.",
+        |s| (head(s, "y") && !s.before.is_visual()) || is(s, &["Y", "p", "P"])
+    ),
+    item!(
+        "replace-char",
+        1,
+        "`r<char>`",
+        "replace the character under the cursor, staying in Normal mode",
+        "Fix a typo'd letter in two keys.",
+        |s| !s.before.is_visual()
+            && cmd(s).is_some_and(|c| c.keys.len() == 2 && c.keys[0].plain_char() == Some('r'))
+    ),
     // Level 2: bigger moves and text objects.
     item!(
         "search",
@@ -457,9 +482,25 @@ pub static CURRICULUM: &[Item] = &[
         "substitute",
         2,
         "`s` and `S`",
-        "replace a character, or the whole line, and type",
+        "replace a character, or the whole line (also `cc`), and type",
         "Fix one wrong letter and keep typing.",
-        |s| is(s, &["s", "S"])
+        |s| is(s, &["s", "S", "cc"])
+    ),
+    item!(
+        "page",
+        2,
+        "`Ctrl-f` and `Ctrl-b`",
+        "a whole screen forward or back",
+        "Page through a long file you're reading.",
+        |s| ctrl(s, "fb")
+    ),
+    item!(
+        "delete-back",
+        2,
+        "`X`",
+        "delete the character before the cursor",
+        "Remove the letter you just passed without moving back first.",
+        |s| is(s, &["X"]) && !s.before.is_visual()
     ),
     item!(
         "join",
@@ -596,10 +637,36 @@ pub static CURRICULUM: &[Item] = &[
     item!(
         "till",
         3,
-        "`dt<char>`",
-        "delete up to just before a character",
+        "`t<char>` and `dt<char>`",
+        "move to just before a character (`T` backwards), or delete up to it",
         "Remove the rest of an argument up to the comma.",
         |s| op_motion(s, "dcy", "tT")
+            || (head(s, "tT") && cmd(s).is_some_and(|c| c.keys.len() == 2))
+    ),
+    item!(
+        "scroll-line",
+        3,
+        "`Ctrl-e` and `Ctrl-y`",
+        "scroll the view a line down or up, leaving the cursor where it is",
+        "Show one more line of context below without moving.",
+        |s| ctrl(s, "ey")
+    ),
+    item!(
+        "line-first",
+        3,
+        "`+` and `-`",
+        "the first character of the next or previous line (Enter and `_` too)",
+        "Go down a line and land on its text, not its indentation.",
+        |s| is(s, &["+", "-", "_"])
+            || cmd(s).is_some_and(|c| c.single().is_some_and(|k| k.sym == Sym::Enter))
+    ),
+    item!(
+        "column",
+        3,
+        "`20|`",
+        "go to a column of the line",
+        "Line up with column 80 to check a line's length.",
+        |s| is(s, &["|"])
     ),
     item!(
         "bigword",
@@ -885,6 +952,14 @@ pub static CURRICULUM: &[Item] = &[
         |s| cmdline(s, &["sort", "'<,'>sort"])
     ),
     item!(
+        "line-undo",
+        4,
+        "`U`",
+        "undo every change on the last changed line at once",
+        "Put a line back the way it was after several edits to it.",
+        |s| is(s, &["U"]) && !s.before.is_visual()
+    ),
+    item!(
         "write-quit",
         4,
         "`ZZ`",
@@ -904,6 +979,9 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("word-end", &["word"]),
     ("bigword", &["word"]),
     ("till", &["find"]),
+    ("scroll-line", &["half-page"]),
+    ("column", &["count"]),
+    ("line-undo", &["undo-redo"]),
     ("screen", &["half-page"]),
     ("screen-middle", &["screen"]),
     ("jump-forward", &["jump-back"]),
@@ -1651,7 +1729,7 @@ mod tests {
         let k = Known::of(["change-word"]);
         assert!(k.ready_for_command("ciw") && !k.ready_for_command("ci("));
         assert!(!k.ready_for_command("zz"), "zz builds on Ctrl-d");
-        assert!(k.ready_for_command("Ctrl-e"), "not a tree item");
+        assert!(k.ready_for_command("ga"), "not a tree item");
     }
 
     #[test]

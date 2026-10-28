@@ -136,7 +136,14 @@ fn keys_of(e: &Entry) -> Option<Vec<Key>> {
         _ => {}
     }
     let start = out.len();
-    let mut rest = e.keys.replace("[\"x]", "").replace("[count]", "");
+    // Entries whose keys need something after them to mean anything.
+    let keys = match e.tag {
+        "quote" => "\"ayy",
+        "<Tab>" => "CTRL-I",
+        "N:" => ":.,+2d<CR>",
+        _ => e.keys,
+    };
+    let mut rest = keys.replace("[\"x]", "").replace("[count]", "");
     // A count first: `N%`, `N<Del>`.
     if rest.len() > 1 && rest.starts_with('N') {
         rest.remove(0);

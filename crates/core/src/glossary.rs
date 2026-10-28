@@ -155,6 +155,7 @@ fn phrase(keys: &str) -> Option<&'static str> {
         ":terminal" => "a shell in a Vim window",
         "Ctrl-r =" => "while typing: work out a sum and type the answer",
         "Ctrl-g u" => "while typing: start a new undo step",
+        "," => "back to the character you last found (f, t, F or T)",
         "g Ctrl-a" => "on a selection: count up line by line (1, 2, 3…)",
         "g Ctrl-g" => "count the words, lines and characters",
         "cd .." => "go up one folder",

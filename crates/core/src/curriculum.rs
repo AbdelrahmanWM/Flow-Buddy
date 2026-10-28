@@ -680,6 +680,14 @@ pub static CURRICULUM: &[Item] = &[
         None
     ),
     item!(
+        "find-back",
+        2,
+        "`,`",
+        "back to the character you last found with `f`, `t`, `F` or `T`",
+        "Went one comma too far with `;`? `,` goes back.",
+        |s| is(s, &[","])
+    ),
+    item!(
         "page",
         2,
         "`Ctrl-f` and `Ctrl-b`",
@@ -2053,6 +2061,7 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("word-end", &["word"]),
     ("bigword", &["word"]),
     ("till", &["find"]),
+    ("find-back", &["find"]),
     ("scroll-line", &["half-page"]),
     ("vim-terminal", &["shell-cmd"]),
     ("save-more", &["save-quit"]),
@@ -2181,10 +2190,22 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("vim.overshoot", &["count"]),
     ("vim.find-repeat", &["find", "search"]),
     ("vim.operator-run", &["count"]),
-    ("vim.scroll-run", &["half-page", "center"]),
-    ("vim.search-again", &["search-next"]),
+    ("vim.scroll-run", &["half-page", "center", "scroll-line"]),
+    ("vim.search-again", &["search-next", "repeat-sub"]),
+    ("vim.find-back", &["find-back"]),
+    ("vim.select-all", &["operator"]),
+    ("vim.buffer-walk", &["buffers"]),
     ("vim.change-matches", &["cgn", "substitute-all"]),
-    ("vim.shorthand", &["append", "open-line", "d-to-end"]),
+    (
+        "vim.shorthand",
+        &[
+            "append",
+            "open-line",
+            "d-to-end",
+            "insert-col1",
+            "delete-back",
+        ],
+    ),
     ("vim.visual-operator", &["ciw", "visual-object"]),
     ("motion.count", &["count"]),
     ("motion.paragraph", &["paragraph"]),

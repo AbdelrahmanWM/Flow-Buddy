@@ -67,7 +67,7 @@ pub struct TipStats {
 
 pub fn tip_stats(rows: &[TipRow]) -> BTreeMap<String, TipStats> {
     let mut out: BTreeMap<String, TipStats> = BTreeMap::new();
-    for r in rows {
+    for r in rows.iter().filter(|r| !r.held) {
         let s = out.entry(r.rule_id.clone()).or_default();
         s.shown += 1;
         match r.outcome {
@@ -241,6 +241,7 @@ mod tests {
             mode: "active".into(),
             prior_today: 0,
             outcome,
+            held: false,
         };
         let stats = tip_stats(&[
             row("vim.repeat-x", Some(Outcome::Adopted)),

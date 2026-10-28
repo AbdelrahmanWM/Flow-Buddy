@@ -180,6 +180,23 @@ impl Memory {
 
     /// A tip was shown: open a row for what comes of it.
     pub fn tip_shown(&mut self, rule_id: &'static str, mode: &str, local_hour: u32, now_ms: u64) {
+        self.open_tip(rule_id, mode, local_hour, now_ms, false);
+    }
+
+    /// A tip was held back at random: what comes of it anyway is the
+    /// comparison.
+    pub fn tip_held(&mut self, rule_id: &'static str, mode: &str, local_hour: u32, now_ms: u64) {
+        self.open_tip(rule_id, mode, local_hour, now_ms, true);
+    }
+
+    fn open_tip(
+        &mut self,
+        rule_id: &'static str,
+        mode: &str,
+        local_hour: u32,
+        now_ms: u64,
+        held: bool,
+    ) {
         let Some(store) = &self.store else { return };
         let Some(ctx) = self.finding_context(rule_id) else {
             return;
@@ -188,8 +205,10 @@ impl Memory {
         if self.tips_today.0 != today {
             self.tips_today = (today, 0);
         }
-        *self.shown.entry(rule_id.to_string()).or_default() += 1;
-        self.skipped.remove(rule_id);
+        if !held {
+            *self.shown.entry(rule_id.to_string()).or_default() += 1;
+            self.skipped.remove(rule_id);
+        }
         let stage = self.stage(rule_id, ctx);
         let tip = flowbuddy_store::TipShown {
             shown_at: now_ms / 1000,
@@ -199,8 +218,11 @@ impl Memory {
             hour: local_hour,
             mode,
             prior_today: self.tips_today.1,
+            held,
         };
-        self.tips_today.1 += 1;
+        if !held {
+            self.tips_today.1 += 1;
+        }
         match store.tip_shown(&tip) {
             Ok(id) => {
                 // A newer tip for the same rule replaces the open one.
@@ -267,7 +289,7 @@ impl Memory {
         let rows = store.tips(since).unwrap_or_default();
         rows.iter()
             .rev()
-            .filter(|r| r.rule_id == rule_id)
+            .filter(|r| r.rule_id == rule_id && !r.held)
             .filter_map(|r| r.outcome)
             .take_while(|o| {
                 matches!(
@@ -302,9 +324,11 @@ impl Memory {
     /// Retrain the filter from the outcomes kept.
     fn retrain(&mut self, now_ms: u64) {
         let Some(store) = &self.store else { return };
-        let Ok(rows) = store.tips((now_ms / 1000).saturating_sub(TIP_RETENTION_S)) else {
+        let Ok(mut rows) = store.tips((now_ms / 1000).saturating_sub(TIP_RETENTION_S)) else {
             return;
         };
+        // Held tips weren't seen: nothing to learn about showing them.
+        rows.retain(|r| !r.held);
         use flowbuddy_store::Outcome;
         self.shown.clear();
         for r in &rows {
@@ -723,6 +747,7 @@ mod tests {
             hour: 10,
             mode: "active",
             prior_today: 0,
+            held: false,
         };
         for (i, outcome) in [
             Outcome::Adopted,

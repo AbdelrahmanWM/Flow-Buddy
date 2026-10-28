@@ -157,6 +157,10 @@ const MIGRATIONS: &[&str] = &[
         outcome TEXT    NOT NULL
     );
 "#,
+    r#"
+    -- Tips held back at random ([learn] holdout), to measure what tips do.
+    ALTER TABLE tip_outcomes ADD COLUMN held INTEGER NOT NULL DEFAULT 0;
+"#,
 ];
 
 /// One tip as it was shown.
@@ -210,6 +214,9 @@ pub struct TipShown<'a> {
     pub hour: u32,
     pub mode: &'a str,
     pub prior_today: u32,
+    /// Held back at random, not shown: the comparison that tells what
+    /// showing tips does (`[learn] holdout`).
+    pub held: bool,
 }
 
 /// What happened after a tip.
@@ -255,6 +262,8 @@ pub struct TipRow {
     pub prior_today: u32,
     /// `None` while still open, or if the daemon stopped before it closed.
     pub outcome: Option<Outcome>,
+    /// Held back, not shown: see [`TipShown::held`].
+    pub held: bool,
 }
 
 /// What happened, for [`Store::record`].
@@ -843,8 +852,9 @@ impl Store {
     /// A tip was shown; returns its row, for [`Store::close_tip`].
     pub fn tip_shown(&self, tip: &TipShown<'_>) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO tip_outcomes (shown_at, rule_id, context, stage, hour, mode, prior_today)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO tip_outcomes (shown_at, rule_id, context, stage, hour, mode, prior_today,
+                                       held)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 tip.shown_at,
                 tip.rule_id,
@@ -852,7 +862,8 @@ impl Store {
                 tip.stage,
                 tip.hour,
                 tip.mode,
-                tip.prior_today
+                tip.prior_today,
+                tip.held
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -870,7 +881,7 @@ impl Store {
     /// Tips shown since `since_s`, oldest first.
     pub fn tips(&self, since_s: u64) -> Result<Vec<TipRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT shown_at, rule_id, context, stage, hour, mode, prior_today, outcome
+            "SELECT shown_at, rule_id, context, stage, hour, mode, prior_today, outcome, held
              FROM tip_outcomes WHERE shown_at >= ?1 ORDER BY shown_at, id",
         )?;
         let rows = stmt.query_map(params![since_s], |r| {
@@ -886,6 +897,7 @@ impl Store {
                     .get::<_, Option<String>>(7)?
                     .as_deref()
                     .and_then(Outcome::parse),
+                held: r.get(8)?,
             })
         })?;
         rows.collect()
@@ -1341,6 +1353,7 @@ mod tests {
             hour: 14,
             mode: "active",
             prior_today: 2,
+            held: false,
         };
         let a = s.tip_shown(&tip(100)).unwrap();
         s.tip_shown(&tip(200)).unwrap();

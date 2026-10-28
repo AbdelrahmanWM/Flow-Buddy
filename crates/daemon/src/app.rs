@@ -51,6 +51,17 @@ struct SnippetWait {
 /// How long a finding waits for a better one about the same keys.
 const HOLD_MS: u64 = 800;
 /// `when = "pause"`: no keys for this long is a pause.
+/// Whether to hold this tip back: true for a `share` of them, at random.
+fn held_back(share: f64, rule_id: &str, now_ms: u64) -> bool {
+    use std::hash::BuildHasher;
+    if share <= 0.0 {
+        return false;
+    }
+    // A randomly keyed hash: random enough, without a dependency.
+    let h = std::collections::hash_map::RandomState::new().hash_one((rule_id, now_ms));
+    (h as f64 / u64::MAX as f64) < share
+}
+
 /// A challenge is open this long.
 const CHALLENGE_S: u64 = 2 * 86_400;
 const CHALLENGE_RULE: &str = "learn.challenge";
@@ -614,6 +625,13 @@ impl App {
                 .memory
                 .filter_allows(f.rule_id, self.mode.as_str(), hour, now_ms)
         {
+            return;
+        }
+        // A few held back at random: comparing them with the ones shown
+        // tells whether tips help.
+        if held_back(self.config.learn.holdout, f.rule_id, now_ms) {
+            self.memory
+                .tip_held(f.rule_id, self.mode.as_str(), hour, now_ms);
             return;
         }
         // The model's sentence too must only name what works where the
@@ -1959,13 +1977,20 @@ pub(crate) mod tests {
     use flowbuddy_core::vim::notation::strokes;
     use tokio::sync::mpsc::UnboundedReceiver;
 
+    /// Every tip shown: none held back, so tests see them.
+    pub(crate) fn test_config() -> Config {
+        let mut c = Config::default();
+        c.learn.holdout = 0.0;
+        c
+    }
+
     pub(crate) fn test_app(mode: CoachingMode) -> App {
         let state = State {
             mode: Some(mode),
             ..Default::default()
         };
         let mut app = App::new(
-            Config::default(),
+            test_config(),
             state,
             test_resolver(),
             Box::new(crate::notify::fake::Recorder::default()),
@@ -2309,7 +2334,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let mut app = App::new(
-            Config::default(),
+            test_config(),
             state,
             test_resolver(),
             Box::new(recorder.clone()),
@@ -2381,7 +2406,7 @@ pub(crate) mod tests {
         };
         let store = flowbuddy_store::Store::open_in_memory().unwrap();
         let mut app = App::new(
-            Config::default(),
+            test_config(),
             state,
             test_resolver(),
             Box::new(recorder.clone()),
@@ -3159,6 +3184,7 @@ pub(crate) mod tests {
                             hour: 14,
                             mode: "active",
                             prior_today: (i % 3) as u32,
+                            held: false,
                         })
                         .unwrap();
                     store.close_tip(id, outcome).unwrap();
@@ -3772,6 +3798,21 @@ pub(crate) mod tests {
         app.tick(4_000);
         assert!(!app.on_record(None, 4_000).unwrap().recording);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn held_back_tips_are_recorded_not_shown() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        app.config.learn.holdout = 1.0;
+        type_at(&mut app, "<Esc>jjjjjjjjjw", 1_000_000);
+        app.tick(1_000_000 + 61_000);
+        let n = nudges(&mut ext);
+        assert!(n.iter().all(|n| n.rule_id == "learn.daily"), "{n:?}");
+        let rows = app.memory.store().unwrap().tips(0).unwrap();
+        assert!(!rows.is_empty() && rows.iter().all(|r| r.held), "{rows:?}");
+        assert!(!held_back(0.0, "vim.repeat-jk", 1));
     }
 
     #[test]

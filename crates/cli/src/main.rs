@@ -63,6 +63,10 @@ enum Cmd {
         /// and the everyday commands not covered yet.
         #[arg(long)]
         coverage: bool,
+        /// Whether tips help (against ones held back), and how well you
+        /// know and recall each skill.
+        #[arg(long)]
+        report: bool,
     },
     /// Check everything Flow Buddy needs, and say how to fix what's missing.
     Doctor,
@@ -265,8 +269,11 @@ fn main() {
             list,
             audit,
             coverage,
+            report: learn_report,
         } => {
-            if coverage {
+            if learn_report {
+                learn_report_cmd()
+            } else if coverage {
                 print!("{}", learn_coverage());
                 Ok(())
             } else if audit {
@@ -962,6 +969,14 @@ fn learn_coverage() -> String {
         }
     }
     out
+}
+
+fn learn_report_cmd() -> anyhow::Result<()> {
+    match open_db()? {
+        Some(store) => print!("{}", report::learn_report(&store, now_ms())?),
+        None => println!("Nothing recorded yet."),
+    }
+    Ok(())
 }
 
 fn learn_audit() -> anyhow::Result<()> {

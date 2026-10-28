@@ -346,6 +346,97 @@ pub fn next(store: &Store, now_ms: u64, skip: &BTreeSet<String>) -> anyhow::Resu
     Ok(out)
 }
 
+/// A difference of two shares, with its 95% interval (normal
+/// approximation): `a` of `n` against `b` of `m`.
+pub fn effect(a: u64, n: u64, b: u64, m: u64) -> (f64, f64) {
+    let (p, q) = (a as f64 / n.max(1) as f64, b as f64 / m.max(1) as f64);
+    let se = (p * (1.0 - p) / n.max(1) as f64 + q * (1.0 - q) / m.max(1) as f64).sqrt();
+    (p - q, 1.96 * se)
+}
+
+/// `flowbuddy learn --report`: whether tips help (against the ones held
+/// back), how well you know each skill, and how challenges went.
+pub fn learn_report(store: &Store, now_ms: u64) -> anyhow::Result<String> {
+    use flowbuddy_store::Outcome;
+    let mut out = String::new();
+    // Rule: (shown, adopted after), (held, adopted anyway).
+    let mut by: BTreeMap<String, [(u64, u64); 2]> = BTreeMap::new();
+    for t in store.tips(0)?.iter().filter(|t| t.outcome.is_some()) {
+        let row = &mut by.entry(t.rule_id.clone()).or_default()[usize::from(t.held)];
+        row.0 += 1;
+        row.1 += u64::from(t.outcome == Some(Outcome::Adopted));
+    }
+    writeln!(
+        out,
+        "What tips do: how often you did it the better way soon after a tip, against tips held back at random."
+    )?;
+    let compared: Vec<_> = by
+        .iter()
+        .filter(|(_, r)| r[0].0 > 0 && r[1].0 > 0)
+        .collect();
+    if compared.is_empty() {
+        writeln!(
+            out,
+            "  Nothing to compare yet: a tenth of tips are held back ([learn] holdout)."
+        )?;
+    }
+    for (rule, [(n, a), (m, b)]) in compared {
+        let (d, ci) = effect(*a, *n, *b, *m);
+        let verdict = if d - ci > 0.0 {
+            "helps"
+        } else if d + ci < 0.0 {
+            "seems to hurt"
+        } else {
+            "not clear yet"
+        };
+        writeln!(
+            out,
+            "  {rule:<24} shown {a}/{n}, held {b}/{m}: {:+.0} points (± {:.0}), {verdict}",
+            d * 100.0,
+            ci * 100.0
+        )?;
+    }
+
+    let today = days::day(now_ms);
+    let (skills, model) = store.skills(&today, None)?;
+    writeln!(
+        out,
+        "\nYour memory: a skill used on one day is half-forgotten after {:.0} days; after nine days of use, {:.0}.",
+        model.half_life(1.0, 0.0),
+        model.half_life(9.0, 0.0)
+    )?;
+    let mut rows: Vec<_> = skills.iter().collect();
+    rows.sort_by(|a, b| b.1.mastery.total_cmp(&a.1.mastery).then(a.0.cmp(b.0)));
+    if !rows.is_empty() {
+        writeln!(
+            out,
+            "\n{:<18} {:>8} {:>7} {:>10}",
+            "skill", "mastery", "recall", "half-life"
+        )?;
+    }
+    for (id, s) in rows {
+        writeln!(
+            out,
+            "{id:<18} {:>7.0}% {:>6.0}% {:>8.0} d",
+            s.mastery * 100.0,
+            s.recall(&model) * 100.0,
+            model.half_life(s.right, s.wrong)
+        )?;
+    }
+
+    let challenges = store.challenge_outcomes()?;
+    if !challenges.is_empty() {
+        let (done, missed, expired) = challenges
+            .values()
+            .fold((0, 0, 0), |t, c| (t.0 + c.0, t.1 + c.1, t.2 + c.2));
+        writeln!(
+            out,
+            "\nChallenges: {done} done, {missed} missed, {expired} left to expire."
+        )?;
+    }
+    Ok(out)
+}
+
 /// `flowbuddy learn --audit`: where your history disagrees with the
 /// tree's order, to change it by.
 pub fn audit(store: &Store, now_ms: u64) -> anyhow::Result<String> {
@@ -745,5 +836,45 @@ mod tests {
             out.contains("Daily tips never taken up (1):\n  marks\n"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn the_learning_report_compares_against_held_tips() {
+        use flowbuddy_store::{Outcome, TipShown};
+        let s = Store::open_in_memory().unwrap();
+        for i in 0..40u64 {
+            let held = i % 2 == 1;
+            let id = s
+                .tip_shown(&TipShown {
+                    shown_at: i,
+                    rule_id: "vim.repeat-jk",
+                    context: "vscode-vim",
+                    stage: "nudged",
+                    hour: 10,
+                    mode: "active",
+                    prior_today: 0,
+                    held,
+                })
+                .unwrap();
+            // Shown: adopted 18 of 20; held: 4 of 20.
+            let adopted = if held { i % 10 == 1 } else { i % 20 != 0 };
+            let outcome = if adopted {
+                Outcome::Adopted
+            } else {
+                Outcome::Ignored
+            };
+            s.close_tip(id, outcome).unwrap();
+        }
+        s.add_command_use(&days::day(at(25, 12)), "vscode-vim", "count", 3)
+            .unwrap();
+        s.challenge_ended("count", 0, &days::day(at(25, 12)), "done")
+            .unwrap();
+        let r = learn_report(&s, at(26, 12)).unwrap();
+        assert!(r.contains("shown 18/20, held 4/20: +70 points"), "{r}");
+        assert!(r.contains("helps"), "{r}");
+        assert!(r.contains("count "), "{r}");
+        assert!(r.contains("Challenges: 1 done, 0 missed"), "{r}");
+        let (d, ci) = effect(5, 10, 5, 10);
+        assert!(d == 0.0 && ci > 0.3);
     }
 }

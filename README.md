@@ -70,6 +70,7 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh
 daily = true                                  # one small Vim feature you don't use yet, once a day
 level = "beginner"                            # or "intermediate" / "advanced": skip ahead instead of waiting to see you use the basics
 challenges = true                             # after a lesson: use it the next time it fits
+holdout = 0.1                                 # share of tips held back at random, to measure what tips do (`flowbuddy learn --report`)
 
 [record]
 keep_days = 0                                 # e.g. 7: keep a week of recordings for `flowbuddy record tune`

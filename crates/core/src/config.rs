@@ -74,6 +74,9 @@ pub struct LearnConfig {
     /// After a lesson, a challenge: use it the next time it fits. Whether
     /// you do tells Flow Buddy how well it's sinking in.
     pub challenges: bool,
+    /// The share of tips held back at random, to measure what tips do
+    /// (`flowbuddy learn --report`); 0 shows them all.
+    pub holdout: f64,
 }
 
 impl Default for LearnConfig {
@@ -82,6 +85,7 @@ impl Default for LearnConfig {
             daily: true,
             level: Level::Beginner,
             challenges: true,
+            holdout: 0.1,
         }
     }
 }

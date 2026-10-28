@@ -56,6 +56,9 @@ enum Cmd {
         /// Every item: its id, level and commands.
         #[arg(long)]
         list: bool,
+        /// Where your history disagrees with the order things are taught in.
+        #[arg(long)]
+        audit: bool,
     },
     /// Check everything Flow Buddy needs, and say how to fix what's missing.
     Doctor,
@@ -256,8 +259,11 @@ fn main() {
             forget,
             reset,
             list,
+            audit,
         } => {
-            if list {
+            if audit {
+                learn_audit()
+            } else if list {
                 for i in flowbuddy_core::curriculum::CURRICULUM {
                     println!(
                         "{:<16} level {}  {}",
@@ -919,6 +925,14 @@ fn ssh_config(host: &str, socket: &std::path::Path) -> String {
          StreamLocalBindUnlink yes\n",
         socket.display()
     )
+}
+
+fn learn_audit() -> anyhow::Result<()> {
+    match open_db()? {
+        Some(store) => print!("{}", report::audit(&store, now_ms())?),
+        None => println!("Nothing recorded yet."),
+    }
+    Ok(())
 }
 
 fn learn() -> anyhow::Result<()> {

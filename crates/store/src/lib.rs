@@ -695,6 +695,15 @@ impl Store {
         rows.collect()
     }
 
+    /// The day each curriculum item was first used.
+    pub fn item_first_used(&self) -> Result<HashMap<String, String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT item_id, MIN(day) FROM commands_used GROUP BY item_id")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
     /// The environments uses were counted in (not 'any').
     pub fn use_contexts(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(

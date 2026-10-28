@@ -346,6 +346,76 @@ pub fn next(store: &Store, now_ms: u64, skip: &BTreeSet<String>) -> anyhow::Resu
     Ok(out)
 }
 
+/// `flowbuddy learn --audit`: where your history disagrees with the
+/// tree's order, to change it by.
+pub fn audit(store: &Store, now_ms: u64) -> anyhow::Result<String> {
+    use flowbuddy_core::curriculum::{CURRICULUM, requires};
+    use flowbuddy_store::days::day;
+    let first = store.item_first_used()?;
+    let today = day(now_ms);
+    let weeks_ago = day(now_ms.saturating_sub(21 * 86_400_000));
+    let mut out = String::new();
+    // Picked up before what the tree says it builds on.
+    let early: Vec<String> = CURRICULUM
+        .iter()
+        .filter_map(|i| {
+            let used = first.get(i.id)?;
+            let before: Vec<&str> = requires(i.id)
+                .iter()
+                .filter(|r| first.get(**r).is_none_or(|d| d > used))
+                .copied()
+                .collect();
+            (!before.is_empty()).then(|| format!("{} before {}", i.id, before.join(" and ")))
+        })
+        .collect();
+    // Ready for weeks (everything it builds on used three weeks ago), unused.
+    let stale: Vec<&str> = CURRICULUM
+        .iter()
+        .filter(|i| {
+            let reqs = requires(i.id);
+            !first.contains_key(i.id)
+                && !reqs.is_empty()
+                && reqs
+                    .iter()
+                    .all(|r| first.get(*r).is_some_and(|d| *d <= weeks_ago))
+        })
+        .map(|i| i.id)
+        .collect();
+    // Shown as the daily tip a week or more ago, never taken up.
+    let week = (now_ms / 1000).saturating_sub(7 * 86_400);
+    let ignored: Vec<String> = store
+        .learn_items()?
+        .into_iter()
+        .filter(|r| r.learned_at.is_none() && r.last_shown <= week)
+        .map(|r| r.item_id)
+        .collect();
+    let section = |out: &mut String, title: &str, items: &[String]| {
+        out.push_str(&format!("{title} ({}):\n", items.len()));
+        if items.is_empty() {
+            out.push_str("  none\n");
+        }
+        for i in items {
+            out.push_str(&format!("  {i}\n"));
+        }
+        out.push('\n');
+    };
+    out.push_str(&format!(
+        "Your history against the tree's order, up to {today}.\n\n"
+    ));
+    section(
+        &mut out,
+        "Used before what they build on: maybe they don't need it",
+        &early,
+    );
+    section(
+        &mut out,
+        "Ready for three weeks and not used: maybe too far ahead, or not useful to you",
+        &stale.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+    );
+    section(&mut out, "Daily tips never taken up", &ignored);
+    Ok(out)
+}
+
 fn place_name(ctx: &str) -> &str {
     match ctx {
         "vscode-vim" => "VS Code",
@@ -630,6 +700,11 @@ mod tests {
         s.add_command_use(&day, "terminal-vim", "word", 9).unwrap();
         s.learn_shown("word-end", at(24, 12) / 1000).unwrap();
         s.learn_learned("word-end", at(24, 13) / 1000).unwrap();
+        let audit_text = audit(&s, at(24, 18)).unwrap();
+        assert!(
+            audit_text.contains("Daily tips never taken up (0)"),
+            "{audit_text}"
+        );
         let out = learn(&s, at(24, 18), 0).unwrap();
         assert!(
             out.starts_with("Latest: e: jump to the end of the word"),
@@ -639,5 +714,25 @@ mod tests {
         assert!(out.contains("level 1  ██○○○○○○○○○○○○○○  2 of 16"), "{out}");
         assert!(out.contains("Later: # after *; N after n"), "{out}");
         assert!(out.contains("Up next: $: the end of the line"), "{out}");
+    }
+
+    #[test]
+    fn audit_finds_disagreements() {
+        let s = Store::open_in_memory().unwrap();
+        // ci( long before ciw; find a month ago and till never since.
+        s.add_command_use("2026-09-01", "terminal-vim", "ci-paren", 4)
+            .unwrap();
+        s.add_command_use("2026-10-20", "terminal-vim", "ciw", 1)
+            .unwrap();
+        s.add_command_use("2026-09-20", "terminal-vim", "find", 9)
+            .unwrap();
+        s.learn_shown("marks", at(10, 10) / 1000).unwrap();
+        let out = audit(&s, at(24, 18)).unwrap();
+        assert!(out.contains("  ci-paren before ciw\n"), "{out}");
+        assert!(out.contains("  till\n"), "{out}");
+        assert!(
+            out.contains("Daily tips never taken up (1):\n  marks\n"),
+            "{out}"
+        );
     }
 }

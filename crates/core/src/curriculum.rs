@@ -598,6 +598,14 @@ pub static CURRICULUM: &[Item] = &[
         |s| ctrl(s, "o") && s.before == VimMode::Normal
     ),
     item!(
+        "jump-last",
+        2,
+        "``` `` ```",
+        "back to where you jumped from, and again to swap back",
+        "Flip between two places after a search or `G`.",
+        |s| is(s, &["``", "''"])
+    ),
+    item!(
         "jump-forward",
         2,
         "`Ctrl-i`",
@@ -732,6 +740,14 @@ pub static CURRICULUM: &[Item] = &[
         "join the next line on without adding a space",
         "Glue a split identifier back together.",
         |s| is(s, &["gJ"])
+    ),
+    item!(
+        "change-marks",
+        3,
+        "`` `[ `` and `` `] ``",
+        "the start or end of what you last changed or pasted",
+        "Jump to the end of a block you just pasted.",
+        |s| is(s, &["`[", "`]", "'[", "']"])
     ),
     item!(
         "scroll-line",
@@ -1069,6 +1085,38 @@ pub static CURRICULUM: &[Item] = &[
         |s| ex(s, &[("ce", "center"), ("ri", "right"), ("le", "left")])
     ),
     item!(
+        "visual-marks",
+        4,
+        "`` `< `` and `` `> ``",
+        "the start or end of the last selection",
+        "Go back to where a selection began after working on it.",
+        |s| is(s, &["`<", "`>", "'<", "'>"])
+    ),
+    item!(
+        "mark-lists",
+        4,
+        "`:marks` and `:jumps`",
+        "list your marks, or the places you jumped from (`:changes` for edits)",
+        "Find the mark you set an hour ago.",
+        |s| ex(
+            s,
+            &[
+                ("marks", "marks"),
+                ("ju", "jumps"),
+                ("changes", "changes"),
+                ("delm", "delmarks")
+            ]
+        )
+    ),
+    item!(
+        "mark-hop",
+        4,
+        "`]'` and `['`",
+        "to the next or previous line with a mark",
+        "Walk through the places you've marked in a file.",
+        |s| is(s, &["]'", "['", "]`", "[`"])
+    ),
+    item!(
         "line-undo",
         4,
         "`U`",
@@ -1121,6 +1169,10 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("visual-object", &["visual-line", "ciw"]),
     ("visual-indent", &["visual-line"]),
     ("last-change", &["marks"]),
+    ("change-marks", &["marks"]),
+    ("visual-marks", &["marks"]),
+    ("mark-lists", &["marks"]),
+    ("mark-hop", &["marks"]),
     ("gi", &["append"]),
     ("macro", &["dot"]),
     ("replay-macro", &["macro"]),
@@ -1756,6 +1808,12 @@ mod tests {
             (":retab<CR>", "retab"),
             (":ce<CR>", "align"),
             (":'<lt>,'>right<CR>", "align"),
+            ("``", "jump-last"),
+            ("`]", "change-marks"),
+            ("'<lt>", "visual-marks"),
+            (":marks<CR>", "mark-lists"),
+            (":ju<CR>", "mark-lists"),
+            ("]'", "mark-hop"),
         ];
         for (keys, id) in cases {
             assert!(

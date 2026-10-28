@@ -180,6 +180,21 @@ fn ex_word(text: &str) -> Option<&str> {
     (end > 0).then(|| &rest[..end])
 }
 
+/// A window command: `Ctrl-w` then one of `keys` (or its Ctrl- twin).
+fn wincmd(step: &Step, keys: &str) -> bool {
+    cmd(step).is_some_and(|c| {
+        c.keys.len() == 2
+            && c.keys[0].is_ctrl('w')
+            && match c.keys[1].sym {
+                Sym::Char(k) => keys.contains(k),
+                _ => false,
+            }
+    })
+}
+
+const VIM_AND_VSCODE: &[ContextKind] = &[ContextKind::TerminalVim, ContextKind::VsCodeVim];
+const VIM_ONLY: &[ContextKind] = &[ContextKind::TerminalVim];
+
 fn visual_then(step: &Step, keys: &str) -> bool {
     step.before.is_visual() && head(step, keys)
 }
@@ -689,7 +704,7 @@ pub static CURRICULUM: &[Item] = &[
         "the next or previous editor tab",
         "Flip between two files you're working on.",
         |s| is(s, &["gt", "gT"]),
-        IN_VSCODE,
+        VIM_AND_VSCODE,
         None,
         None
     ),
@@ -1101,10 +1116,67 @@ pub static CURRICULUM: &[Item] = &[
         "`Ctrl-w v`",
         "a second editor side by side",
         "Read the test while you write the code.",
-        |s| cmd(s).is_some_and(|c| {
-            c.keys.len() == 2 && c.keys[0].is_ctrl('w') && c.keys[1].plain_char() == Some('v')
-        }),
-        &[ContextKind::VsCodeVim, ContextKind::TerminalVim],
+        |s| wincmd(s, "vsSn")
+            || ex(
+                s,
+                &[
+                    ("sp", "split"),
+                    ("vs", "vsplit"),
+                    ("new", "new"),
+                    ("vne", "vnew")
+                ]
+            ),
+        VIM_AND_VSCODE,
+        None,
+        None
+    ),
+    item!(
+        "window-close",
+        3,
+        "`Ctrl-w o` and `Ctrl-w q`",
+        "keep only this window, or close it",
+        "Close every split but the one you're in.",
+        |s| wincmd(s, "ocq") || ex(s, &[("on", "only"), ("clo", "close")]),
+        VIM_AND_VSCODE,
+        None,
+        None
+    ),
+    item!(
+        "window-cycle",
+        3,
+        "`Ctrl-w w`",
+        "to the next window, round and round (`Ctrl-w p`: the last one)",
+        "Hop between splits without thinking about where they are.",
+        |s| wincmd(s, "wWptb")
+            || cmd(s).is_some_and(|c| c.keys.len() == 2
+                && c.keys[0].is_ctrl('w')
+                && c.keys[1].is_ctrl('w')),
+        VIM_AND_VSCODE,
+        None,
+        None
+    ),
+    item!(
+        "tab-cmds",
+        3,
+        "`:tabnew` and `:tabonly`",
+        "open a tab, or close all the others (`:tabclose`, `:tabmove` too)",
+        "Clear out tabs you no longer need.",
+        |s| ex(
+            s,
+            &[
+                ("tabnew", "tabnew"),
+                ("tabe", "tabedit"),
+                ("tabo", "tabonly"),
+                ("tabc", "tabclose"),
+                ("tabm", "tabmove"),
+                ("tabn", "tabnext"),
+                ("tabp", "tabprevious"),
+                ("tabfir", "tabfirst"),
+                ("tabl", "tablast"),
+                ("tabs", "tabs")
+            ]
+        ),
+        VIM_AND_VSCODE,
         None,
         None
     ),
@@ -1322,6 +1394,55 @@ pub static CURRICULUM: &[Item] = &[
                 .is_some_and(|k| "fFdDE".contains(k)))
     ),
     item!(
+        "window-size",
+        4,
+        "`Ctrl-w =` and `Ctrl-w _`",
+        "make windows the same size, or this one as tall as it goes (`+`, `-`, `<`, `>` step)",
+        "Even out splits after resizing the terminal.",
+        |s| wincmd(s, "=_|+-<>") || ex(s, &[("res", "resize")]),
+        VIM_AND_VSCODE,
+        None,
+        None
+    ),
+    item!(
+        "window-move",
+        4,
+        "`Ctrl-w H` and `Ctrl-w T`",
+        "move this window to the far left (or J, K, L), or out to a tab of its own",
+        "Turn a horizontal split into a vertical one.",
+        |s| wincmd(s, "HJKLTrRx"),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "window-under",
+        4,
+        "`Ctrl-w f` and `Ctrl-w ]`",
+        "open the file, or the tag, under the cursor in a new window",
+        "Peek at an imported file beside the one you're in.",
+        |s| wincmd(s, "fF]^")
+            || cmd(s).is_some_and(|c| c.keys.len() == 3
+                && c.keys[0].is_ctrl('w')
+                && c.keys[1].plain_char() == Some('g')
+                && c.keys[2].plain_char().is_some_and(|k| "fF".contains(k))),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
+        "last-tab",
+        4,
+        "`g<Tab>`",
+        "back to the tab you were in last",
+        "Flip between two tabs among many.",
+        |s| cmd(s).is_some_and(|c| c.keys.last().is_some_and(|k| k.sym == Sym::Tab)
+            && c.keys.iter().any(|k| k.plain_char() == Some('g'))),
+        VIM_ONLY,
+        None,
+        None
+    ),
+    item!(
         "line-undo",
         4,
         "`U`",
@@ -1350,6 +1471,12 @@ static REQUIRES: &[(&str, &[&str])] = &[
     ("bigword", &["word"]),
     ("till", &["find"]),
     ("scroll-line", &["half-page"]),
+    ("window-close", &["split"]),
+    ("window-cycle", &["split"]),
+    ("window-size", &["split"]),
+    ("window-move", &["split"]),
+    ("window-under", &["split"]),
+    ("last-tab", &["tabs"]),
     ("fold-move", &["fold"]),
     ("fold-levels", &["fold"]),
     ("fold-make", &["fold"]),
@@ -2063,6 +2190,17 @@ mod tests {
             ("zm", "fold-levels"),
             ("zfap", "fold-make"),
             ("zd", "fold-make"),
+            ("<C-w>s", "split"),
+            (":vs<CR>", "split"),
+            ("<C-w>o", "window-close"),
+            (":only<CR>", "window-close"),
+            ("<C-w>w", "window-cycle"),
+            ("<C-w><C-w>", "window-cycle"),
+            (":tabnew<CR>", "tab-cmds"),
+            ("<C-w>=", "window-size"),
+            ("<C-w>H", "window-move"),
+            ("<C-w>f", "window-under"),
+            ("g<Tab>", "last-tab"),
         ];
         for (keys, id) in cases {
             assert!(
@@ -2230,7 +2368,7 @@ mod tests {
             shell_only,
             ["history-search", "cd-back", "last-arg", "quick-sub"]
         );
-        assert!(!find("tabs").unwrap().applies_in(ContextKind::TerminalVim));
+        assert!(!find("quick-open").unwrap().applies_in(ContextKind::TerminalVim));
         assert_eq!(
             used_by_shape(CommandShape::CdBack)
                 .map(|i| i.id)

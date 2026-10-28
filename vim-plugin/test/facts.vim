@@ -334,3 +334,9 @@ for s:name in sort(filter(map(split(execute('function /^Test_'), "\n"), {_, l ->
 endfor
 call writefile([s:failed ? 'FAILED' : 'PASSED'], $OUT, 'a')
 qa!
+
+function! Test_unknown_ex_command() abort
+  call assert_true(flowbuddy#is_unknown_ex('E492: Not an editor command: W'))
+  call assert_false(flowbuddy#is_unknown_ex('E37: No write since last change'))
+  call assert_false(flowbuddy#is_unknown_ex(''))
+endfunction

@@ -113,6 +113,8 @@ pub struct App {
     hold_ms: u64,
     /// Today's "something new", so a tip that uses it can say so.
     todays_lesson: Option<&'static str>,
+    /// The last `:` command's name and when: see [`App::on_ex_error`].
+    last_ex: Option<(String, u64)>,
     /// Lessons asked for with "Show me another" today: (day, how many).
     extra_lessons: (String, u8),
     /// When the last key came, for `when = "pause"`.
@@ -311,6 +313,7 @@ impl App {
             last_gv_ms: None,
             last_key_ms: None,
             todays_lesson: None,
+            last_ex: None,
             extra_lessons: (String::new(), 0),
             holding: Vec::new(),
             hold_ms,
@@ -810,6 +813,38 @@ impl App {
         self.show(RULE, title, &text, item.while_typing(), now_ms);
         self.memory.learn_shown(item.id, now_ms);
         self.todays_lesson = Some(item.id);
+    }
+
+    /// The editor said the last `:` command doesn't exist. Lower-case
+    /// names were already caught from the keys; upper case (`:W`) only
+    /// the editor can tell from a command of yours.
+    fn on_ex_error(&mut self, now_ms: u64) {
+        use flowbuddy_core::rules::mistake::{UnknownEx, unknown_ex_text};
+        let word = self
+            .last_ex
+            .take()
+            .filter(|(_, at)| now_ms.saturating_sub(*at) <= 3000)
+            .map(|(w, _)| w);
+        if word
+            .as_deref()
+            .is_some_and(|w| w.starts_with(|c: char| c.is_ascii_lowercase()))
+        {
+            return;
+        }
+        let text = match word.as_deref() {
+            Some(w) => unknown_ex_text(w),
+            None => "That isn't a Vim command. `:help ex-cmd-index` lists them all.".into(),
+        };
+        let f = Finding {
+            rule_id: UnknownEx::ID,
+            title: UnknownEx::TITLE,
+            text,
+            shape: flowbuddy_core::rule::Shape::fixed("unknown : command"),
+            mode: VimMode::Normal,
+            at_ms: now_ms,
+            start_ms: now_ms,
+        };
+        self.take(&f, self.resolved.kind, now_ms);
     }
 
     /// "I know this" on the daily lesson: known from now on, like
@@ -1390,6 +1425,16 @@ impl App {
         self.memory.active(kind, now_ms);
         self.last_key_ms = Some(stroke.at_ms);
         let step = self.tracker.feed(stroke);
+        // The last `:` command's name, in memory only, for the editor's
+        // "Not an editor command".
+        if let Some(VimEvent::Cmdline {
+            kind: ':',
+            text: Some(t),
+        }) = &step.event
+        {
+            self.last_ex =
+                flowbuddy_core::curriculum::ex_word(t).map(|w| (w.to_string(), stroke.at_ms));
+        }
         if !step.confident {
             self.mode_guess.keys_unsure += 1;
         }
@@ -1711,6 +1756,9 @@ impl App {
             ClientMsg::EditorEvent {
                 event: UiEvent::TabSwitched,
             } if self.is_vscode(conn) => self.on_ui(UiWhat::TabSwitched, '\0', now_ms),
+            ClientMsg::EditorEvent {
+                event: UiEvent::ExError,
+            } if self.resolved.editor == Some(conn) => self.on_ex_error(now_ms),
             ClientMsg::EditorEvent { .. } => {}
             ClientMsg::EditorMappings {
                 insert_escapes,
@@ -3605,6 +3653,32 @@ pub(crate) mod tests {
         let n = nudges(&mut ext);
         assert_eq!(n.len(), 1, "{n:?}");
         assert_eq!(n[0].rule_id, "vim.reselect");
+    }
+
+    #[test]
+    fn the_editor_says_a_command_doesnt_exist() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        focus(&mut app, "org.gnome.Terminal", 100);
+        let error = |app: &mut App, at| {
+            send(
+                app,
+                3,
+                ClientMsg::EditorEvent {
+                    event: UiEvent::ExError,
+                },
+                at,
+            )
+        };
+        // `:W` may be a command of yours: only Vim's error says it isn't.
+        type_at(&mut app, ":W<CR>", 1_000);
+        assert!(nudges(&mut ext).is_empty());
+        error(&mut app, 1_500);
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].rule_id, "mistake.unknown-ex");
+        assert!(n[0].text.contains("`:w`"), "{}", n[0].text);
     }
 
     #[test]

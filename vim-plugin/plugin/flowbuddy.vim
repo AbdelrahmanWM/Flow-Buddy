@@ -28,6 +28,7 @@ augroup flowbuddy
   autocmd VimSuspend * call flowbuddy#on_focus(0)
   autocmd VimResume * call flowbuddy#on_focus(1)
   autocmd VimLeavePre * call flowbuddy#stop()
+  autocmd CmdlineLeave : call flowbuddy#on_cmdline_leave()
 augroup END
 
 " Started from a session or late: VimEnter has already happened.

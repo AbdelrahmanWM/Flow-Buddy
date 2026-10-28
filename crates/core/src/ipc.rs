@@ -46,6 +46,9 @@ pub enum UiEvent {
     Reselected,
     /// A new editor group opened beside the others (a split).
     SplitOpened,
+    /// The editor said a `:` command doesn't exist (Vim's E492). Not
+    /// which command.
+    ExError,
 }
 
 /// What has focus inside an editor window when the text editor doesn't.

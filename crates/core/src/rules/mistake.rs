@@ -469,10 +469,150 @@ impl Rule for WrongMode {
     }
 }
 
+/// Every built-in Ex command, as (shortest, full) spellings, from Vim's
+/// index: `:sor[t]` is ("sor", "sort").
+fn ex_names() -> &'static Vec<(String, String)> {
+    static NAMES: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        crate::inventory::entries()
+            .iter()
+            .filter(|e| e.mode == "ex")
+            .filter_map(|e| {
+                let word = e.keys.trim_start_matches(':').split_whitespace().next()?;
+                let short: String = word.split('[').next()?.to_string();
+                let full: String = word.chars().filter(|c| !matches!(c, '[' | ']')).collect();
+                (short.chars().all(|c| c.is_ascii_alphabetic()) && !short.is_empty())
+                    .then_some((short, full))
+            })
+            .collect()
+    })
+}
+
+/// Whether Vim knows `word` as an Ex command (or an abbreviation of one).
+pub fn known_ex(word: &str) -> bool {
+    ex_names()
+        .iter()
+        .any(|(short, full)| word.starts_with(short.as_str()) && full.starts_with(word))
+}
+
+/// Commands people mean, for "maybe …".
+const COMMON_EX: &[&str] = &[
+    "w", "q", "wq", "x", "wa", "qa", "wqa", "q!", "e", "e!", "sp", "vs", "s", "g", "sort", "noh",
+    "set", "help", "b", "bn", "bp", "bd", "ls", "tabnew", "only", "undo", "redo", "r", "m", "t",
+    "norm", "make", "cn", "cp", "copen", "vimgrep", "retab", "reg", "marks",
+];
+
+/// The common command one or two edits away from `word`, if any.
+fn closest(word: &str) -> Option<&'static str> {
+    fn distance(a: &str, b: &str) -> usize {
+        let b: Vec<char> = b.chars().collect();
+        let mut row: Vec<usize> = (0..=b.len()).collect();
+        for (i, ca) in a.chars().enumerate() {
+            let mut prev = row[0];
+            row[0] = i + 1;
+            for j in 0..b.len() {
+                let cur = row[j + 1];
+                row[j + 1] = (prev + usize::from(ca != b[j]))
+                    .min(row[j] + 1)
+                    .min(cur + 1);
+                prev = cur;
+            }
+        }
+        row[b.len()]
+    }
+    let lower = word.to_ascii_lowercase();
+    // Two letters swapped (`qw`, `sotr`) is the likeliest slip.
+    let swapped = |c: &str| {
+        let (a, b): (Vec<char>, Vec<char>) = (lower.chars().collect(), c.chars().collect());
+        a.len() == b.len()
+            && (0..a.len().saturating_sub(1)).any(|i| {
+                let mut t = a.clone();
+                t.swap(i, i + 1);
+                t == b
+            })
+    };
+    if let Some(c) = COMMON_EX.iter().find(|c| swapped(c)) {
+        return Some(c);
+    }
+    let (d, best) = COMMON_EX
+        .iter()
+        .map(|c| (distance(&lower, c), *c))
+        .min_by_key(|(d, _)| *d)?;
+    let near = if word.len() <= 3 { 1 } else { 2 };
+    (d <= near).then_some(best)
+}
+
+/// The tip for an Ex command Vim didn't know: never the typed name, only
+/// a real command it's close to.
+pub fn unknown_ex_text(word: &str) -> String {
+    match closest(word) {
+        Some(c) => format!("That isn't a Vim command. Did you mean `:{c}`?"),
+        None => "That isn't a Vim command. `:help ex-cmd-index` lists them all.".into(),
+    }
+}
+
+/// A `:` command Vim doesn't have. Only lower-case names are certain from
+/// the keys: upper case may be a command of yours (the Vim plugin reports
+/// Vim's own "Not an editor command" for those).
+#[derive(Default)]
+pub struct UnknownEx;
+
+impl UnknownEx {
+    pub const ID: &'static str = "mistake.unknown-ex";
+    pub const TITLE: &'static str = "Not a Vim command";
+}
+
+impl Rule for UnknownEx {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "A : command Vim doesn't have, and the one you probably meant"
+    }
+
+    fn title(&self) -> &'static str {
+        Self::TITLE
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn on_step(&mut self, step: &Step, out: &mut Vec<RuleEvent>) {
+        let Some(crate::vim::VimEvent::Cmdline {
+            kind: ':',
+            text: Some(t),
+        }) = &step.event
+        else {
+            return;
+        };
+        let Some(word) = crate::curriculum::ex_word(t) else {
+            return;
+        };
+        if !word.starts_with(|c: char| c.is_ascii_lowercase())
+            || !word.chars().all(|c| c.is_ascii_alphabetic())
+            || known_ex(word)
+        {
+            return;
+        }
+        out.push(finding(
+            Self::ID,
+            Self::TITLE,
+            unknown_ex_text(word),
+            Shape::fixed("unknown : command"),
+            step,
+        ));
+    }
+
+    fn reset(&mut self) {}
+}
+
 pub fn all() -> Vec<Box<dyn Rule>> {
     vec![
         Box::new(NoCommand),
         Box::new(UndoneLookAlike::default()),
+        Box::new(UnknownEx),
         Box::new(WrongMode::default()),
         Box::new(WrongMode {
             caps: true,
@@ -554,6 +694,41 @@ mod tests {
         assert_eq!(fired(true, "JJJKu"), 1, "capitals, undone");
         assert_eq!(fired(false, "JJJKu"), 0, "said once, as Caps Lock");
         assert_eq!(fired(true, "wbheu"), 0);
+    }
+
+    #[test]
+    fn ex_commands_vim_doesnt_have() {
+        let ex = |keys: &str| -> Vec<String> {
+            findings(&run(
+                Box::new(UnknownEx),
+                Flavor::Vim,
+                VimMode::Normal,
+                keys,
+            ))
+            .iter()
+            .map(|f| glossary::plain(&f.text))
+            .collect()
+        };
+        assert_eq!(
+            ex(":qw<CR>"),
+            ["That isn't a Vim command. Did you mean :wq?"]
+        );
+        assert_eq!(
+            ex(":sotr<CR>"),
+            ["That isn't a Vim command. Did you mean :sort?"]
+        );
+        assert!(ex(":zzzzzz<CR>")[0].contains("ex-cmd-index"));
+        for ok in [
+            ":w<CR>",
+            ":sor<CR>",
+            ":'<lt>,'>s/a/b/<CR>",
+            ":42<CR>",
+            ":W<CR>",
+            ":tabnew<CR>",
+            ":norm .<CR>",
+        ] {
+            assert!(ex(ok).is_empty(), "{ok}: {:?}", ex(ok));
+        }
     }
 
     #[test]

@@ -153,7 +153,7 @@ fn ex(step: &Step, names: &[(&str, &str)]) -> bool {
 
 /// The command name in a command line: `:.,+3>` → `>`, `:'<,'>sort` →
 /// `sort`, `:5,10m 0` → `m`.
-fn ex_word(text: &str) -> Option<&str> {
+pub fn ex_word(text: &str) -> Option<&str> {
     let mut rest = text.trim_start();
     // A range: numbers, . $ %, marks, patterns, offsets.
     loop {
@@ -2205,6 +2205,7 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("mistake.look-alike", &[]),
     ("mistake.normal-typing", &[]),
     ("mistake.caps-lock", &[]),
+    ("mistake.unknown-ex", &[]),
     ("vim.change-matches", &["cgn", "substitute-all"]),
     (
         "vim.shorthand",

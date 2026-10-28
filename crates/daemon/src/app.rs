@@ -756,13 +756,20 @@ impl App {
         {
             return;
         }
-        let Some(item) = self.memory.pick_something_new(self.resolved.kind, now_ms) else {
+        let Some(pick) = self.memory.pick_something_new(self.resolved.kind, now_ms) else {
             return;
         };
+        let item = pick.item;
         self.state.last_learn_day = Some(today);
         self.save_state();
         let text = flowbuddy_core::curriculum::tip_text(item);
-        self.show(RULE, "Something new", &text, false, now_ms);
+        // A review: you'd mastered it, and it's slipping.
+        let title = if pick.review {
+            "Remember this?"
+        } else {
+            "Something new"
+        };
+        self.show(RULE, title, &text, false, now_ms);
         self.memory.learn_shown(item.id, now_ms);
         self.todays_lesson = Some(item.id);
     }

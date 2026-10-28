@@ -535,12 +535,8 @@ impl Memory {
             .with_overrides(&overrides)
     }
 
-    /// The day's "something new", if anything's left to learn.
-    pub fn pick_something_new(
-        &self,
-        ctx: ContextKind,
-        now_ms: u64,
-    ) -> Option<&'static curriculum::Item> {
+    /// The day's "something new", or a review, if anything's left.
+    pub fn pick_something_new(&self, ctx: ContextKind, now_ms: u64) -> Option<curriculum::Pick> {
         let progress = self.progress(Some(ctx), now_ms)?;
         // This week's habits, most hits first.
         let (from, to) = flowbuddy_store::days::range(now_ms, 7, 0);
@@ -551,7 +547,7 @@ impl Memory {
         // Rules you tripped, not ones you only did the better way for.
         let mut habits: Vec<(String, u64)> = hits.into_iter().filter(|(_, n)| *n > 0).collect();
         habits.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        curriculum::pick_from_habits(
+        curriculum::choose(
             &progress,
             &self.known(Some(ctx), now_ms),
             now_ms / 1000,

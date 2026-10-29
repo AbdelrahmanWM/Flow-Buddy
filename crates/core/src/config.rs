@@ -277,7 +277,58 @@ pub struct KeyboardConfig {
     pub insert_escapes: Vec<String>,
 }
 
-/// Replace the built-in app id / command lists.
+/// Window ids of VS Code builds (and X11 window classes).
+pub const VSCODES: &[&str] = &[
+    "code",
+    "code_code",
+    "code-url-handler",
+    "code-oss",
+    "codium",
+    "com.visualstudio.code",
+    "Code",
+    "VSCodium",
+];
+
+/// Window ids of terminals, then X11 window classes.
+pub const TERMINALS: &[&str] = &[
+    "org.gnome.Terminal",
+    "org.gnome.Ptyxis",
+    "org.gnome.Console",
+    "kitty",
+    "Alacritty",
+    "org.wezfurlong.wezterm",
+    "com.mitchellh.ghostty",
+    "foot",
+    "terminator",
+    "com.gexperts.Tilix",
+    "xterm",
+    "org.kde.konsole",
+    "konsole",
+    "Gnome-terminal",
+    "XTerm",
+    "URxvt",
+    "st-256color",
+    "Xfce4-terminal",
+];
+
+/// Command names of Vim.
+pub const VIMS: &[&str] = &["vim", "vi", "nvim", "view", "vimdiff", "nvimdiff"];
+
+/// Command names of Claude Code.
+pub const CLAUDES: &[&str] = &["claude"];
+
+/// The built-in list an `apps.*` setting adds to.
+pub fn builtin_apps(key: &str) -> Option<&'static [&'static str]> {
+    Some(match key {
+        "apps.vscode" => VSCODES,
+        "apps.terminals" => TERMINALS,
+        "apps.vims" => VIMS,
+        "apps.claudes" => CLAUDES,
+        _ => return None,
+    })
+}
+
+/// App ids and command names to add to the built-in lists.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AppsConfig {

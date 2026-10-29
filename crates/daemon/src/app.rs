@@ -225,14 +225,22 @@ const MOTION_LAG_MS: u64 = 200;
 /// into the editor.
 const EDITOR_ACTIVITY_MS: u64 = 2000;
 
-/// App ids from the config, falling back to the built-in lists.
+/// The built-in app ids, and the config's added to them.
 pub fn app_ids(config: &Config) -> AppIds {
     let d = AppIds::default();
+    let add = |mut list: Vec<String>, more: &Option<Vec<String>>| {
+        for m in more.iter().flatten() {
+            if !list.contains(m) {
+                list.push(m.clone());
+            }
+        }
+        list
+    };
     AppIds {
-        vscode: config.apps.vscode.clone().unwrap_or(d.vscode),
-        terminals: config.apps.terminals.clone().unwrap_or(d.terminals),
-        vims: config.apps.vims.clone().unwrap_or(d.vims),
-        claudes: config.apps.claudes.clone().unwrap_or(d.claudes),
+        vscode: add(d.vscode, &config.apps.vscode),
+        terminals: add(d.terminals, &config.apps.terminals),
+        vims: add(d.vims, &config.apps.vims),
+        claudes: add(d.claudes, &config.apps.claudes),
     }
 }
 
@@ -2142,6 +2150,18 @@ pub(crate) mod tests {
     use flowbuddy_core::learning::Stage;
     use flowbuddy_core::vim::notation::strokes;
     use tokio::sync::mpsc::UnboundedReceiver;
+
+    #[test]
+    fn app_lists_add_to_the_built_in_ones() {
+        let mut config = Config::default();
+        config.apps.terminals = Some(vec!["my-term".into(), "kitty".into()]);
+        config.apps.vims = Some(vec![]);
+        let ids = app_ids(&config);
+        assert!(ids.terminals.iter().any(|t| t == "org.gnome.Terminal"));
+        assert_eq!(ids.terminals.iter().filter(|t| *t == "kitty").count(), 1);
+        assert_eq!(ids.terminals.last().unwrap(), "my-term");
+        assert_eq!(ids.vims, AppIds::default().vims);
+    }
 
     #[test]
     fn window_ids_are_kept_printable() {

@@ -400,25 +400,25 @@ pub static SETTINGS: &[Setting] = &[
         "apps.vscode",
         Kind::List,
         KEYBOARD,
-        "Window ids taken as VS Code, instead of the built-in list",
+        "More window ids to take as VS Code, besides the built-in ones",
     ),
     s(
         "apps.terminals",
         Kind::List,
         KEYBOARD,
-        "Window ids taken as terminals, instead of the built-in list",
+        "More window ids to take as terminals, besides the built-in ones",
     ),
     s(
         "apps.vims",
         Kind::List,
         KEYBOARD,
-        "Command names taken as Vim, instead of the built-in list",
+        "More command names to take as Vim, besides the built-in ones",
     ),
     s(
         "apps.claudes",
         Kind::List,
         KEYBOARD,
-        "Command names taken as Claude Code, instead of the built-in list",
+        "More command names to take as Claude Code, besides the built-in ones",
     ),
 ];
 
@@ -612,17 +612,20 @@ pub static MORE: &[(&str, &str)] = &[
     ),
     (
         "apps.vscode",
-        "Window ids taken as VS Code. Only needed for a build the built-in list doesn't know.",
+        "Only needed for a build the built-in list doesn't know; `flowbuddy status` shows the id of the focused window. These are added to the built-in ones, which `flowbuddy config explain` lists.",
     ),
     (
         "apps.terminals",
-        "Window ids taken as terminals. Only needed for a terminal the built-in list doesn't know.",
+        "Only needed for a terminal the built-in list doesn't know; `flowbuddy status` shows the id of the focused window. These are added to the built-in ones, which `flowbuddy config explain` lists.",
     ),
     (
         "apps.vims",
-        "Command names taken as Vim in a terminal, such as a wrapper script.",
+        "Command names taken as Vim in a terminal, such as a wrapper script. These are added to the built-in ones.",
     ),
-    ("apps.claudes", "Command names taken as Claude Code."),
+    (
+        "apps.claudes",
+        "Command names taken as Claude Code, such as a wrapper script. These are added to the built-in ones.",
+    ),
 ];
 
 /// The longer explanation of `key`: from [`MORE`], or a rule's own.
@@ -829,9 +832,13 @@ pub fn to_toml(setting: &Setting, value: &str) -> Result<String, String> {
         Kind::Time => crate::config::parse_hm(v)
             .map(|_| quoted(v))
             .ok_or_else(|| "expected a time like 18:00".into()),
-        Kind::TimeRange => crate::config::parse_range(v)
-            .map(|_| quoted(v))
-            .ok_or_else(|| "expected a time range like 22:00-08:00".into()),
+        Kind::TimeRange => match crate::config::parse_range(v) {
+            Some(r) if r.start == r.end => {
+                Err("the start and end are the same, so it would never begin".into())
+            }
+            Some(_) => Ok(quoted(v)),
+            None => Err("expected a time range like 22:00-08:00".into()),
+        },
         Kind::Text => Ok(quoted(v)),
         Kind::List => {
             let items: Vec<String> = v
@@ -1011,6 +1018,12 @@ mod tests {
                 .unwrap()
                 .contains("repeats")
         );
+    }
+
+    #[test]
+    fn values_that_would_do_nothing_are_refused() {
+        assert!(set("", "coaching.quiet_hours", "22:00-22:00").is_err());
+        assert!(set("", "coaching.quiet_hours", "22:00-07:00").is_ok());
     }
 
     #[test]

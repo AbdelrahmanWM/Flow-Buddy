@@ -20,42 +20,13 @@ pub struct AppIds {
 
 impl Default for AppIds {
     fn default() -> Self {
+        use flowbuddy_core::config::{CLAUDES, TERMINALS, VIMS, VSCODES};
         let s = |v: &[&str]| v.iter().map(|s| s.to_string()).collect();
         AppIds {
-            vscode: s(&[
-                "code",
-                "code_code",
-                "code-url-handler",
-                "code-oss",
-                "codium",
-                "com.visualstudio.code",
-                // X11 window classes.
-                "Code",
-                "VSCodium",
-            ]),
-            terminals: s(&[
-                "org.gnome.Terminal",
-                "org.gnome.Ptyxis",
-                "org.gnome.Console",
-                "kitty",
-                "Alacritty",
-                "org.wezfurlong.wezterm",
-                "com.mitchellh.ghostty",
-                "foot",
-                "terminator",
-                "com.gexperts.Tilix",
-                "xterm",
-                // KDE, and X11 window classes.
-                "org.kde.konsole",
-                "konsole",
-                "Gnome-terminal",
-                "XTerm",
-                "URxvt",
-                "st-256color",
-                "Xfce4-terminal",
-            ]),
-            vims: s(&["vim", "vi", "nvim", "view", "vimdiff", "nvimdiff"]),
-            claudes: s(&["claude"]),
+            vscode: s(VSCODES),
+            terminals: s(TERMINALS),
+            vims: s(VIMS),
+            claudes: s(CLAUDES),
         }
     }
 }

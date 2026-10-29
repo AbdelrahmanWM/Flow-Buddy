@@ -239,6 +239,7 @@ pub fn app_ids(config: &Config) -> AppIds {
     AppIds {
         vscode: add(d.vscode, &config.apps.vscode),
         terminals: add(d.terminals, &config.apps.terminals),
+        vim_windows: d.vim_windows,
         vims: add(d.vims, &config.apps.vims),
         claudes: add(d.claudes, &config.apps.claudes),
     }

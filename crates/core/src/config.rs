@@ -311,6 +311,10 @@ pub const TERMINALS: &[&str] = &[
     "Xfce4-terminal",
 ];
 
+/// Window ids of Vim in a window of its own: gVim, Neovide, Neovim Qt
+/// (and X11 window classes).
+pub const VIM_WINDOWS: &[&str] = &["gvim", "Gvim", "neovide", "nvim-qt"];
+
 /// Command names of Vim.
 pub const VIMS: &[&str] = &["vim", "vi", "nvim", "view", "vimdiff", "nvimdiff"];
 

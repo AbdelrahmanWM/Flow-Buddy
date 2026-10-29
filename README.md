@@ -40,7 +40,7 @@ Details, including the IPC protocol and the context model, are in [docs/architec
 
 ## What it coaches
 
-Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh and fish, Claude Code's Vim mode (in a terminal or VS Code's terminal), and a few shell habits such as `cd ..` again and again.
+Vim in VS Code (vscodevim), Vim and Neovim in the terminal or their own window (gVim, Neovide, Neovim Qt), vi-mode in bash, zsh and fish, Claude Code's Vim mode (in a terminal or VS Code's terminal), and a few shell habits such as `cd ..` again and again.
 
 | You did | Try |
 |---|---|

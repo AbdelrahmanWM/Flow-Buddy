@@ -385,7 +385,12 @@ pub fn ask(ai: &AiConfig, prompt: &str, out: &mut dyn Write) -> Option<Result<()
             }
             let dir = std::env::temp_dir().join("flowbuddy-coach");
             let _ = std::fs::create_dir_all(&dir);
-            run_in(&command, prompt, timeout, out, Some(&dir))
+            run_in(&command, prompt, timeout, out, Some(&dir)).map_err(|e| match (e, &ai.model) {
+                (RunError::Failed(why), Some(model)) => RunError::Failed(format!(
+                    "{why}. If Claude Code said the model is wrong, [ai] model is \"{model}\": try `flowbuddy config set ai.model opus`"
+                )),
+                (e, _) => e,
+            })
         }
         AiProvider::Anthropic => api_key(ai, "ANTHROPIC_API_KEY").and_then(|key| {
             let url = ai

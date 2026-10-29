@@ -93,6 +93,20 @@ cloud = false                # true: snippets may go to a cloud provider, not on
 exclude = []                 # more files never to look at, e.g. ["*.sql"]
 ```
 
+### Using Claude Code as the AI
+
+With [Claude Code](https://code.claude.com) installed and logged in, Flow Buddy can use your Claude subscription, with no API key:
+
+```sh
+flowbuddy config set ai.provider claude-code
+flowbuddy config set ai.model opus     # optional: an alias (opus, sonnet, haiku) or a full name (claude-opus-5-5)
+flowbuddy doctor                       # should say "AI: Claude Code (claude -p)"
+flowbuddy coach --prompt               # what Claude would be sent; nothing is sent
+flowbuddy coach "how do I delete up to a comma?"
+```
+
+Flow Buddy runs `claude -p` in an empty folder, so Claude sees only the prompt: counts and the shapes of your habits, never your keys or text. Two more uses run on their own once turned on: `flowbuddy config set ai.weekly true` for a weekly progress note, and `flowbuddy config set ai.tips true` for a personal sentence on each day's tips.
+
 ## Platform
 
 Linux: GNOME on Wayland (with the top-bar indicator), or any X11 desktop such as KDE, Xfce or i3 (tips as notifications). KDE on Wayland is #123.

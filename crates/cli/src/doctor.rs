@@ -209,6 +209,18 @@ fn ai_check(config: &Config, env: &Env) -> Option<Check> {
         let var = ai.api_key_env.as_deref().unwrap_or(default);
         ai.api_key_command.is_some() || (env.env_set)(var)
     };
+    let uses_model = matches!(
+        ai.provider,
+        AiProvider::ClaudeCode | AiProvider::Anthropic | AiProvider::Openai
+    );
+    if let Some(model) = ai.model.as_deref().filter(|_| uses_model)
+        && let Some(problem) = flowbuddy_core::config::model_problem(model)
+    {
+        return Some(bad(
+            format!("AI: [ai] model \"{model}\" won't work: {problem}"),
+            "flowbuddy config set ai.model opus, or `flowbuddy config reset ai.model` for the default",
+        ));
+    }
     Some(match ai.provider {
         AiProvider::None if ai.command.is_none() => return None,
         AiProvider::None | AiProvider::Command => {
@@ -456,6 +468,27 @@ mod tests {
             text.contains("→ systemctl --user restart flowbuddyd"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_model_name_claude_code_wont_take() {
+        let mut e = env();
+        let mut config = Config::default();
+        config.ai.provider = AiProvider::ClaudeCode;
+        config.ai.model = Some("opus 5.5".into());
+        e.config = Ok(config.clone());
+        let text = report(&checks(&e));
+        assert!(
+            text.contains("✗ AI: [ai] model \"opus 5.5\" won't work"),
+            "{text}"
+        );
+        assert!(
+            text.contains("→ flowbuddy config set ai.model opus"),
+            "{text}"
+        );
+        config.ai.model = Some("opus".into());
+        e.config = Ok(config);
+        assert!(!report(&checks(&e)).contains("won't work"));
     }
 
     #[test]

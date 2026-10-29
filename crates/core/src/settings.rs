@@ -304,7 +304,7 @@ pub static SETTINGS: &[Setting] = &[
         "ai.model",
         Kind::Text,
         AI,
-        "The model, for the API providers",
+        "The model: an alias like opus or sonnet, or a full name like claude-opus-5-5",
     ),
     s(
         "ai.base_url",
@@ -556,7 +556,7 @@ pub static MORE: &[(&str, &str)] = &[
     ),
     (
         "ai.model",
-        "Which model the API provider uses. Empty picks a sensible default.",
+        "Which model to use, for Claude Code and the API providers. Claude Code takes an alias (opus, sonnet, haiku) or a full name (claude-opus-5-5); OpenAI-compatible servers take their own names. Empty picks a sensible default.",
     ),
     (
         "ai.base_url",
@@ -867,6 +867,11 @@ fn place(key: &str) -> Option<(String, String)> {
 pub fn set(text: &str, key: &str, value: &str) -> Result<String, String> {
     let setting = find(key)
         .ok_or_else(|| format!("no setting called {key} (see `flowbuddy config list`)"))?;
+    if key == "ai.model"
+        && let Some(e) = crate::config::model_problem(value)
+    {
+        return Err(format!("{key}: {e}"));
+    }
     let literal = to_toml(&setting, value).map_err(|e| format!("{key}: {e}"))?;
     let (section, name) = place(key).ok_or_else(|| format!("no setting called {key}"))?;
     let out = set_key(text, &section, &name, &literal);
@@ -1024,6 +1029,15 @@ mod tests {
     fn values_that_would_do_nothing_are_refused() {
         assert!(set("", "coaching.quiet_hours", "22:00-22:00").is_err());
         assert!(set("", "coaching.quiet_hours", "22:00-07:00").is_ok());
+    }
+
+    #[test]
+    fn model_names_are_one_word() {
+        let e = set("", "ai.model", "opus 5.5").unwrap_err();
+        assert!(e.contains("no spaces"), "{e}");
+        assert!(set("", "ai.model", "opus").is_ok());
+        assert!(set("", "ai.model", "claude-opus-5-5").is_ok());
+        assert!(set("", "ai.model", "llama3.2:3b").is_ok());
     }
 
     #[test]

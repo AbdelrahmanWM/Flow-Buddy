@@ -203,6 +203,17 @@ impl Default for AiConfig {
     }
 }
 
+/// What's wrong with `[ai] model`, if anything. Model names are one word:
+/// an alias like `opus`, or a full name like `claude-opus-5-5`.
+pub fn model_problem(model: &str) -> Option<&'static str> {
+    if model.trim().contains(char::is_whitespace) {
+        return Some(
+            "a model name has no spaces: an alias like opus or sonnet, or a full name like claude-opus-5-5",
+        );
+    }
+    None
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CoachingConfig {

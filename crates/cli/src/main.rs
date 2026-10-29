@@ -93,7 +93,8 @@ enum Cmd {
         #[arg(long, short)]
         explain: bool,
     },
-    /// Ask a local model about your habits (set `[ai] command` first).
+    /// Ask your AI about your habits: Claude Code, an API or a local model
+    /// (choose one with `flowbuddy setup` or `[ai] provider`).
     Coach {
         /// A question, e.g. "how do I move faster in big files?"
         question: Vec<String>,

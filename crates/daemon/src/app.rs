@@ -236,6 +236,19 @@ pub fn app_ids(config: &Config) -> AppIds {
     }
 }
 
+/// The longest window id kept; real ones are well under this.
+const MAX_APP_ID: usize = 128;
+
+/// A reported window id with nothing a terminal would act on: control
+/// characters dropped, and cut to [`MAX_APP_ID`].
+fn window_id(app_id: &str) -> String {
+    app_id
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_APP_ID)
+        .collect()
+}
+
 fn local_hour(now_ms: u64) -> u32 {
     use chrono::{TimeZone, Timelike};
     chrono::Local
@@ -1603,7 +1616,7 @@ impl App {
 
     /// The focused window changed (from the GNOME extension, or X11).
     pub fn set_focus(&mut self, app_id: Option<String>, pid: Option<u32>, now_ms: u64) {
-        self.resolver.set_focus(app_id, pid);
+        self.resolver.set_focus(app_id.map(|a| window_id(&a)), pid);
         self.resolver.prune();
         self.update_context(None, now_ms);
     }
@@ -2124,6 +2137,17 @@ pub(crate) mod tests {
     use flowbuddy_core::learning::Stage;
     use flowbuddy_core::vim::notation::strokes;
     use tokio::sync::mpsc::UnboundedReceiver;
+
+    #[test]
+    fn window_ids_are_kept_printable() {
+        let mut app = test_app(CoachingMode::Active);
+        let id = format!("\u{1b}]0;title\u{7}\u{1b}[31mkitty\n{}", "z".repeat(500));
+        app.set_focus(Some(id), None, 0);
+        let shown = app.status(0).app.unwrap();
+        assert!(shown.starts_with("]0;title[31mkitty"));
+        assert!(!shown.chars().any(char::is_control));
+        assert_eq!(shown.chars().count(), MAX_APP_ID);
+    }
 
     /// Every tip shown: none held back, so tests see them.
     pub(crate) fn test_config() -> Config {

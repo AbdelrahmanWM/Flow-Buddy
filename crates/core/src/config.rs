@@ -218,7 +218,8 @@ pub struct CoachingConfig {
     pub hourly_cap: u32,
     /// How long a hint stays on screen.
     pub nudge_seconds: u32,
-    /// "card" or "bar"; by default a card in active mode, the top bar otherwise.
+    /// "card" or "bar"; by default a card in active and balanced mode, the
+    /// top bar otherwise.
     pub nudge_style: Option<NudgeStyle>,
     /// No nudges in this local time range, e.g. "22:00-08:00".
     pub quiet_hours: Option<String>,

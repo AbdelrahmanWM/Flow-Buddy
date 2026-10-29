@@ -154,7 +154,7 @@ default_mode = "balanced"
 balanced_interval_minutes = 30
 quiet_hours = "22:00-08:00"
 when = "now"                 # or "pause": tips wait until you stop typing for a moment
-nudge_style = "card"              # or "bar"; default: card in active mode
+nudge_style = "card"              # or "bar"; default: card in active and balanced mode
 
 [rules."vim.repeat-jk"]
 threshold = 8

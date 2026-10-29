@@ -244,12 +244,15 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._clearNudge();
     }
 
+    // Without the daemon the menu still opens: to say so, and for Settings.
     setConnected(connected) {
         this._icon.opacity = connected ? 255 : 100;
-        this.reactive = connected;
+        for (const item of this._modeItems.values())
+            item.visible = connected;
+        this._pause.visible = connected;
         if (!connected) {
             this._clearNudge();
-            this._tip.label.text = 'Flow Buddy daemon is not running';
+            this._tip.label.text = 'Flow Buddy isn\'t running.\nStart it with: systemctl --user start flowbuddyd';
         }
     }
 

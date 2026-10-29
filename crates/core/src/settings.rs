@@ -121,7 +121,7 @@ pub static SETTINGS: &[Setting] = &[
         "coaching.nudge_style",
         Kind::Choice(&["bar", "card"]),
         COACHING,
-        "Tips as a label in the top bar, or a card at the top of the screen (default: a card in active mode)",
+        "Tips as a label in the top bar, or a card at the top of the screen (default: a card in active and balanced mode)",
     ),
     s(
         "coaching.balanced_interval_minutes",
@@ -444,7 +444,7 @@ pub static MORE: &[(&str, &str)] = &[
     ),
     (
         "coaching.nudge_style",
-        "A label in the top bar is the quietest; a card at the top of the screen is easier to read. By default active mode uses the card and the others the bar.",
+        "A label in the top bar is the quietest; a card at the top of the screen is easier to read. By default active and balanced mode use the card, passive the bar.",
     ),
     (
         "coaching.balanced_interval_minutes",

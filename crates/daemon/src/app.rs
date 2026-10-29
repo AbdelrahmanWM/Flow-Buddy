@@ -734,7 +734,8 @@ impl App {
             text: text.into(),
             ttl_ms: u64::from(self.config.coaching.nudge_seconds) * 1000,
             style: self.config.coaching.nudge_style.unwrap_or(match self.mode {
-                CoachingMode::Active => NudgeStyle::Card,
+                // A card to read; the top bar only fits a title.
+                CoachingMode::Active | CoachingMode::Balanced => NudgeStyle::Card,
                 _ => NudgeStyle::Bar,
             }),
             explain: glossary::explain(text, insert),

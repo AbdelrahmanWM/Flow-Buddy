@@ -1602,6 +1602,7 @@ mod status_tests {
         Status {
             running: true,
             daemon_version: "0".into(),
+            pid: None,
             mode: CoachingMode::Active,
             paused_until: None,
             context: context.into(),

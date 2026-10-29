@@ -1705,6 +1705,17 @@ impl App {
                         mode: self.mode,
                     },
                 );
+                // The welcome has no pause in it: a top bar that connects
+                // while paused should offer Resume.
+                if client == ClientKind::GnomeExtension && self.paused_until.is_some() {
+                    self.reply(
+                        conn,
+                        ServerMsg::ModeChanged {
+                            mode: self.mode,
+                            paused_until: self.paused_until,
+                        },
+                    );
+                }
                 if let (ClientKind::Editor, Some(editor)) = (client, editor) {
                     self.resolver.editor_hello(conn, editor, pid, now_ms);
                     self.update_context(None, now_ms);
@@ -2130,6 +2141,7 @@ impl App {
         Status {
             running: true,
             daemon_version: flowbuddy_core::VERSION.into(),
+            pid: Some(std::process::id()),
             mode: self.mode,
             paused_until: self.paused_until.filter(|&t| t > now_s),
             context: self.resolved.kind.as_str().into(),
@@ -2250,6 +2262,22 @@ pub(crate) mod tests {
             ServerMsg::Welcome {
                 daemon_version: flowbuddy_core::VERSION.into(),
                 mode: CoachingMode::Passive
+            }
+        );
+    }
+
+    #[test]
+    fn the_top_bar_hears_of_a_pause_when_it_connects() {
+        let mut app = test_app(CoachingMode::Balanced);
+        app.paused_until = Some(5_000);
+        let mut rx = connect(&mut app, 1);
+        send(&mut app, 1, hello(ClientKind::GnomeExtension), 0);
+        rx.try_recv().unwrap();
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            ServerMsg::ModeChanged {
+                mode: CoachingMode::Balanced,
+                paused_until: Some(5_000)
             }
         );
     }

@@ -40,7 +40,7 @@ Details, including the IPC protocol and the context model, are in [docs/architec
 
 ## What it coaches
 
-Vim in VS Code (vscodevim), Vim and Neovim in the terminal, vi-mode in bash, zsh and fish, Claude Code's Vim mode (in a terminal or VS Code's terminal), and a few shell habits such as `cd ..` again and again.
+Vim in VS Code (vscodevim), Vim and Neovim in the terminal or their own window (gVim, Neovide, Neovim Qt), vi-mode in bash, zsh and fish, Claude Code's Vim mode (in a terminal or VS Code's terminal), and a few shell habits such as `cd ..` again and again.
 
 | You did | Try |
 |---|---|
@@ -109,8 +109,11 @@ scripts/install.sh --with-udev    # install; --with-udev lets the active session
 Then log out and back in so GNOME loads the extension, and check:
 
 ```sh
-flowbuddy status          # or --watch, then switch windows
+flowbuddy doctor          # every piece, and how to fix what's missing
+flowbuddy status          # what it sees now; --watch, then switch windows
 ```
+
+To update, pull and run `scripts/install.sh` again: it restarts the daemon, and GNOME picks up the new extension at the next login. Restart VS Code and Vim too.
 
 `scripts/uninstall.sh` removes everything, and `--purge` also deletes your data.
 
@@ -154,7 +157,7 @@ default_mode = "balanced"
 balanced_interval_minutes = 30
 quiet_hours = "22:00-08:00"
 when = "now"                 # or "pause": tips wait until you stop typing for a moment
-nudge_style = "card"              # or "bar"; default: card in active mode
+nudge_style = "card"              # or "bar"; default: card in active and balanced mode
 
 [rules."vim.repeat-jk"]
 threshold = 8

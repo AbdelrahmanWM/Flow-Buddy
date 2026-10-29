@@ -44,3 +44,7 @@
 .flowbuddy-card-close:hover {
     background-color: rgba(255, 255, 255, 0.15);
 }
+
+.flowbuddy-menu-tip {
+    max-width: 420px;
+}

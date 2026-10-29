@@ -59,3 +59,14 @@ export function toMarkup(text) {
 export function plain(text) {
     return segments(text).map(s => s.text).join('');
 }
+
+// A shortcut as GNOME stores it ("<Super><Alt>t") the way it's written in
+// menus ("Super+Alt+T"); empty when there's none.
+export function shortcutLabel(accel) {
+    if (!accel)
+        return '';
+    const names = {Super: 'Super', Alt: 'Alt', Control: 'Ctrl', Primary: 'Ctrl', Ctrl: 'Ctrl', Shift: 'Shift'};
+    const mods = [...accel.matchAll(/<(\w+)>/g)].map(m => names[m[1]] ?? m[1]);
+    const key = accel.replace(/<\w+>/g, '');
+    return [...mods, key.length === 1 ? key.toUpperCase() : key].join('+');
+}

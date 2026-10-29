@@ -19,6 +19,7 @@ import {onScreen} from './placement.js';
 
 const FADE_MS = 250;
 const GAP_PX = 12;
+const MAX_QUEUED = 3;
 
 export class Card {
     // `kept`: stays until hidden, with the explanation and a close button
@@ -31,6 +32,9 @@ export class Card {
         this._drag = null;
         this._up = false;
         this._hideId = 0;
+        // Tips that came while one is up (balanced mode sends a few at
+        // once): shown one after another.
+        this._queue = [];
         this._actor = new St.BoxLayout({
             style_class: kept ? 'flowbuddy-card flowbuddy-card-kept' : 'flowbuddy-card',
             vertical: true,
@@ -72,6 +76,10 @@ export class Card {
     }
 
     show(nudge) {
+        if (!this._kept && this._up) {
+            this._queue = [...this._queue, nudge].slice(-MAX_QUEUED);
+            return;
+        }
         this._up = true;
         this._title.text = nudge.title;
         this._text.clutter_text.set_markup(toMarkup(nudge.text));
@@ -109,6 +117,9 @@ export class Card {
             mode: Clutter.AnimationMode.EASE_IN_QUAD,
             onComplete: () => {
                 this._actor.visible = false;
+                const next = this._queue.shift();
+                if (next && !this._up)
+                    this.show(next);
             },
         });
     }
@@ -175,6 +186,7 @@ export class Card {
     }
 
     destroy() {
+        this._queue = [];
         this._drag?.grab.dismiss();
         this._drag = null;
         if (this._hideId)

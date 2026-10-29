@@ -218,7 +218,9 @@ run install -Dm644 "$repo/packaging/systemd/flowbuddy-weekly.service" "$unit_dir
 run install -Dm644 "$repo/packaging/systemd/flowbuddy-tips.service" "$unit_dir/flowbuddy-tips.service"
 run install -Dm644 "$repo/packaging/systemd/flowbuddy-tips.timer" "$unit_dir/flowbuddy-tips.timer"
 run systemctl --user daemon-reload
-run systemctl --user enable --now flowbuddyd.service
+run systemctl --user enable flowbuddyd.service
+# Restart, not just start: after an update the old daemon would keep running.
+run systemctl --user restart flowbuddyd.service
 # Does nothing until you set [ai] tips = true.
 run systemctl --user enable --now flowbuddy-tips.timer
 
@@ -230,13 +232,22 @@ if ((with_udev)); then
     run systemctl --user restart flowbuddyd.service
 fi
 
+# Whether this user can read a keyboard already (the udev rule, or the
+# input group from before).
+can_read_keys=0
+for dev in /dev/input/event*; do
+    [[ -r $dev ]] && can_read_keys=1 && break
+done
+
 say "Done"
 cat <<MSG
     Next:
-      - Wayland loads new extensions on the next login: log out and back in.
-      - Check everything with: flowbuddy status
+      - GNOME Shell loads new and updated extensions at login: log out and
+        back in.
+      - Restart VS Code and Vim if they're open, so they load the update.
+      - Check everything with: flowbuddy doctor
 MSG
-if ((!with_udev)); then
+if ((!with_udev && !can_read_keys)); then
     cat <<MSG
       - Flow Buddy can't read your keyboard yet. Either re-run with
         --with-udev (recommended: active session only), or see

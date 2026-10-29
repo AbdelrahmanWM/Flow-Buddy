@@ -2,7 +2,7 @@
 
 Flow Buddy coaches in five places. Each one supports a different part of Vim, so a tip there only suggests commands that work there (`crates/core/src/support.rs`). A tip that would have nothing left isn't shown.
 
-| | VS Code (vscodevim) | Vim / Neovim in a terminal | vi-mode shell (bash, zsh, fish) | Claude Code's Vim mode | Shell commands |
+| | VS Code (vscodevim) | Vim / Neovim (in a terminal, gVim, Neovide) | vi-mode shell (bash, zsh, fish) | Claude Code's Vim mode | Shell commands |
 |---|---|---|---|---|---|
 | How it knows where you are | the companion extension | the Vim plugin, or the shell hook | the shell hook | the shell hook + `~/.claude/settings.json` | the shell hook |
 | Exact motion tips (`}}w`, `Ctrl-d×3 then 4j`) | ✓ | ✓ with the plugin | | | |

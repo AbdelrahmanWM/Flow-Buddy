@@ -32,11 +32,21 @@ pub struct Env {
     /// A running key remapper (keyd, kanata…): it sends keys through a
     /// virtual keyboard, which the daemon reads.
     pub remapper: Option<&'static str>,
+    /// The running daemon's program was replaced since it started (an
+    /// install while it ran): it's still the old one.
+    pub daemon_replaced: bool,
 }
 
 /// Key remappers that take the keyboard and send keys through one of
 /// their own, by process name.
 const REMAPPERS: &[&str] = &["keyd", "kanata", "kmonad", "udevmon", "evremap", "xremap"];
+
+/// Whether the daemon's program file was replaced after it started:
+/// Linux then shows its path as "(deleted)".
+fn daemon_replaced(pid: Option<u32>) -> bool {
+    pid.and_then(|p| std::fs::read_link(format!("/proc/{p}/exe")).ok())
+        .is_some_and(|p| p.to_string_lossy().ends_with(" (deleted)"))
+}
 
 fn running_remapper() -> Option<&'static str> {
     let procs = std::fs::read_dir("/proc").ok()?;
@@ -85,6 +95,12 @@ pub fn checks(env: &Env) -> Vec<Check> {
     match &env.status {
         Ok(s) => {
             out.push(ok(format!("the daemon is running ({})", s.daemon_version)));
+            if env.daemon_replaced {
+                out.push(bad(
+                    "the daemon is an older build: it was updated while it ran",
+                    "systemctl --user restart flowbuddyd",
+                ));
+            }
             if s.keyboards == 0 {
                 out.push(bad(
                     "no keyboard can be read",
@@ -269,6 +285,7 @@ fn mentions(file: &Path, needle: &str) -> bool {
 
 impl Env {
     pub fn gather(status: Result<Status, String>) -> Env {
+        let replaced = daemon_replaced(status.as_ref().ok().and_then(|s| s.pid));
         let data = xdg("XDG_DATA_HOME", ".local/share");
         let config_dir = xdg("XDG_CONFIG_HOME", ".config");
         let vscode_dir = home().join(".vscode/extensions");
@@ -322,6 +339,7 @@ impl Env {
             env_set: |v| std::env::var_os(v).is_some_and(|x| !x.is_empty()),
             xmodmap: home().join(".Xmodmap").is_file() || home().join(".xmodmaprc").is_file(),
             remapper: running_remapper(),
+            daemon_replaced: replaced,
         }
     }
 }
@@ -353,6 +371,7 @@ mod tests {
         Status {
             running: true,
             daemon_version: "0.1.0".into(),
+            pid: None,
             mode: CoachingMode::Balanced,
             paused_until: None,
             context: "unsupported".into(),
@@ -383,6 +402,7 @@ mod tests {
             env_set: |_| false,
             xmodmap: false,
             remapper: None,
+            daemon_replaced: false,
         }
     }
 
@@ -424,6 +444,18 @@ mod tests {
             "{text}"
         );
         assert!(text.ends_with("5 things to fix.\n"), "{text}");
+    }
+
+    #[test]
+    fn an_old_daemon_still_running() {
+        let mut e = env();
+        e.daemon_replaced = true;
+        let text = report(&checks(&e));
+        assert!(text.contains("✗ the daemon is an older build"), "{text}");
+        assert!(
+            text.contains("→ systemctl --user restart flowbuddyd"),
+            "{text}"
+        );
     }
 
     #[test]

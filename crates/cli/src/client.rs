@@ -72,9 +72,7 @@ impl Client {
                     if *got == id =>
                 {
                     return match msg {
-                        ServerMsg::Error { code, message, .. } => {
-                            bail!("{message} ({code:?})")
-                        }
+                        ServerMsg::Error { message, .. } => bail!("{message}"),
                         ok => Ok(ok),
                     };
                 }

@@ -104,12 +104,13 @@ fn current(text: &str, q: &Question) -> Option<usize> {
     q.choices.iter().position(|(v, _)| *v == value)
 }
 
-/// Ask each question on the terminal and return the answers.
+/// Ask each question on the terminal and return the answers; `None` when
+/// the input ends first (Ctrl-D), so nothing is saved.
 pub fn ask(
     text: &str,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
-) -> std::io::Result<Vec<(usize, usize)>> {
+) -> std::io::Result<Option<Vec<(usize, usize)>>> {
     let mut answers = Vec::new();
     for (qi, q) in QUESTIONS.iter().enumerate() {
         let now = current(text, q).unwrap_or(0);
@@ -118,19 +119,25 @@ pub fn ask(
             let mark = if i == now { "*" } else { " " };
             writeln!(out, " {mark}{}. {what}", i + 1)?;
         }
-        write!(out, "Choice [{}]: ", now + 1)?;
-        out.flush()?;
-        let mut line = String::new();
-        input.read_line(&mut line)?;
-        let pick = line
-            .trim()
-            .parse::<usize>()
-            .ok()
-            .filter(|n| (1..=q.choices.len()).contains(n))
-            .map_or(now, |n| n - 1);
+        let pick = loop {
+            write!(out, "Choice [{}]: ", now + 1)?;
+            out.flush()?;
+            let mut line = String::new();
+            if input.read_line(&mut line)? == 0 {
+                return Ok(None);
+            }
+            let line = line.trim();
+            if line.is_empty() {
+                break now;
+            }
+            match line.parse::<usize>() {
+                Ok(n) if (1..=q.choices.len()).contains(&n) => break n - 1,
+                _ => writeln!(out, "Type a number from 1 to {}.", q.choices.len())?,
+            }
+        };
         answers.push((qi, pick));
     }
-    Ok(answers)
+    Ok(Some(answers))
 }
 
 #[cfg(test)]
@@ -163,9 +170,9 @@ mod tests {
     fn questions_and_answers() {
         let text = "[coaching]\ndefault_mode = \"active\"\n";
         // Enter keeps the current choice; a number picks another.
-        let mut input: &[u8] = b"\n2\n3\n2\n2\n";
+        let mut input: &[u8] = b"\n2\nzz\n3\n2\n2\n";
         let mut out = Vec::new();
-        let answers = ask(text, &mut input, &mut out).unwrap();
+        let answers = ask(text, &mut input, &mut out).unwrap().unwrap();
         let written = apply(text, &answers);
         let table: toml::Table = written.parse().unwrap();
         assert_eq!(table["coaching"]["default_mode"].as_str(), Some("active"));
@@ -175,6 +182,14 @@ mod tests {
         assert_eq!(table["text"]["shapes"].as_bool(), Some(true));
         // And it's a config the daemon reads.
         assert!(toml::from_str::<flowbuddy_core::config::Config>(&written).is_ok());
-        assert!(String::from_utf8(out).unwrap().contains(" *2. as you work"));
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains(" *2. as you work"));
+        assert!(out.contains("Type a number from 1 to"));
+    }
+
+    #[test]
+    fn ctrl_d_saves_nothing() {
+        let mut input: &[u8] = b"2\n";
+        assert_eq!(ask("", &mut input, &mut Vec::new()).unwrap(), None);
     }
 }

@@ -3046,6 +3046,24 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_runs_tip_comes_soon_after_you_stop() {
+        let mut app = test_app(CoachingMode::Active);
+        app.hold_ms = u64::from(Config::default().coaching.hold_ms);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "org.gnome.Terminal", 100);
+        ctx(&mut app, CtxEvent::Fg, Some("vim"), 200);
+        // Ten keys 100 ms apart: the last at 1.9 s.
+        type_at(&mut app, "<Esc>jjjjjjjjj", 1_000);
+        let last = 1_900;
+        let mut at = last;
+        while nudges(&mut ext).is_empty() {
+            at += 250;
+            assert!(at <= last + 2_000, "no tip within 2 s of the last key");
+            app.tick_tips(at);
+        }
+    }
+
+    #[test]
     fn vscode_panel_focus_stops_capture() {
         let mut app = test_app(CoachingMode::Active);
         let _rx = connect(&mut app, 1);

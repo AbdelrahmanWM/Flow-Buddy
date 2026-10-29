@@ -149,6 +149,10 @@ pub struct App {
     /// follow it (main rebuilds it).
     layout: Option<(String, String)>,
     layout_changed: bool,
+    /// GNOME's xkb options as the extension last said, and whether they
+    /// changed since [`App::take_options`].
+    xkb_options: Option<Vec<String>>,
+    options_changed: bool,
     /// What main settled on: the layout used, and a note if it differs.
     keymap_layout: (String, Option<String>),
 }
@@ -332,6 +336,8 @@ impl App {
             typing_flushed_ms: 0,
             layout: None,
             layout_changed: false,
+            xkb_options: None,
+            options_changed: false,
             keymap_layout: ("us".into(), None),
         }
         .with_memory_config()
@@ -1570,6 +1576,18 @@ impl App {
     }
 
     /// The layout to build the keymap for, once each time it changes.
+    /// GNOME's xkb options, if they changed: for a new keymap.
+    pub fn take_options(&mut self) -> Option<Vec<String>> {
+        std::mem::take(&mut self.options_changed)
+            .then(|| self.xkb_options.clone())
+            .flatten()
+    }
+
+    /// The layout GNOME last reported.
+    pub fn layout(&self) -> Option<(String, String)> {
+        self.layout.clone()
+    }
+
     pub fn take_layout(&mut self) -> Option<(String, String)> {
         std::mem::take(&mut self.layout_changed)
             .then(|| self.layout.clone())
@@ -1770,7 +1788,11 @@ impl App {
                     self.tracker.set_mappings(self.mappings_now());
                 }
             }
-            ClientMsg::InputSource { layout, variant } => {
+            ClientMsg::InputSource {
+                layout,
+                variant,
+                options,
+            } => {
                 // xkb names only: anything else is ignored.
                 let name = |s: Option<String>| {
                     s.filter(|s| {
@@ -1783,6 +1805,22 @@ impl App {
                 if new.is_some() && new != self.layout {
                     self.layout = new;
                     self.layout_changed = true;
+                }
+                // xkb option names only, such as `caps:escape`.
+                let options = options.map(|o| {
+                    o.into_iter()
+                        .filter(|s| {
+                            s.len() <= 64
+                                && s.chars().all(|c| {
+                                    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':' | '+')
+                                })
+                        })
+                        .take(32)
+                        .collect::<Vec<_>>()
+                });
+                if options.is_some() && options != self.xkb_options {
+                    self.xkb_options = options;
+                    self.options_changed = true;
                 }
             }
             ClientMsg::EditorFocus { focused, panel } => {
@@ -3143,6 +3181,7 @@ pub(crate) mod tests {
                 ClientMsg::InputSource {
                     layout: Some(layout.into()),
                     variant: Some(variant.into()),
+                    options: None,
                 },
                 0,
             )
@@ -3679,6 +3718,35 @@ pub(crate) mod tests {
         assert_eq!(n.len(), 1, "{n:?}");
         assert_eq!(n[0].rule_id, "mistake.unknown-ex");
         assert!(n[0].text.contains("`:w`"), "{}", n[0].text);
+    }
+
+    #[test]
+    fn gnome_key_options_are_followed() {
+        let mut app = test_app(CoachingMode::Active);
+        let _ext = ext_hello(&mut app, 1);
+        let source = |app: &mut App, options: Vec<&str>| {
+            send(
+                app,
+                1,
+                ClientMsg::InputSource {
+                    layout: Some("us".into()),
+                    variant: None,
+                    options: Some(options.into_iter().map(String::from).collect()),
+                },
+                0,
+            )
+        };
+        source(&mut app, vec!["caps:escape"]);
+        assert_eq!(app.take_options(), Some(vec!["caps:escape".to_string()]));
+        assert_eq!(app.take_options(), None, "only when they change");
+        source(&mut app, vec!["caps:escape"]);
+        assert_eq!(app.take_options(), None);
+        source(&mut app, vec!["caps:swapescape", "$(rm -rf)"]);
+        assert_eq!(
+            app.take_options(),
+            Some(vec!["caps:swapescape".to_string()]),
+            "xkb names only"
+        );
     }
 
     #[test]

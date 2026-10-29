@@ -73,12 +73,12 @@ async fn main() -> anyhow::Result<()> {
     let (cap_tx, mut cap_rx) = mpsc::channel::<CaptureEvent>(1024);
     let capture = tokio::spawn(capture::run(cap_tx));
 
-    let xkb_options = config
+    let mut xkb_options = config
         .keyboard
         .xkb_options
         .clone()
         .unwrap_or_else(keymap::gnome_xkb_options);
-    let options = KeymapOptions::from_xkb(xkb_options.iter().map(String::as_str));
+    let mut options = KeymapOptions::from_xkb(xkb_options.iter().map(String::as_str));
     let (mut keymap, layout, note) = make_keymap(&config, &xkb_options, options, None);
     let resolver =
         Resolver::new(app::app_ids(&config), Box::new(Procfs)).with_tmux(Box::new(TmuxCli));
@@ -129,6 +129,25 @@ async fn main() -> anyhow::Result<()> {
                 let started = Instant::now();
                 app.on_conn(ev, now_ms());
                 app.took(started.elapsed());
+                // GNOME's key options changed (Caps Lock as Escape…): follow
+                // them, unless the config sets its own.
+                if let Some(o) = app.take_options()
+                    && keymap_config.keyboard.xkb_options.is_none()
+                    && o != xkb_options
+                {
+                    xkb_options = o;
+                    options = KeymapOptions::from_xkb(xkb_options.iter().map(String::as_str));
+                    let reported = app.layout();
+                    let (k, layout, note) = make_keymap(
+                        &keymap_config,
+                        &xkb_options,
+                        options,
+                        reported.as_ref().map(|(l, v)| (l.as_str(), v.as_str())),
+                    );
+                    info!(options = ?xkb_options, "keyboard options");
+                    keymap = k;
+                    app.set_keymap_layout(layout, note);
+                }
                 // GNOME switched layouts: follow it.
                 if let Some((l, v)) = app.take_layout() {
                     let (k, layout, note) =

@@ -27,6 +27,34 @@ pub struct Env {
     pub on_path: fn(&str) -> bool,
     /// Whether an environment variable is set.
     pub env_set: fn(&str) -> bool,
+    /// An xmodmap file: X11 remaps the daemon's raw keys don't see.
+    pub xmodmap: bool,
+    /// A running key remapper (keyd, kanata…): it sends keys through a
+    /// virtual keyboard, which the daemon reads.
+    pub remapper: Option<&'static str>,
+}
+
+/// Key remappers that take the keyboard and send keys through one of
+/// their own, by process name.
+const REMAPPERS: &[&str] = &["keyd", "kanata", "kmonad", "udevmon", "evremap", "xremap"];
+
+fn running_remapper() -> Option<&'static str> {
+    let procs = std::fs::read_dir("/proc").ok()?;
+    let names: Vec<String> = procs
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .bytes()
+                .all(|b| b.is_ascii_digit())
+        })
+        .filter_map(|e| std::fs::read_to_string(e.path().join("comm")).ok())
+        .map(|n| n.trim().to_string())
+        .collect();
+    REMAPPERS
+        .iter()
+        .copied()
+        .find(|r| names.iter().any(|n| n == r))
 }
 
 pub struct Check {
@@ -128,6 +156,21 @@ pub fn checks(env: &Env) -> Vec<Check> {
                 format!("run scripts/install.sh, or source shell/flowbuddy.{shell} from your {shell} config"),
             )
         });
+    }
+    let options_set = env
+        .config
+        .as_ref()
+        .is_ok_and(|c| c.keyboard.xkb_options.is_some());
+    if env.xmodmap && !options_set {
+        out.push(bad(
+            "you remap keys with xmodmap, which Flow Buddy can't see (it reads keys before X11 does)",
+            "say the same to Flow Buddy as xkb options, e.g. `flowbuddy config set keyboard.xkb_options caps:escape`, or remap in GNOME Tweaks → Keyboard instead",
+        ));
+    }
+    if let Some(r) = env.remapper {
+        out.push(ok(format!(
+            "{r} remaps your keys; Flow Buddy reads the keys it sends, so its remaps count"
+        )));
     }
     match &env.config {
         Ok(config) => {
@@ -277,6 +320,8 @@ impl Env {
             config: Config::load(&config_file),
             on_path,
             env_set: |v| std::env::var_os(v).is_some_and(|x| !x.is_empty()),
+            xmodmap: home().join(".Xmodmap").is_file() || home().join(".xmodmaprc").is_file(),
+            remapper: running_remapper(),
         }
     }
 }
@@ -336,6 +381,8 @@ mod tests {
             config: Ok(Config::default()),
             on_path: |_| true,
             env_set: |_| false,
+            xmodmap: false,
+            remapper: None,
         }
     }
 
@@ -385,5 +432,24 @@ mod tests {
         e.status = Err("connection refused".into());
         let text = report(&checks(&e));
         assert!(text.contains("✗ the daemon isn't running (connection refused)\n    → systemctl --user start flowbuddyd"), "{text}");
+    }
+
+    #[test]
+    fn remaps_it_cant_see() {
+        let mut e = env();
+        e.xmodmap = true;
+        let c = checks(&e);
+        assert!(c.iter().any(|c| !c.ok && c.what.contains("xmodmap")));
+        e.config = Ok(toml::from_str("[keyboard]\nxkb_options = [\"caps:escape\"]").unwrap());
+        assert!(
+            !checks(&e).iter().any(|c| c.what.contains("xmodmap")),
+            "said already"
+        );
+        e.remapper = Some("keyd");
+        assert!(
+            checks(&e)
+                .iter()
+                .any(|c| c.ok && c.what.starts_with("keyd remaps"))
+        );
     }
 }

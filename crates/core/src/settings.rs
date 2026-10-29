@@ -422,6 +422,229 @@ pub static SETTINGS: &[Setting] = &[
     ),
 ];
 
+/// A word more about each setting: when you'd change it, and what it's
+/// easily confused with. `flowbuddy config explain` and the settings
+/// window's info buttons show it.
+pub static MORE: &[(&str, &str)] = &[
+    (
+        "coaching.default_mode",
+        "Off stops watching. Passive only counts, and gives a summary at the end of the day. Balanced holds tips and shows the most useful one or two every half hour, so it rarely interrupts. Active shows a tip as soon as a habit is seen, with limits per hour. This is the mode Flow Buddy starts in; switching mode from the menu or `flowbuddy mode` lasts until you switch again.",
+    ),
+    (
+        "coaching.when",
+        "With \"now\", a tip appears as soon as the habit is seen. With \"pause\", it waits until you stop typing for a moment (see Pause length under Timing), so it never lands in the middle of a word. Pause is gentler; now ties the tip more clearly to what you just did.",
+    ),
+    (
+        "coaching.quiet_hours",
+        "During these hours no tips appear, in any mode; counting goes on. Write it as start-end in 24-hour time; it can run past midnight (22:00-08:00). Leave it empty for none. For a break right now, Pause in the menu is quicker.",
+    ),
+    (
+        "coaching.nudge_seconds",
+        "How long a tip stays on screen before fading. It stays in the menu after that, and Keep on screen keeps it up until you close it.",
+    ),
+    (
+        "coaching.nudge_style",
+        "A label in the top bar is the quietest; a card at the top of the screen is easier to read. By default active mode uses the card and the others the bar.",
+    ),
+    (
+        "coaching.balanced_interval_minutes",
+        "Balanced mode only. Habits seen in this time are weighed against each other and only the best one or two are shown at the end of it. Shorter means fresher tips but more often; longer means fewer interruptions. Not the same as the cooldown, which is for active mode.",
+    ),
+    (
+        "coaching.batch_size",
+        "Balanced mode only: how many tips each batch shows at most.",
+    ),
+    (
+        "coaching.cooldown_minutes",
+        "Active mode only: after a tip about a habit, no tip about the same habit for this long, even if you keep doing it. Other habits can still get tips (up to the hourly cap).",
+    ),
+    (
+        "coaching.hourly_cap",
+        "Active mode only: tips per hour at most, all habits together. With the cooldown it keeps active mode from becoming noise.",
+    ),
+    (
+        "coaching.summary_time",
+        "Passive mode: when the end-of-day summary notification comes, in 24-hour time.",
+    ),
+    (
+        "coaching.hold_ms",
+        "A habit isn't shown the instant it's seen: for this long Flow Buddy waits for a better tip about the same keys (you might be in the middle of something a second rule covers better). 0 shows tips immediately. Not the same as the pause length, which waits for you to stop typing.",
+    ),
+    (
+        "coaching.pause_ms",
+        "Only when tips appear after a pause: how long you must stop typing for it to count. Not the same as the hold, which waits for a better tip, not for you.",
+    ),
+    (
+        "learn.gap_minutes",
+        "The daily lesson waits until no other tip has come for this long, so it never arrives on top of one.",
+    ),
+    (
+        "learn.challenge_days",
+        "After a lesson, a challenge to use it. If you use it within this many days, it's met; if you go back to the old habit, it's missed (and counts against the skill); if neither, it just ends.",
+    ),
+    (
+        "learn.again_after_days",
+        "A lesson you didn't take up can come back, but not sooner than this. Learning something works best spaced out, not repeated day after day.",
+    ),
+    (
+        "learn.max_showings",
+        "How many times a lesson you don't take up is shown at all. After that it's left alone (\"I know this\" in the menu skips it at once).",
+    ),
+    (
+        "learn.daily",
+        "Once a day, one Vim feature you don't use yet, picked by what your habits say would help you most. In every mode but off. The menu's \"I know this\" and \"Show me another\" work on it.",
+    ),
+    (
+        "learn.level",
+        "Beginner assumes nothing and learns what you know from what you use. Intermediate takes the basics as known; advanced takes the first two levels as known. Either way, what you use counts.",
+    ),
+    (
+        "learn.challenges",
+        "After a lesson, a challenge to use it the next time it fits. Using something beats reading about it; whether you do also tells Flow Buddy how well it's sinking in.",
+    ),
+    (
+        "learn.holdout",
+        "To know whether tips help you at all, a share of them is held back at random and what you do then is compared (`flowbuddy learn --report`). 0.1 holds back one in ten; 0 shows them all but leaves nothing to compare against.",
+    ),
+    (
+        "learning.improving_ratio",
+        "A habit counts as improving when, over a week, you do it the better way at least this share of the time. Improving habits get fewer tips.",
+    ),
+    (
+        "learning.mastered_ratio",
+        "A habit counts as mastered when, over two weeks, you do it the better way at least this share of the time. Mastered habits get no tips, only an occasional check.",
+    ),
+    (
+        "learning.mastered_min_events",
+        "Mastered needs at least this many times the habit came up, so a lucky few don't count.",
+    ),
+    (
+        "learning.mastered_clean_minutes",
+        "Or mastered when you simply stopped: this many minutes of work over two weeks without the habit at all.",
+    ),
+    (
+        "learning.regress_hits",
+        "A mastered or improving habit counts as slipping when it comes back this many times in a week without the better way.",
+    ),
+    (
+        "text.shapes",
+        "Off by default. The Vim plugin and the VS Code companion look at the text around a movement or edit to tell which shorter command would have done it exactly, and send only numbers. Files that look secret (.env, keys, passwords) are never looked at.",
+    ),
+    (
+        "text.ai_snippets",
+        "Off by default. A few lines around recent slow edits are kept in memory, in your listed projects only, for `flowbuddy coach` to show your AI, with secrets redacted first. Needs Projects set.",
+    ),
+    (
+        "text.cloud",
+        "Off by default. Without it, snippets go only to a local AI. With it, also to the cloud AI you set up.",
+    ),
+    (
+        "text.projects",
+        "The folders where snippets may be taken. Empty means nowhere, even with snippets on.",
+    ),
+    (
+        "text.exclude",
+        "More files never to look at, on top of the built-in list of secret-looking files. Patterns like *.sql or notes/*.",
+    ),
+    (
+        "typing.accuracy",
+        "Off by default. Counts characters typed and deleted again, for the summary. Which pairs of characters come before a correction are counted too. Never the text.",
+    ),
+    (
+        "ai.provider",
+        "None: no AI. Command: a program of yours, such as a local model. Claude Code: its CLI, with your Claude subscription. Anthropic or OpenAI: their APIs with your key (OpenAI also covers local servers that speak its API). The AI only ever sees counts of your habits, and snippets if you turn those on.",
+    ),
+    (
+        "ai.model",
+        "Which model the API provider uses. Empty picks a sensible default.",
+    ),
+    (
+        "ai.base_url",
+        "For openai: the API's address. Point it at a local server (Ollama, llama.cpp) to keep everything on your machine.",
+    ),
+    (
+        "ai.api_key_env",
+        "The environment variable your API key is in. Keys never go in the config file.",
+    ),
+    (
+        "ai.api_key_command",
+        "Or a command that prints your API key, such as a password manager's. Run each time the AI is used.",
+    ),
+    (
+        "ai.command",
+        "For the command provider: the program and its arguments. It gets the prompt on standard input and writes the answer.",
+    ),
+    (
+        "ai.timeout_seconds",
+        "How long to wait for the AI before giving up.",
+    ),
+    (
+        "ai.weekly",
+        "Off by default. Your AI writes the weekly progress note. It then runs once a week without being asked.",
+    ),
+    (
+        "ai.filter",
+        "On by default, and no AI involved: Flow Buddy learns from what you do after tips which ones you'd dismiss, and skips those. It does nothing until it has learned enough.",
+    ),
+    (
+        "ai.tips",
+        "Off by default. Once a day your AI writes a personal sentence for each recent habit, added to its tips.",
+    ),
+    (
+        "record.keep_days",
+        "0 by default. Keeps a rolling recording of what the rules see (the shape of key presses, never what you type) so `flowbuddy record tune` can check rule changes against your real work.",
+    ),
+    (
+        "memory.episode_retention_days",
+        "Each time a habit is seen, a small record of its shape is kept for this long, for summaries and tuning. The totals per habit stay after.",
+    ),
+    (
+        "keyboard.xkb_options",
+        "Usually read from GNOME. Set it if you remap keys some other way (Caps Lock as Escape: caps:escape), so Flow Buddy reads your keys as you mean them.",
+    ),
+    (
+        "keyboard.xkb_layout",
+        "The layout Vim commands are typed on. Only needed when it isn't us and GNOME doesn't say.",
+    ),
+    (
+        "keyboard.insert_escapes",
+        "Two-key mappings you use to leave Insert mode, such as jk. The Vim plugin reports them itself; set this without it.",
+    ),
+    (
+        "apps.vscode",
+        "Window ids taken as VS Code. Only needed for a build the built-in list doesn't know.",
+    ),
+    (
+        "apps.terminals",
+        "Window ids taken as terminals. Only needed for a terminal the built-in list doesn't know.",
+    ),
+    (
+        "apps.vims",
+        "Command names taken as Vim in a terminal, such as a wrapper script.",
+    ),
+    ("apps.claudes", "Command names taken as Claude Code."),
+];
+
+/// The longer explanation of `key`: from [`MORE`], or a rule's own.
+pub fn more(key: &str) -> Option<String> {
+    if let Some((_, m)) = MORE.iter().find(|(k, _)| *k == key) {
+        return Some((*m).to_string());
+    }
+    let (id, field) = rule_key(key)?;
+    let rules = crate::rules::all();
+    let rule = rules.iter().find(|r| r.id() == id)?;
+    Some(match field {
+        "enabled" => format!(
+            "{}. Turned off, the rule doesn't run at all; to keep counting without tips, mute it instead (`flowbuddy rules mute {id}`).",
+            rule.description()
+        ),
+        _ => format!(
+            "{}. The threshold is how many repeats it waits for before a tip: higher means fewer tips, only for longer runs.",
+            rule.description()
+        ),
+    })
+}
+
 /// Per-rule settings: `rules.<id>.enabled` and `rules.<id>.threshold`.
 pub const RULE_GROUP: &str = "Rules";
 
@@ -668,6 +891,26 @@ mod tests {
             }
         }
         assert!(SETTINGS.iter().filter(|s| s.basic).count() <= 8);
+    }
+
+    #[test]
+    fn every_setting_has_a_word_more() {
+        for s in SETTINGS {
+            assert!(
+                more(s.key).is_some_and(|m| m.len() > 20),
+                "{} needs a word more",
+                s.key
+            );
+        }
+        assert!(
+            MORE.iter().all(|(k, _)| find(k).is_some()),
+            "MORE has a key that isn't a setting"
+        );
+        assert!(
+            more("rules.vim.repeat-jk.threshold")
+                .unwrap()
+                .contains("repeats")
+        );
     }
 
     #[test]

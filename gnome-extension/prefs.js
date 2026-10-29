@@ -196,7 +196,25 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
                 this._changed(s, get(), () => put(before));
             });
         }
+        if (s.more)
+            this._addInfo(row, title, s.more);
         return row;
+    }
+
+    // An ⓘ beside a setting: what it does, at more length.
+    _addInfo(row, title, more) {
+        const info = new Gtk.Button({
+            icon_name: 'help-about-symbolic',
+            valign: Gtk.Align.CENTER,
+            tooltip_text: 'More about this setting',
+        });
+        info.add_css_class('flat');
+        info.connect('clicked', () => {
+            const dialog = new Adw.AlertDialog({heading: title, body: more});
+            dialog.add_response('close', 'Close');
+            dialog.present(this._window);
+        });
+        row.add_suffix(info);
     }
 
     // Apply a change, asking first when it needs it; undo the control if

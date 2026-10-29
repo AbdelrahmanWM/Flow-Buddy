@@ -115,7 +115,7 @@ function register(vscode, run, subscriptions) {
     async function change(s) {
         const options = choices(s);
         if (options) {
-            const pick = await vscode.window.showQuickPick(options.map(([label]) => label), {title: s.key, placeHolder: s.what});
+            const pick = await vscode.window.showQuickPick(options.map(([label]) => label), {title: s.key, placeHolder: s.more ?? s.what});
             const chosen = options.find(([label]) => label === pick);
             if (chosen)
                 await apply(s, chosen[1]);
@@ -123,7 +123,7 @@ function register(vscode, run, subscriptions) {
         }
         const text = await vscode.window.showInputBox({
             title: s.key,
-            prompt: `${s.what}${s.kind.type === 'list' ? ' (comma-separated)' : ''}. Empty puts the default back.`,
+            prompt: `${s.more ?? s.what}${s.kind.type === 'list' ? ' (comma-separated)' : ''} Empty puts the default back.`,
             value: shown(s.value),
         });
         if (text !== undefined)

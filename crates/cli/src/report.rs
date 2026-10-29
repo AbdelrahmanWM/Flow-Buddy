@@ -30,16 +30,6 @@ pub fn describe(rule_id: &str) -> String {
         .map_or_else(|| rule_id.to_string(), |r| r.description().to_string())
 }
 
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        let mut t: String = s.chars().take(n - 1).collect();
-        t.push('…');
-        t
-    }
-}
-
 fn hm(minutes: u64) -> String {
     match (minutes / 60, minutes % 60) {
         (0, m) => format!("{m}m"),
@@ -111,7 +101,7 @@ pub fn summary(store: &Store, now_ms: u64, period: Period) -> anyhow::Result<Str
     let per_ctx: Vec<String> = active
         .iter()
         .filter(|(_, m)| **m > 0)
-        .map(|(c, m)| format!("{c} {}", hm(*m)))
+        .map(|(c, m)| format!("{} {}", place_name(c), hm(*m)))
         .collect();
     writeln!(
         out,
@@ -122,11 +112,15 @@ pub fn summary(store: &Store, now_ms: u64, period: Period) -> anyhow::Result<Str
 
     let mut rows: Vec<(&String, &Totals)> = now_t.iter().collect();
     rows.sort_by(|a, b| b.1.hits.cmp(&a.1.hits).then(a.0.cmp(b.0)));
-    writeln!(
-        out,
-        "  {:<46} {:>5}  {:>11}  Trend",
-        "Habit", "Times", "Better way"
-    )?;
+    if rows.is_empty() {
+        writeln!(out, "  No habits to work on came up.")?;
+    } else {
+        writeln!(
+            out,
+            "  {:<46} {:>5}  {:>11}  Trend",
+            "Habit", "Times", "Better way"
+        )?;
+    }
     let per_hour = |hits: u64, minutes: u64| hits as f64 * 60.0 / minutes.max(1) as f64;
     for (rule, t) in rows {
         let ratio = t.adoptions * 100 / (t.hits + t.adoptions).max(1);
@@ -135,42 +129,49 @@ pub fn summary(store: &Store, now_ms: u64, period: Period) -> anyhow::Result<Str
             per_hour(t.hits, active_total),
             per_hour(before.hits, active_prev),
         );
+        // A long name gets a line of its own, rather than being cut.
+        let name = describe(rule);
+        let name = if name.chars().count() > 46 {
+            writeln!(out, "  {name}")?;
+            String::new()
+        } else {
+            name
+        };
         writeln!(
             out,
-            "  {:<46} {:>5}  {:>5} ({:>2}%)  {tr}",
-            truncate(&describe(rule), 46),
-            t.hits,
-            t.adoptions,
-            ratio
+            "  {name:<46} {:>5}  {:>5} ({:>2}%)  {tr}",
+            t.hits, t.adoptions, ratio
         )?;
     }
 
-    let mut by_stage: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    let mut by_stage: BTreeMap<u8, Vec<String>> = BTreeMap::new();
     for p in store.patterns()? {
-        if matches!(
-            p.stage,
-            Stage::Mastered | Stage::Improving | Stage::Regressed
-        ) {
-            by_stage
-                .entry(p.stage.as_str())
-                .or_default()
-                .push(p.rule_id);
-        }
+        let order = match p.stage {
+            Stage::Regressed => 0,
+            Stage::Improving => 1,
+            Stage::Mastered => 2,
+            _ => continue,
+        };
+        by_stage.entry(order).or_default().push(p.rule_id);
     }
-    if !by_stage.is_empty() {
-        writeln!(out)?;
-        for (stage, mut rules) in by_stage {
-            rules.dedup();
-            writeln!(out, "  {stage:<10} {}", rules.join(", "))?;
+    for (order, mut rules) in by_stage {
+        rules.sort();
+        rules.dedup();
+        let heading = ["Slipping back", "Getting better", "Mastered"][usize::from(order)];
+        writeln!(out, "\n  {heading}")?;
+        for rule in rules {
+            writeln!(out, "    {}", describe(&rule))?;
         }
     }
     if let Some(line) = typing_line(store, &current, &previous, versus)? {
         writeln!(out, "\n  {line}")?;
     }
-    writeln!(
-        out,
-        "\n  ↓ fewer per active hour is better. `flowbuddy memory show` for history."
-    )?;
+    if !now_t.is_empty() {
+        writeln!(
+            out,
+            "\n  ↓ fewer per active hour is better. `flowbuddy memory show` for history."
+        )?;
+    }
     Ok(out)
 }
 
@@ -240,13 +241,15 @@ pub fn memory_show(store: &Store, now_ms: u64) -> anyhow::Result<String> {
         )?;
         writeln!(
             out,
-            "  total      {} times, better way {} times",
-            p.occurrences, p.adoptions
+            "  total      {}, the better way {}",
+            times(p.occurrences),
+            times(p.adoptions)
         )?;
         writeln!(
             out,
-            "  last week  {} times, better way {} times",
-            w.hits, w.adoptions
+            "  last week  {}, the better way {}",
+            times(w.hits),
+            times(w.adoptions)
         )?;
         if let Some(e) = w.estimate() {
             let pct = |x: f64| (x * 100.0).round() as u32;
@@ -401,7 +404,7 @@ pub fn learn_report(store: &Store, now_ms: u64) -> anyhow::Result<String> {
     let (skills, model) = store.skills(&today, None)?;
     writeln!(
         out,
-        "\nYour memory: a skill used on one day is half-forgotten after {:.0} days; after nine days of use, {:.0}.",
+        "\nYour memory: a skill used on one day is half-forgotten after {:.0} days; after nine days of use, {:.0} days.",
         model.half_life(1.0, 0.0),
         model.half_life(9.0, 0.0)
     )?;
@@ -839,7 +842,7 @@ mod tests {
         let text = memory_show(&sample(), at(24, 18)).unwrap();
         assert!(text.contains("vim.repeat-jk (vscode-vim)"), "{text}");
         assert!(
-            text.contains("total      8 times, better way 5 times"),
+            text.contains("total      8 times, the better way 5 times"),
             "{text}"
         );
         assert!(text.contains("recently   j×7"), "{text}");

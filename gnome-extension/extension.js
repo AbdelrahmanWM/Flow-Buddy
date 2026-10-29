@@ -4,6 +4,7 @@
 // the top bar. Talks only to the daemon's Unix socket; nothing leaves the
 // machine.
 
+import Gio from 'gi://Gio';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 
@@ -34,7 +35,7 @@ export default class FlowBuddyExtension extends Extension {
             },
             onDisconnected: () => this._indicator.setConnected(false),
         });
-        this._indicator = new Indicator(this._link, () => this.openPreferences());
+        this._indicator = new Indicator(this._link, () => this.openPreferences(), this.getSettings());
         Main.panel.addToStatusArea(this.uuid, this._indicator);
         this._card = new Card();
         // Shortcuts for the current tip, so it's never a trip to the menu.
@@ -53,6 +54,10 @@ export default class FlowBuddyExtension extends Extension {
         // Follow keyboard layout switches, so keys are read right.
         this._sources = getInputSourceManager();
         this._sourceId = this._sources.connect('current-source-changed', () => this._reportSource());
+        // Caps Lock as Escape and the like: the daemon reads raw keys, so it
+        // needs to know.
+        this._inputSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.input-sources'});
+        this._optionsId = this._inputSettings.connect('changed::xkb-options', () => this._reportSource());
         this._link.start();
     }
 
@@ -63,7 +68,8 @@ export default class FlowBuddyExtension extends Extension {
         if (!source)
             return;
         const [layout, variant] = source.type === 'xkb' ? source.id.split('+') : [null, null];
-        this._link.send({type: 'input_source', layout, variant: variant ?? null});
+        const options = this._inputSettings?.get_strv('xkb-options') ?? null;
+        this._link.send({type: 'input_source', layout, variant: variant ?? null, options});
     }
 
     disable() {
@@ -75,6 +81,10 @@ export default class FlowBuddyExtension extends Extension {
             this._sources.disconnect(this._sourceId);
         this._sources = null;
         this._sourceId = 0;
+        if (this._optionsId)
+            this._inputSettings.disconnect(this._optionsId);
+        this._optionsId = 0;
+        this._inputSettings = null;
         this._focus?.disable();
         this._link?.stop();
         this._indicator?.destroy();

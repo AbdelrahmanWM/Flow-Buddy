@@ -13,5 +13,9 @@
       <default><![CDATA[['<Super><Alt>n']]]></default>
       <summary>Mark the current tip as not helpful</summary>
     </key>
+    <key name="kept-tip-position" type="(ii)">
+      <default>(-1, -1)</default>
+      <summary>Where the kept tip was dragged to (-1, -1: the top-right corner)</summary>
+    </key>
   </schema>
 </schemalist>

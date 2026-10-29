@@ -238,6 +238,10 @@ pub enum ClientMsg {
         layout: Option<String>,
         #[serde(default)]
         variant: Option<String>,
+        /// GNOME's xkb options (`caps:escape`), when it reports them: what
+        /// physical keys mean.
+        #[serde(default)]
+        options: Option<Vec<String>>,
     },
     /// Editor clients: whether a text editor has keyboard focus (as opposed
     /// to a terminal, chat or other panel inside the same window).

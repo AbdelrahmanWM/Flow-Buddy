@@ -35,7 +35,7 @@ const MODES = [
 
 export const Indicator = GObject.registerClass(
 class FlowBuddyIndicator extends PanelMenu.Button {
-    _init(link, openSettings) {
+    _init(link, openSettings, settings = null) {
         super._init(0.0, 'Flow Buddy');
         this._link = link;
         this._nudge = null;
@@ -43,7 +43,17 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         // the recent list.
         this._shownTip = null;
         this._recent = [];
-        this._kept = new Card({kept: true, onClose: () => this._stopKeeping()});
+        const saved = settings?.get_value('kept-tip-position').deepUnpack() ?? [-1, -1];
+        this._kept = new Card({
+            kept: true,
+            onClose: () => this._stopKeeping(),
+            position: saved[0] < 0 ? null : saved,
+            onMoved: pos => {
+                settings?.set_value('kept-tip-position',
+                    new GLib.Variant('(ii)', pos ?? [-1, -1]));
+                this._updateKeep();
+            },
+        });
         this._keptTip = null;
         this._hideId = 0;
 
@@ -89,6 +99,10 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._unkeep.connect('activate', () => this._stopKeeping());
         this._unkeep.visible = false;
         this.menu.addMenuItem(this._unkeep);
+        this._corner = new PopupMenu.PopupMenuItem('Put it back in the corner');
+        this._corner.connect('activate', () => this._kept.resetPosition());
+        this._corner.visible = false;
+        this.menu.addMenuItem(this._corner);
 
         this._gotIt = this._action('Got it', 'dismiss');
         this._mute = this._action('Stop this tip', 'mute_rule');
@@ -122,9 +136,9 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this.menu.addMenuItem(this._pause);
 
         // Every setting, and the terminal's tools, in a window.
-        const settings = new PopupMenu.PopupMenuItem('Settings…');
-        settings.connect('activate', () => openSettings?.());
-        this.menu.addMenuItem(settings);
+        const settingsItem = new PopupMenu.PopupMenuItem('Settings…');
+        settingsItem.connect('activate', () => openSettings?.());
+        this.menu.addMenuItem(settingsItem);
 
         this.setConnected(false);
     }
@@ -179,6 +193,7 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._keep.visible = this._shownTip !== null && this._keptTip !== this._shownTip;
         this._keep.label.text = kept ? 'Keep this one on screen instead' : 'Keep on screen';
         this._unkeep.visible = kept;
+        this._corner.visible = kept && this._kept.position !== null;
     }
 
     _setExplanation(lines) {

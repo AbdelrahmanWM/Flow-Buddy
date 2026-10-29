@@ -19,7 +19,7 @@ Every setting, then every rule's two settings.
 ]}
 ```
 
-`kind.type` is one of `bool`, `int` and `float` (with `min` and `max`), `choice` (with `choices`), `time` (`HH:MM`), `time-range` (`HH:MM-HH:MM`), `text` and `list`. `value` is `null` when not set. `notice`, when there is one, says what turning the setting on means for your privacy or data: show it before turning it on. Change a setting with `flowbuddy config set <key> <value>` (lists comma-separated); it exits non-zero, with what's allowed, if the value is wrong.
+`kind.type` is one of `bool`, `int` and `float` (with `min` and `max`), `choice` (with `choices`), `time` (`HH:MM`), `time-range` (`HH:MM-HH:MM`), `text` and `list`. `value` is `null` when not set. `more` is a longer explanation: when you'd change it, and what it's easily confused with (`flowbuddy config explain <key>` prints it). `notice`, when there is one, says what turning the setting on means for your privacy or data: show it before turning it on. Change a setting with `flowbuddy config set <key> <value>` (lists comma-separated); it exits non-zero, with what's allowed, if the value is wrong.
 
 ## `flowbuddy doctor --json`
 

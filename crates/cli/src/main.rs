@@ -288,6 +288,14 @@ fn main() {
                 None => config_cmd::ConfigCmd::List { json, basic: !json },
             },
             &flowbuddy_core::paths::config_file(),
+            // Quietly: the daemon may not be running.
+            &|mode| {
+                if let Ok(m) = serde_json::from_value::<CoachingMode>(serde_json::json!(mode))
+                    && let Ok(mut c) = Client::connect(ClientKind::Cli)
+                {
+                    let _ = c.command(Command::SetMode { mode: m });
+                }
+            },
         ),
         Cmd::Mode { mode } => set_mode(mode),
         Cmd::Summary { week } => summary(week, json),

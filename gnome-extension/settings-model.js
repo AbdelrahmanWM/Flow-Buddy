@@ -156,6 +156,16 @@ export function spinSteps(setting) {
     return {min, max, step: (max - min) <= 1 ? 0.05 : 0.5, digits: 2};
 }
 
+// What applying a profile changes, as lines: "When tips appear: now → pause".
+export function profileChanges(profile, settings) {
+    const byKey = new Map(settings.map(s => [s.key, s]));
+    return profile.changes.map(c => {
+        const s = byKey.get(c.key);
+        const name = s ? label(s) : c.key;
+        return `${name}: ${c.now === '' ? 'default' : c.now} → ${c.then}`;
+    });
+}
+
 // Tool results, as lines of text for the window.
 
 export function doctorLines(json) {

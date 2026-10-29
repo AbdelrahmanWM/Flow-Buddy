@@ -1,8 +1,10 @@
 // A nudge card at the top centre of the screen, or, kept, in the top-right
-// corner until you close it (its × button, or the menu).
+// corner (or wherever you drag it by its title) until you close it (its ×
+// button, or the menu).
 //
 // It never takes keyboard focus, so it can't interrupt typing, and clicks
-// pass through it to the window below: only a kept card's × takes a click.
+// pass through it to the window below: only a kept card's title row (to
+// drag it) and its × take a click.
 // A shown card fades out after the nudge's ttl. What the commands do is in
 // the top-bar menu, and a kept card lists them too.
 
@@ -13,15 +15,20 @@ import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import {toMarkup} from './markup.js';
+import {onScreen} from './placement.js';
 
 const FADE_MS = 250;
 const GAP_PX = 12;
 
 export class Card {
-    // `kept`: stays until hidden, in the corner, with the explanation and a
-    // close button that calls `onClose`.
-    constructor({kept = false, onClose = null} = {}) {
+    // `kept`: stays until hidden, with the explanation and a close button
+    // that calls `onClose`. `position` and `onMoved` remember where it was
+    // dragged to: `[x, y]`, or null for the corner.
+    constructor({kept = false, onClose = null, position = null, onMoved = null} = {}) {
         this._kept = kept;
+        this._position = position;
+        this._onMoved = onMoved;
+        this._drag = null;
         this._up = false;
         this._hideId = 0;
         this._actor = new St.BoxLayout({
@@ -38,7 +45,9 @@ export class Card {
         this._explain = new St.Label({style_class: 'flowbuddy-card-explain', visible: kept});
         this._explain.clutter_text.line_wrap = true;
         if (kept) {
-            const header = new St.BoxLayout({x_expand: true});
+            // The title row is the handle to drag it by.
+            const header = new St.BoxLayout({x_expand: true, reactive: true, track_hover: true});
+            this._dragBy(header);
             const close = new St.Button({
                 style_class: 'flowbuddy-card-close',
                 child: new St.Icon({icon_name: 'window-close-symbolic', icon_size: 14}),
@@ -104,11 +113,60 @@ export class Card {
         });
     }
 
+    // Where it was dragged to, or null for the corner.
+    get position() {
+        return this._position;
+    }
+
+    // Back to the corner.
+    resetPosition() {
+        this._position = null;
+        this._onMoved?.(null);
+        if (this._up)
+            this._place();
+    }
+
+    _dragBy(handle) {
+        handle.connect('button-press-event', (_a, event) => {
+            if (event.get_button() !== 1)
+                return Clutter.EVENT_PROPAGATE;
+            const [px, py] = event.get_coords();
+            const [x, y] = this._actor.get_position();
+            this._drag = {dx: px - x, dy: py - y, grab: global.stage.grab(handle)};
+            return Clutter.EVENT_STOP;
+        });
+        handle.connect('motion-event', (_a, event) => {
+            if (!this._drag)
+                return Clutter.EVENT_PROPAGATE;
+            const [px, py] = event.get_coords();
+            this._actor.set_position(Math.round(px - this._drag.dx), Math.round(py - this._drag.dy));
+            return Clutter.EVENT_STOP;
+        });
+        handle.connect('button-release-event', () => {
+            if (!this._drag)
+                return Clutter.EVENT_PROPAGATE;
+            this._drag.grab.dismiss();
+            this._drag = null;
+            const [x, y] = this._actor.get_position();
+            this._position = [x, y];
+            this._onMoved?.(this._position);
+            return Clutter.EVENT_STOP;
+        });
+    }
+
     _place() {
         const monitor = Main.layoutManager.primaryMonitor;
         if (!monitor)
             return;
         const [, width] = this._actor.get_preferred_width(-1);
+        if (this._kept && this._position) {
+            // Where you left it, pulled back on screen if the monitors
+            // changed since.
+            const [, height] = this._actor.get_preferred_height(width);
+            const [x, y] = onScreen(this._position, [width, height], Main.layoutManager.monitors);
+            this._actor.set_position(x, y);
+            return;
+        }
         const top = Main.panel.visible ? Main.panel.height : 0;
         const x = this._kept
             ? monitor.x + monitor.width - width - GAP_PX
@@ -117,6 +175,8 @@ export class Card {
     }
 
     destroy() {
+        this._drag?.grab.dismiss();
+        this._drag = null;
         if (this._hideId)
             GLib.source_remove(this._hideId);
         this._hideId = 0;

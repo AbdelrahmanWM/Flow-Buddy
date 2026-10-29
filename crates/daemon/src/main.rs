@@ -92,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
     let (cfg_tx, mut cfg_rx) = mpsc::channel::<()>(4);
     let watcher = tokio::spawn(config_watch::run(config_path.clone(), cfg_tx));
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
+    let mut tip_ticker = tokio::time::interval(Duration::from_millis(250));
     // Outside GNOME there's no extension to say what has focus; on X11 the
     // daemon can see it itself.
     let (x11_tx, mut x11_rx) = mpsc::unbounded_channel::<focus_x11::Focus>();
@@ -143,6 +144,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             _ = ticker.tick() => app.tick(now_ms()),
+            _ = tip_ticker.tick() => app.tick_tips(now_ms()),
             Some(f) = x11_rx.recv() => app.set_focus(f.app_id, f.pid, now_ms()),
             Some(()) = cfg_rx.recv() => match Config::load(&config_path) {
                 Ok(config) => {

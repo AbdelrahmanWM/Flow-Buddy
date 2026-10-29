@@ -1141,7 +1141,10 @@ impl App {
             }
             return;
         }
-        self.holding.push((f, ctx, now_ms));
+        // Held from when the keys ended: a run that ends by a pause has
+        // waited long enough already.
+        let at = f.at_ms.min(now_ms);
+        self.holding.push((f, ctx, at));
     }
 
     fn pause_ms(&self) -> u64 {
@@ -1380,6 +1383,16 @@ impl App {
 
     /// Called about once a second: ends streaks that stopped without
     /// another key.
+    /// Runs that ended with a pause, and held findings that are due:
+    /// called more often than [`App::tick`], so a tip comes soon after you
+    /// stop.
+    pub fn tick_tips(&mut self, now_ms: u64) {
+        self.release(now_ms);
+        let events = self.engine.tick(self.resolved.kind, now_ms);
+        self.on_rule_events(&events, now_ms);
+        self.release(now_ms);
+    }
+
     pub fn tick(&mut self, now_ms: u64) {
         self.check_claude(now_ms);
         self.release_held(now_ms);
@@ -1410,9 +1423,7 @@ impl App {
         self.something_new(now_ms);
         self.answer_snippets(now_ms);
         self.roll_recording(now_ms);
-        self.release(now_ms);
-        let events = self.engine.tick(self.resolved.kind, now_ms);
-        self.on_rule_events(&events, now_ms);
+        self.tick_tips(now_ms);
         // A batch waits for a pause too, if you asked for that.
         let typing = self.wait_for_pause()
             && self

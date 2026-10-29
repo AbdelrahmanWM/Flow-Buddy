@@ -109,8 +109,11 @@ scripts/install.sh --with-udev    # install; --with-udev lets the active session
 Then log out and back in so GNOME loads the extension, and check:
 
 ```sh
-flowbuddy status          # or --watch, then switch windows
+flowbuddy doctor          # every piece, and how to fix what's missing
+flowbuddy status          # what it sees now; --watch, then switch windows
 ```
+
+To update, pull and run `scripts/install.sh` again: it restarts the daemon, and GNOME picks up the new extension at the next login. Restart VS Code and Vim too.
 
 `scripts/uninstall.sh` removes everything, and `--purge` also deletes your data.
 

@@ -14,7 +14,7 @@ import Clutter from 'gi://Clutter';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-import {toMarkup} from './markup.js';
+import {shortcutLabel, toMarkup} from './markup.js';
 import {Card} from './card.js';
 
 // Recent tips listed in the menu.
@@ -82,6 +82,8 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         });
 
         this._tip = new PopupMenu.PopupMenuItem('No tips yet', {reactive: false});
+        // Wrapped, so a long tip doesn't make the whole menu wide.
+        this._tip.label.add_style_class_name('flowbuddy-menu-tip');
         this._tip.label.clutter_text.line_wrap = true;
         this.menu.addMenuItem(this._tip);
 
@@ -90,6 +92,8 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._explain.visible = false;
         this.menu.addMenuItem(this._explain);
 
+        // The shortcut for each, so the menu teaches it.
+        this._settings = settings;
         this._keep = new PopupMenu.PopupMenuItem('Keep on screen');
         this._keep.connect('activate', () => this._toggleKeep());
         this._keep.visible = false;
@@ -104,9 +108,9 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._corner.visible = false;
         this.menu.addMenuItem(this._corner);
 
-        this._gotIt = this._action('Got it', 'dismiss');
+        this._gotIt = this._action(this._withShortcut('Got it', 'dismiss-tip'), 'dismiss');
         this._mute = this._action('Stop this tip', 'mute_rule');
-        this._notHelpful = this._action('Not helpful', 'false_positive');
+        this._notHelpful = this._action(this._withShortcut('Not helpful', 'tip-not-helpful'), 'false_positive');
         // On the daily lesson instead of "Not helpful".
         this._knowIt = this._action('I know this', 'know_it');
         this._another = this._action('Show me another', 'another');
@@ -191,9 +195,22 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         const kept = this._kept.shown;
         // Keep the tip in the menu, or swap the kept one for it.
         this._keep.visible = this._shownTip !== null && this._keptTip !== this._shownTip;
-        this._keep.label.text = kept ? 'Keep this one on screen instead' : 'Keep on screen';
+        this._keep.label.text = this._withShortcut(
+            kept ? 'Keep this one on screen instead' : 'Keep on screen', 'keep-tip');
         this._unkeep.visible = kept;
         this._corner.visible = kept && this._kept.position !== null;
+    }
+
+    // "Got it (Super+Alt+D)", from the shortcut set for it.
+    _withShortcut(label, key) {
+        let accel = '';
+        try {
+            accel = this._settings?.get_strv(key)[0] ?? '';
+        } catch {
+            // An older schema without that key: no shortcut to show.
+        }
+        const shown = shortcutLabel(accel);
+        return shown ? `${label}   ${shown}` : label;
     }
 
     _setExplanation(lines) {
@@ -201,6 +218,7 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._explain.setSubmenuShown(false);
         for (const line of lines) {
             const item = new PopupMenu.PopupMenuItem('', {reactive: false});
+            item.label.add_style_class_name('flowbuddy-menu-tip');
             item.label.clutter_text.line_wrap = true;
             item.label.clutter_text.set_markup(toMarkup(line));
             this._explain.menu.addMenuItem(item);

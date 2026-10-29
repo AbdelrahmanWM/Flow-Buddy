@@ -805,9 +805,10 @@ fn last_slow_text(last: &flowbuddy_core::ipc::LastSlow, now_ms: u64) -> String {
 }
 
 fn explain(keys: &str, insert: bool) {
-    let pieces = flowbuddy_core::glossary::explain_keys(keys, insert);
+    let pieces = flowbuddy_core::glossary::explain_typed(keys, insert);
     if pieces.is_empty() {
-        println!("Not sure what {keys} does.");
+        println!("Type some keys to explain: flowbuddy explain 'ci\"'");
+        return;
     }
     let width = pieces
         .iter()

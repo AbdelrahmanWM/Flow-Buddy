@@ -105,17 +105,129 @@ pub fn mark(cmd: &str) -> String {
 /// The pieces of one command such as `3dw`, `Ctrl-d×10` or `f<char>`, each
 /// with what it does. Unknown keys are left out.
 pub fn explain_keys(keys: &str, insert: bool) -> Vec<(String, &'static str)> {
+    pieces(keys, insert, false)
+}
+
+/// What `explain_keys` says of a key it doesn't know, when asked to keep
+/// those.
+pub const UNKNOWN: &str = "not sure what this does";
+
+/// Keys as someone types them to ask what they do: `<C-w>v`, `C-d`,
+/// `ct,`, `:%s/a/b/g`. Unlike [`explain_keys`], keys it doesn't know are
+/// kept, with [`UNKNOWN`].
+pub fn explain_typed(keys: &str, insert: bool) -> Vec<(String, &'static str)> {
+    let keys = ctrl_notation(keys.trim());
+    if let Some(m) = phrase(&keys) {
+        return vec![(keys, m)];
+    }
+    if keys.starts_with(':') {
+        return vec![(keys.clone(), ex(&keys))];
+    }
+    pieces(&keys, insert, true)
+}
+
+/// `<C-w>v`, `<c-w>v`, `C-w v`, `Ctrl+w v` → `Ctrl-w v`.
+fn ctrl_notation(keys: &str) -> String {
+    let chars: Vec<char> = keys.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let rest: String = chars[i..].iter().collect();
+        let lower = rest.to_ascii_lowercase();
+        let prefix = ["<c-", "ctrl-", "ctrl+", "c-"]
+            .into_iter()
+            .find(|p| lower.starts_with(p));
+        let at_start = i == 0 || chars[i - 1].is_whitespace() || chars[i - 1] == '>';
+        if let Some(p) = prefix
+            && (p == "<c-" || at_start)
+            && let Some(&k) = chars.get(i + p.len())
+            && k.is_ascii_graphic()
+        {
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+            out.push_str("Ctrl-");
+            // Ctrl takes letters as lower case, but Ctrl-P is VS Code's.
+            out.push(if p == "<c-" {
+                k.to_ascii_lowercase()
+            } else {
+                k
+            });
+            i += p.len() + 1;
+            if p == "<c-" && chars.get(i) == Some(&'>') {
+                i += 1;
+            }
+            if chars.get(i).is_some_and(|c| !c.is_whitespace()) {
+                out.push(' ');
+            }
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// An Ex command: known ones as a whole, else by its name after any range.
+fn ex(cmd: &str) -> &'static str {
+    if let Some(m) = whole(cmd, false) {
+        return m;
+    }
+    let body = cmd[1..].trim_start_matches(|c: char| {
+        c.is_ascii_digit()
+            || matches!(
+                c,
+                '%' | ',' | '.' | '$' | '\'' | '<' | '>' | '+' | '-' | ' '
+            )
+    });
+    let name: String = body
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect();
+    let rest = &body[name.len()..];
+    match name.as_str() {
+        "s" | "substitute" => {
+            if cmd.contains('%') {
+                "replace a pattern on every line (:%s/old/new/g)"
+            } else {
+                "replace a pattern (:s/old/new/), on this line or the range given"
+            }
+        }
+        "g" | "global" => "run a command on every line that matches (:g/pattern/d)",
+        "v" | "vglobal" => "run a command on every line that doesn't match",
+        "" if rest.is_empty() => "to that line",
+        _ => whole(&format!(":{name}"), false)
+            .unwrap_or("an Ex command: type it after :, Enter runs it"),
+    }
+}
+
+fn pieces(keys: &str, insert: bool, keep_unknown: bool) -> Vec<(String, &'static str)> {
     let mut out = Vec::new();
     if let Some(m) = phrase(keys) {
         out.push((keys.to_string(), m));
         return out;
     }
-    for word in keys.split_whitespace() {
-        if matches!(word, "then" | "or" | "…" | "and") {
+    let words: Vec<&str> = keys.split_whitespace().collect();
+    let mut skip = false;
+    for (n, &word) in words.iter().enumerate() {
+        if std::mem::take(&mut skip) || matches!(word, "then" | "or" | "…" | "and") {
+            continue;
+        }
+        // A chord and the key after it: `Ctrl-w v`.
+        if let Some(next) = words.get(n + 1)
+            && let pair = format!("{word} {next}")
+            && let Some(m) = phrase(&pair)
+        {
+            out.push((pair, m));
+            skip = true;
             continue;
         }
         // `Ctrl-d×10`: the count of presses is clear enough.
-        let word = word.split('×').next().unwrap_or(word).trim_end_matches(',');
+        let mut word = word.split('×').next().unwrap_or(word);
+        // A comma after a command in a tip's list; typed, it's a key.
+        if !keep_unknown {
+            word = word.trim_end_matches(',');
+        }
         if word.is_empty() {
             continue;
         }
@@ -135,7 +247,11 @@ pub fn explain_keys(keys: &str, insert: bool) -> Vec<(String, &'static str)> {
             out.push((word[digits..].to_string(), m));
             continue;
         }
-        parse(word, &mut out);
+        if keep_unknown && word.starts_with("Ctrl-") {
+            out.push((word.to_string(), UNKNOWN));
+            continue;
+        }
+        parse(word, &mut out, keep_unknown);
     }
     out
 }
@@ -415,7 +531,7 @@ fn single(c: char) -> Option<&'static str> {
 }
 
 /// Parse a run of Normal-mode keys: `3dw`, `di(`, `ma`, `}^`, `f<char>;`.
-fn parse(word: &str, out: &mut Vec<(String, &'static str)>) {
+fn parse(word: &str, out: &mut Vec<(String, &'static str)>, keep_unknown: bool) {
     let chars: Vec<char> = word.replace("<char>", "\u{0}").chars().collect();
     let piece = |s: &[char]| s.iter().collect::<String>().replace('\u{0}', "<char>");
     let mut i = 0;
@@ -544,11 +660,15 @@ fn parse(word: &str, out: &mut Vec<(String, &'static str)>) {
             if let Some(m) = two {
                 out.push((piece(&chars[i..i + 2]), m));
                 i += 2;
+                if matches!((c, n), ('g', 'U' | 'u' | '~' | 'q' | 'w') | ('z', 'f')) {
+                    i += object_after(&chars, i, out);
+                }
                 continue;
             }
         }
+        // `f<char>` in tips; a real character when typed: `ct,`.
         if let Some(m) = find(c)
-            && next == Some('\u{0}')
+            && next.is_some()
         {
             out.push((piece(&chars[i..i + 2]), m));
             i += 2;
@@ -557,18 +677,13 @@ fn parse(word: &str, out: &mut Vec<(String, &'static str)>) {
         if let Some(m) = operator(c) {
             out.push((piece(&chars[i..i + 1]), m));
             i += 1;
-            // A text object: i or a, then what it's around.
-            if let (Some(&k @ ('i' | 'a')), Some(&o)) = (chars.get(i), chars.get(i + 1))
-                && let Some(what) = object(o)
-            {
-                let m = if k == 'i' { inside(what) } else { around(what) };
-                out.push((piece(&chars[i..i + 2]), m));
-                i += 2;
-            }
+            i += object_after(&chars, i, out);
             continue;
         }
         if let Some(m) = motion(c).or_else(|| single(c)) {
             out.push((piece(&chars[i..i + 1]), m));
+        } else if keep_unknown {
+            out.push((piece(&chars[i..i + 1]), UNKNOWN));
         }
         i += 1;
         // Visual mode, then a text object to select (`vi(`).
@@ -583,6 +698,19 @@ fn parse(word: &str, out: &mut Vec<(String, &'static str)>) {
             i += 2;
         }
     }
+}
+
+/// A text object at `chars[i..]` (i or a, then what it's around), after an
+/// operator: pushed, and how many keys it took.
+fn object_after(chars: &[char], i: usize, out: &mut Vec<(String, &'static str)>) -> usize {
+    if let (Some(&k @ ('i' | 'a')), Some(&o)) = (chars.get(i), chars.get(i + 1))
+        && let Some(what) = object(o)
+    {
+        let m = if k == 'i' { inside(what) } else { around(what) };
+        out.push((chars[i..i + 2].iter().collect(), m));
+        return 2;
+    }
+    0
 }
 
 fn inside(what: &str) -> &'static str {
@@ -702,6 +830,45 @@ mod tests {
     fn plain_text() {
         assert_eq!(plain("Try `7j`, `}` or `Ctrl-d`."), "Try 7j, } or Ctrl-d.");
         assert_eq!(plain("Then `` `a `` jumps."), "Then `a jumps.");
+    }
+
+    fn typed(k: &str) -> Vec<(String, &'static str)> {
+        explain_typed(k, false)
+    }
+
+    #[test]
+    fn typed_keys() {
+        let p = |k: &str| typed(k).into_iter().map(|(p, _)| p).collect::<Vec<_>>();
+        assert_eq!(p("ct,"), ["c", "t,"]);
+        assert_eq!(p("gUiw"), ["gU", "iw"]);
+        assert_eq!(p("<C-w>v"), ["Ctrl-w v"]);
+        assert_eq!(p("C-w v"), ["Ctrl-w v"]);
+        assert_eq!(p("<C-d>"), ["Ctrl-d"]);
+        assert_eq!(p("<C-d>5j"), ["Ctrl-d", "5", "j"]);
+        assert_eq!(p("Ctrl+u"), ["Ctrl-u"]);
+        assert_eq!(p("3d2w"), ["3", "d", "2", "w"]);
+        assert_eq!(
+            typed(":%s/a/b/g")[0].1,
+            "replace a pattern on every line (:%s/old/new/g)"
+        );
+        assert_eq!(typed(":wq")[0].1, "save and quit");
+        assert_eq!(typed(":12")[0].1, "to that line");
+        assert_eq!(
+            typed(":colorscheme x")[0].1,
+            "an Ex command: type it after :, Enter runs it"
+        );
+        assert_eq!(
+            typed("xyz€")[2..],
+            [("z".into(), UNKNOWN), ("€".into(), UNKNOWN)]
+        );
+        assert_eq!(typed("<C-q>"), [("Ctrl-q".to_string(), UNKNOWN)]);
+        assert!(typed("").is_empty());
+    }
+
+    #[test]
+    fn tips_leave_unknown_keys_out() {
+        assert_eq!(keys("xz"), ["x"]);
+        assert_eq!(keys("f<char>"), ["f<char>"]);
     }
 
     #[test]

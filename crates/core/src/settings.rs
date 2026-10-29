@@ -645,6 +645,106 @@ pub fn more(key: &str) -> Option<String> {
     })
 }
 
+/// A starting point: a few ordinary settings, set together. Applying one
+/// only writes those settings; change any of them afterwards.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Profile {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub what: &'static str,
+    pub values: &'static [(&'static str, &'static str)],
+}
+
+pub static PROFILES: &[Profile] = &[
+    Profile {
+        id: "gentle",
+        name: "Gentle",
+        what: "One tip now and then, never while you're typing. A lesson a day, no challenges.",
+        values: &[
+            ("coaching.default_mode", "balanced"),
+            ("coaching.when", "pause"),
+            ("coaching.balanced_interval_minutes", "45"),
+            ("coaching.batch_size", "1"),
+            ("coaching.nudge_style", "bar"),
+            ("learn.daily", "true"),
+            ("learn.challenges", "false"),
+        ],
+    },
+    Profile {
+        id: "learning-fast",
+        name: "Learning fast",
+        what: "Tips as you work, a lesson and a challenge every day. The most coaching.",
+        values: &[
+            ("coaching.default_mode", "active"),
+            ("coaching.when", "now"),
+            ("coaching.cooldown_minutes", "10"),
+            ("coaching.hourly_cap", "8"),
+            ("coaching.nudge_style", "card"),
+            ("learn.daily", "true"),
+            ("learn.challenges", "true"),
+        ],
+    },
+    Profile {
+        id: "just-watching",
+        name: "Just watching",
+        what: "No tips while you work: counts and a summary at the end of the day.",
+        values: &[
+            ("coaching.default_mode", "passive"),
+            ("learn.daily", "false"),
+            ("learn.challenges", "false"),
+        ],
+    },
+    Profile {
+        id: "good-at-vim",
+        name: "Already good at Vim",
+        what: "Skips the basics; a few sharper tips after you pause, and a lesson a day on what's left.",
+        values: &[
+            ("coaching.default_mode", "balanced"),
+            ("coaching.when", "pause"),
+            ("coaching.batch_size", "1"),
+            ("learn.level", "advanced"),
+            ("learn.daily", "true"),
+            ("learn.challenges", "true"),
+        ],
+    },
+];
+
+pub fn profile(id: &str) -> Option<&'static Profile> {
+    PROFILES.iter().find(|p| p.id == id)
+}
+
+/// Each setting `profile` would change in `config`: (key, now, then).
+pub fn profile_changes(config: &Config, profile: &Profile) -> Vec<(&'static str, String, String)> {
+    profile
+        .values
+        .iter()
+        .filter_map(|(key, want)| {
+            let now = show(&value(config, key));
+            let now_or_default = if now.is_empty() {
+                show(&value(&Config::default(), key))
+            } else {
+                now.clone()
+            };
+            (now_or_default != *want).then(|| (*key, now, (*want).to_string()))
+        })
+        .collect()
+}
+
+/// The profile your settings match, if any.
+pub fn current_profile(config: &Config) -> Option<&'static Profile> {
+    PROFILES
+        .iter()
+        .find(|p| profile_changes(config, p).is_empty())
+}
+
+/// The config file's text with `profile` applied.
+pub fn apply_profile(text: &str, profile: &Profile) -> Result<String, String> {
+    profile
+        .values
+        .iter()
+        .try_fold(text.to_string(), |t, (key, v)| set(&t, key, v))
+}
+
 /// Per-rule settings: `rules.<id>.enabled` and `rules.<id>.threshold`.
 pub const RULE_GROUP: &str = "Rules";
 
@@ -911,6 +1011,29 @@ mod tests {
                 .unwrap()
                 .contains("repeats")
         );
+    }
+
+    #[test]
+    fn profiles_are_ordinary_settings() {
+        for p in PROFILES {
+            let text = apply_profile("# mine\n", p).unwrap_or_else(|e| panic!("{}: {e}", p.id));
+            assert!(text.starts_with("# mine\n"));
+            let c: Config = toml::from_str(&text).unwrap();
+            assert_eq!(current_profile(&c).map(|p| p.id), Some(p.id), "{}", p.id);
+            assert!(profile_changes(&c, p).is_empty());
+        }
+        let gentle = profile("gentle").unwrap();
+        let changes = profile_changes(&Config::default(), gentle);
+        assert!(
+            changes
+                .iter()
+                .any(|(k, now, then)| *k == "coaching.when" && now == "now" && then == "pause")
+        );
+        assert!(
+            !changes.iter().any(|(k, _, _)| *k == "learn.daily"),
+            "already the default"
+        );
+        assert_eq!(current_profile(&Config::default()), None);
     }
 
     #[test]

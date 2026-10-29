@@ -63,6 +63,12 @@ check('ask before turning text on', [m.needsConfirm(shapes, true), m.needsConfir
     [true, false, false]);
 check('steps', [m.spinSteps(holdout).step, m.spinSteps(jk).digits], [0.05, 0]);
 
+// Profiles.
+check('profile changes', m.profileChanges(
+    {changes: [{key: 'coaching.quiet_hours', now: '', then: '22:00-08:00'}, {key: 'learn.daily', now: 'true', then: 'false'}]},
+    [quiet, daily]),
+['Quiet hours: default → 22:00-08:00', 'Something new every day: true → false']);
+
 // Tool results.
 check('doctor', m.doctorLines({checks: [{ok: true, what: 'daemon'}, {ok: false, what: 'plugin', fix: 'install it'}]}),
     ['✓ daemon', '✗ plugin\n    install it']);

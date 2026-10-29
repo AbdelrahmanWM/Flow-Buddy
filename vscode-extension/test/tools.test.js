@@ -74,7 +74,7 @@ const run = async args => {
 };
 t.register(vscode, run, []);
 check('commands', Object.keys(commands).sort(),
-    ['flowbuddy.checkSetup', 'flowbuddy.progress', 'flowbuddy.recentTips', 'flowbuddy.settings', 'flowbuddy.today']);
+    ['flowbuddy.checkSetup', 'flowbuddy.profile', 'flowbuddy.progress', 'flowbuddy.recentTips', 'flowbuddy.settings', 'flowbuddy.today']);
 
 let done = false;
 (async () => {

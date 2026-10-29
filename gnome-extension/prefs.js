@@ -48,25 +48,40 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
         window.set_search_enabled(true);
         this._cli = findCli();
         if (!this._cli) {
-            window.add(this._missingPage('Flow Buddy isn\'t installed',
+            this._pages = [];
+            this._addPage(this._missingPage('Flow Buddy isn\'t installed',
                 'The settings need the flowbuddy command. Install it with scripts/install.sh from the Flow Buddy folder, then open this window again.'));
             return;
         }
-        let settings;
+        await this._load();
+    }
+
+    // Read the settings and build the pages; again after a profile.
+    async _load() {
+        const window = this._window;
+        for (const page of this._pages ?? [])
+            window.remove(page);
+        this._pages = [];
+        let list;
         try {
             const r = await run(this._cli, ['config', 'list', '--json']);
             if (!r.ok)
                 throw new Error(r.err.trim() || 'flowbuddy config list failed');
-            settings = JSON.parse(r.out).settings;
+            list = JSON.parse(r.out);
         } catch (e) {
-            window.add(this._missingPage('Couldn\'t read the settings', String(e.message ?? e)));
+            this._addPage(this._missingPage('Couldn\'t read the settings', String(e.message ?? e)));
             return;
         }
-        const {basic, groups, rules} = model.arrange(settings);
-        window.add(this._generalPage(basic));
-        window.add(this._advancedPage(groups));
-        window.add(this._rulesPage(rules));
-        window.add(this._toolsPage());
+        const {basic, groups, rules} = model.arrange(list.settings);
+        this._addPage(this._generalPage(basic, list.profiles ?? [], list.settings));
+        this._addPage(this._advancedPage(groups));
+        this._addPage(this._rulesPage(rules));
+        this._addPage(this._toolsPage());
+    }
+
+    _addPage(page) {
+        this._window.add(page);
+        this._pages.push(page);
     }
 
     _missingPage(title, text) {
@@ -80,8 +95,10 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
         this._window.add_toast(new Adw.Toast({title: text, timeout: 4}));
     }
 
-    _generalPage(basic) {
+    _generalPage(basic, profiles, settings) {
         const page = new Adw.PreferencesPage({title: 'General', icon_name: 'preferences-system-symbolic'});
+        if (profiles.length)
+            page.add(this._profilesGroup(profiles, settings));
         const group = new Adw.PreferencesGroup({
             title: 'The basics',
             description: 'Changes apply right away. Everything else is under Advanced.',
@@ -90,6 +107,47 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
             group.add(this._row(s));
         page.add(group);
         return page;
+    }
+
+    // Profiles: ordinary settings, set together. The one your settings
+    // match says so; none matching means they're your own.
+    _profilesGroup(profiles, settings) {
+        const inUse = profiles.find(p => p.current);
+        const group = new Adw.PreferencesGroup({
+            title: 'Start from a profile',
+            description: inUse
+                ? `Your settings match ${inUse.name}. Change any of them below: a profile only sets them.`
+                : 'Your settings are your own. A profile sets a few of them for a way of working; change any afterwards.',
+        });
+        for (const p of profiles) {
+            const row = new Adw.ActionRow({title: p.name, subtitle: p.what});
+            if (p.current) {
+                row.add_suffix(new Gtk.Label({label: 'In use', valign: Gtk.Align.CENTER, css_classes: ['dim-label']}));
+            } else {
+                const use = new Gtk.Button({label: 'Use…', valign: Gtk.Align.CENTER});
+                use.connect('clicked', () => this._useProfile(p, settings));
+                row.add_suffix(use);
+                row.activatable_widget = use;
+            }
+            group.add(row);
+        }
+        return group;
+    }
+
+    async _useProfile(profile, settings) {
+        const changes = model.profileChanges(profile, settings);
+        if (!await this._confirm(`Use ${profile.name}?`,
+            `This changes:\n\n${changes.join('\n')}\n\nYou can change any of them afterwards.`, 'Use it'))
+            return;
+        try {
+            const r = await run(this._cli, ['config', 'profile', profile.id]);
+            if (!r.ok)
+                throw new Error(r.err.trim());
+            this._toast(`${profile.name} it is.`);
+            await this._load();
+        } catch (e) {
+            this._toast(`Couldn't: ${e.message ?? e}`);
+        }
     }
 
     _advancedPage(groups) {

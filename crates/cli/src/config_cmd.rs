@@ -35,9 +35,19 @@ pub enum ConfigCmd {
     },
     /// Open the config file in $EDITOR.
     Edit,
+    /// Start from a profile: with no name, list them; with one, show what
+    /// it changes and apply it (`flowbuddy config profile gentle`).
+    Profile {
+        name: Option<String>,
+        /// Only show what it would change.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
-pub fn run(cmd: ConfigCmd, path: &Path) -> anyhow::Result<()> {
+/// Run `cmd`; `set_mode` switches the running daemon's mode (a profile
+/// changes it now, not only at the next start).
+pub fn run(cmd: ConfigCmd, path: &Path, set_mode: &dyn Fn(&str)) -> anyhow::Result<()> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -108,6 +118,53 @@ pub fn run(cmd: ConfigCmd, path: &Path) -> anyhow::Result<()> {
                 _ => anyhow::bail!("name a setting, or --all"),
             };
             write(path, &out)?;
+        }
+        ConfigCmd::Profile { name: None, .. } => {
+            let current = settings::current_profile(&config).map(|p| p.id);
+            for p in settings::PROFILES {
+                let mark = if Some(p.id) == current {
+                    "  (yours)"
+                } else {
+                    ""
+                };
+                println!("{:<14} {}{mark}\n               {}", p.id, p.name, p.what);
+            }
+            if current.is_none() {
+                println!("\nYour settings match none of them: they're your own.");
+            }
+            println!("\nSee what one changes: flowbuddy config profile <name> --dry-run");
+        }
+        ConfigCmd::Profile {
+            name: Some(name),
+            dry_run,
+        } => {
+            let profile = settings::profile(&name).ok_or_else(|| {
+                let ids: Vec<&str> = settings::PROFILES.iter().map(|p| p.id).collect();
+                anyhow::anyhow!("no profile called {name}: {}", ids.join(", "))
+            })?;
+            let changes = settings::profile_changes(&config, profile);
+            if changes.is_empty() {
+                println!("Your settings already match {}.", profile.name);
+                return Ok(());
+            }
+            println!("{} changes:", profile.name);
+            for (key, now, then) in &changes {
+                let now = if now.is_empty() { "(not set)" } else { now };
+                println!("  {key:<36} {now} → {then}");
+            }
+            if dry_run {
+                return Ok(());
+            }
+            let out = settings::apply_profile(&text, profile).map_err(anyhow::Error::msg)?;
+            write(path, &out)?;
+            if let Some((_, mode)) = profile
+                .values
+                .iter()
+                .find(|(k, _)| *k == "coaching.default_mode")
+            {
+                set_mode(mode);
+            }
+            println!("Done. Change any of these as you like: they're ordinary settings.");
         }
         ConfigCmd::Edit => {
             if !path.exists() {
@@ -188,7 +245,23 @@ pub fn list_json(config: &Config) -> serde_json::Value {
             }
         }
     }
-    json!({ "version": 1, "settings": out })
+    let current = settings::current_profile(config).map(|p| p.id);
+    let profiles: Vec<serde_json::Value> = settings::PROFILES
+        .iter()
+        .map(|p| {
+            json!({
+                "id": p.id,
+                "name": p.name,
+                "what": p.what,
+                "current": Some(p.id) == current,
+                "changes": settings::profile_changes(config, p)
+                    .into_iter()
+                    .map(|(key, now, then)| json!({"key": key, "now": now, "then": then}))
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    json!({ "version": 1, "settings": out, "profiles": profiles })
 }
 
 fn list_text(config: &Config, basic_only: bool) -> String {
@@ -272,6 +345,7 @@ mod tests {
                 value: "0".into(),
             },
             &path,
+            &|_| {},
         )
         .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -286,6 +360,7 @@ mod tests {
                     value: "lots".into(),
                 },
                 &path,
+                &|_| {},
             )
             .is_err()
         );
@@ -295,6 +370,7 @@ mod tests {
                 all: true,
             },
             &path,
+            &|_| {},
         )
         .unwrap();
         assert!(!std::fs::read_to_string(&path).unwrap().contains("holdout"));

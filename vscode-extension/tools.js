@@ -146,6 +146,25 @@ function register(vscode, run, subscriptions) {
             await change(pick.setting);
     }
 
+    async function profile() {
+        const r = await run(['config', 'list', '--json']);
+        if (!r.ok)
+            throw new Error(r.err.trim());
+        const profiles = JSON.parse(r.out).profiles ?? [];
+        const pick = await vscode.window.showQuickPick(profiles.map(p => ({
+            label: p.name,
+            description: p.current ? 'in use' : '',
+            detail: p.what,
+            profile: p,
+        })), {title: 'Flow Buddy: start from a profile'});
+        if (!pick || pick.profile.current)
+            return;
+        const changes = pick.profile.changes.map(c => `${c.key}: ${c.now || 'default'} → ${c.then}`).join('\n');
+        const yes = await vscode.window.showInformationMessage(`Use ${pick.label}? It changes:\n${changes}`, {modal: true}, 'Use it');
+        if (yes === 'Use it')
+            await apply({notice: null}, ['config', 'profile', pick.profile.id]);
+    }
+
     const tool = (title, args, toText) => async () => {
         const r = await run(args);
         // `doctor` fails when a check does, and still says which.
@@ -154,6 +173,7 @@ function register(vscode, run, subscriptions) {
 
     const commands = {
         'flowbuddy.settings': settings,
+        'flowbuddy.profile': profile,
         'flowbuddy.checkSetup': tool('Check setup', ['doctor', '--json'], doctorText),
         'flowbuddy.progress': tool('Progress', ['learn', '--json'], progressText),
         'flowbuddy.today': tool('Today', ['summary', '--json'], j => j.nothing_yet ? 'Nothing recorded yet.' : j.text),

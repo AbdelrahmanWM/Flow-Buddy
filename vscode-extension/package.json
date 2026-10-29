@@ -30,6 +30,11 @@
         "category": "Flow Buddy"
       },
       {
+        "command": "flowbuddy.profile",
+        "title": "Use a profile\u2026",
+        "category": "Flow Buddy"
+      },
+      {
         "command": "flowbuddy.checkSetup",
         "title": "Check setup",
         "category": "Flow Buddy"

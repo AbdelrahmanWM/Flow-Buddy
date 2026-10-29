@@ -677,7 +677,23 @@ fn parse(word: &str, out: &mut Vec<(String, &'static str)>, keep_unknown: bool) 
         if let Some(m) = operator(c) {
             out.push((piece(&chars[i..i + 1]), m));
             i += 1;
-            i += object_after(&chars, i, out);
+            let took = object_after(&chars, i, out);
+            // `ci` on its own: the start of a text object.
+            if took == 0
+                && i + 1 == chars.len()
+                && let Some(&k @ ('i' | 'a')) = chars.get(i)
+            {
+                out.push((
+                    k.to_string(),
+                    if k == 'i' {
+                        "inside: then say what (w a word, ( brackets, \" quotes…)"
+                    } else {
+                        "around: then say what (w a word, ( brackets, \" quotes…)"
+                    },
+                ));
+                i += 1;
+            }
+            i += took;
             continue;
         }
         if let Some(m) = motion(c).or_else(|| single(c)) {
@@ -847,6 +863,7 @@ mod tests {
         assert_eq!(p("<C-d>5j"), ["Ctrl-d", "5", "j"]);
         assert_eq!(p("Ctrl+u"), ["Ctrl-u"]);
         assert_eq!(p("3d2w"), ["3", "d", "2", "w"]);
+        assert!(typed("ci")[1].1.starts_with("inside"));
         assert_eq!(
             typed(":%s/a/b/g")[0].1,
             "replace a pattern on every line (:%s/old/new/g)"

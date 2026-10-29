@@ -1596,6 +1596,11 @@ impl App {
             .flatten()
     }
 
+    /// The key options GNOME last reported.
+    pub fn reported_options(&self) -> Option<Vec<String>> {
+        self.xkb_options.clone()
+    }
+
     /// The layout GNOME last reported.
     pub fn layout(&self) -> Option<(String, String)> {
         self.layout.clone()

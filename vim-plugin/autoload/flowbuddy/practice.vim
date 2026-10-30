@@ -11,13 +11,13 @@ let s:keys = 0
 let s:started = []
 let s:results = []
 let s:out = ''
-let s:panel = -1
 let s:loading = 0
 let s:done = 0
 let s:quit = 1
 " With :FlowBuddyPractice: the flowbuddy command and the drill's name, to
 " record the result when it ends.
 let s:record = []
+let s:buf = -1
 
 " Keys that read one more character.
 let s:TAKES_CHAR = ['f', 't', 'F', 'T', 'r', 'm', "'", '`', '"', 'q', '@']
@@ -53,6 +53,10 @@ endfunction
 " Run the drill in `drill_path`; results go to `out_path` when it ends,
 " and then Vim quits (`flowbuddy practice` started it for this), unless
 " the third argument is 0.
+"
+" The round's instructions are in a panel at the top of the screen; the
+" goal is marked in the drill with a bright bar and a ▶ in the sign
+" column, so it shows on any colour scheme, blank lines too.
 function! flowbuddy#practice#run(drill_path, out_path, ...) abort
   let s:quit = get(a:000, 0, 1)
   let s:record = get(a:000, 1, [])
@@ -61,7 +65,9 @@ function! flowbuddy#practice#run(drill_path, out_path, ...) abort
   let s:results = []
   let s:round = 0
   let s:done = 0
-  " Tips about the drill's keys would only get in the way.
+  " Tips about the drill's keys would only get in the way: none show
+  " while it runs (see flowbuddy#show_tip), and none are coached.
+  let g:flowbuddy_practising = 1
   if exists('*flowbuddy#on_focus')
     call flowbuddy#on_focus(0)
   endif
@@ -71,46 +77,79 @@ function! flowbuddy#practice#run(drill_path, out_path, ...) abort
   else
     silent enew
   endif
-  setlocal buftype=nofile bufhidden=wipe noswapfile nolist nowrap nospell
-  setlocal number
+  setlocal buftype=nofile bufhidden=wipe noswapfile nolist nowrap nospell nobuflisted
+  setlocal number signcolumn=yes
   let &l:relativenumber = get(s:drill, 'relative_numbers', v:false) is v:true
   silent! file [Flow\ Buddy\ practice]
-  highlight default link FlowBuddyTarget Search
+  let s:buf = bufnr()
+  call s:colours()
   call s:map_keys()
   augroup flowbuddy_practice
     autocmd!
     autocmd CursorMoved,TextChanged <buffer> call s:check()
+    autocmd BufWipeout <buffer> call s:abandoned()
     autocmd VimLeavePre * call s:finish(1)
+    autocmd ColorScheme * call s:colours()
   augroup END
   call s:load()
+endfunction
+
+function! s:colours() abort
+  highlight FlowBuddyGoal ctermfg=16 ctermbg=220 cterm=bold guifg=#000000 guibg=#f6d32d gui=bold
+  highlight FlowBuddyDone ctermfg=16 ctermbg=114 cterm=bold guifg=#000000 guibg=#8ff0a4 gui=bold
+  highlight default link FlowBuddyPanelTitle Title
+  call sign_define('FlowBuddyGoal', {'text': '▶', 'texthl': 'FlowBuddyGoal', 'linehl': 'FlowBuddyGoal'})
+  call sign_define('FlowBuddySpot', {'text': '▶', 'texthl': 'FlowBuddyGoal'})
+endfunction
+
+" What the panel says for round `r`.
+function! flowbuddy#practice#instructions(drill, round) abort
+  let r = a:drill.rounds[a:round]
+  let lines = [printf('%s · round %d of %d', a:drill.title, a:round + 1, len(a:drill.rounds))]
+  if has_key(r.goal, 'text')
+    let lines += [r.ask . ' (marked ▶ in yellow), so it reads:', '    ' . join(r.goal.text, ' / ')]
+  else
+    let lines += [r.ask . ' (marked ▶ in yellow).']
+  endif
+  if a:round == 0
+    let lines += flowbuddy#wrap(a:drill.about, max([40, &columns - 4]))
+  endif
+  return lines + [':q stops; the rounds done are kept.']
 endfunction
 
 function! s:load() abort
   let r = s:drill.rounds[s:round]
   let s:loading = 1
-  silent call deletebufline('%', 1, '$')
-  call setline(1, r.lines)
+  silent call deletebufline(s:buf, 1, '$')
+  call setbufline(s:buf, 1, r.lines)
   call clearmatches()
+  call sign_unplace('flowbuddy_practice')
   let [ml, mc, mlen] = r.mark
   if mlen == 0
-    call matchaddpos('FlowBuddyTarget', [ml])
+    call sign_place(0, 'flowbuddy_practice', 'FlowBuddyGoal', s:buf, {'lnum': ml})
   else
-    call matchaddpos('FlowBuddyTarget', [[ml, mc, mlen]])
+    call matchaddpos('FlowBuddyGoal', [[ml, mc, mlen]])
+    call sign_place(0, 'flowbuddy_practice', 'FlowBuddySpot', s:buf, {'lnum': ml})
   endif
-  call cursor(r.cursor[0], r.cursor[1])
-  let lines = [printf('%s: round %d of %d', s:drill.title, s:round + 1, len(s:drill.rounds)), r.ask]
-  if type(r.goal) == v:t_dict && has_key(r.goal, 'text')
-    let lines += ['It should read:', '  ' . join(r.goal.text, ' / ')]
-  endif
-  if s:round == 0
-    let lines += [''] + flowbuddy#wrap(s:drill.about, 56)
-  endif
-  let lines += ['', ':q to stop']
-  call s:show(lines)
+  call s:panel(flowbuddy#practice#instructions(s:drill, s:round))
+  " Where you start and the goal both on screen, the goal never hidden.
+  call winrestview({'topline': flowbuddy#practice#topline(r.cursor[0], ml, winheight(0)),
+        \ 'lnum': r.cursor[0], 'col': r.cursor[1] - 1, 'curswant': r.cursor[1] - 1})
   let s:keys = 0
   let s:started = reltime()
   " The setline above fires TextChanged later; it isn't a move.
   call timer_start(0, {-> s:loaded()})
+endfunction
+
+" The first line to show, in a window `height` tall, so lines `a` and `b`
+" both fit with a line or two around them.
+function! flowbuddy#practice#topline(a, b, height) abort
+  let [top, bot] = [min([a:a, a:b]), max([a:a, a:b])]
+  let span = bot - top + 1
+  if span >= a:height
+    return max([1, bot - a:height + 2])
+  endif
+  return max([1, top - (a:height - span) / 2])
 endfunction
 
 function! s:loaded() abort
@@ -131,7 +170,7 @@ function! flowbuddy#practice#check() abort
 endfunction
 
 function! s:check() abort
-  if s:loading || s:done || empty(s:drill)
+  if s:loading || s:done || empty(s:drill) || bufnr() != s:buf
     return
   endif
   let r = s:drill.rounds[s:round]
@@ -147,18 +186,28 @@ function! s:check() abort
   endif
   " A moment to see it worked, with the fewest keys if you used more.
   let s:loading = 1
-  let msg = s:keys <= r.par ? printf('Done in %d: the fewest.', s:keys)
-        \ : printf('Done in %d keys; %s does it in %d.', s:keys, r.best, r.par)
-  call s:show([msg])
-  call timer_start(900, {-> s:load()})
+  call sign_unplace('flowbuddy_practice')
+  call clearmatches()
+  let msg = s:keys <= r.par ? printf('✓ %d keys: the fewest.', s:keys)
+        \ : printf('✓ %d keys. %s does it in %d.', s:keys, r.best, r.par)
+  call s:panel([msg, 'Next round…'])
+  call timer_start(1200, {-> s:load()})
 endfunction
 
-" Write the results; `leaving`: Vim is quitting (stopped early, or done).
+" The drill buffer went away (:q, :bd): keep what was done.
+function! s:abandoned() abort
+  call s:finish(1)
+  call s:panel_close()
+endfunction
+
+" Write the results; `leaving`: the drill or Vim is going away.
 function! s:finish(leaving) abort
   if s:done
     return
   endif
   let s:done = 1
+  unlet! g:flowbuddy_practising
+  call sign_unplace('flowbuddy_practice')
   " JSON booleans, not 0 and 1.
   let stopped = s:round < len(get(s:drill, 'rounds', [])) ? v:true : v:false
   call writefile([json_encode({'rounds': s:results, 'stopped': stopped})], s:out)
@@ -170,32 +219,55 @@ function! s:finish(leaving) abort
     let report = systemlist(s:record[0] . ' practice ' . s:record[1] . ' --record ' . shellescape(s:out))
     call delete(s:out)
     let s:record = []
-    if !a:leaving
-      call s:show(report + ['', ':bd closes the drill'])
-      call timer_start(15000, {-> s:close_panel()})
+    if a:leaving
+      echo get(report, 0, '')
+    else
+      call s:panel(report + ['', ':bd closes the drill.'])
     endif
     return
   endif
   if !a:leaving
-    call s:show(s:quit ? ['All done.', 'Closing…'] : ['All done.'])
+    call s:panel(s:quit ? ['All done. Closing…'] : ['All done.'])
     if s:quit
       call timer_start(700, {-> execute('qa!')})
     endif
   endif
 endfunction
 
-function! s:close_panel() abort
-  if s:panel == -1
-    return
+" The panel at the top: a window of its own, as tall as what it says.
+let s:panel_buf = -1
+
+function! s:panel(lines) abort
+  let back = win_getid()
+  if s:panel_buf == -1 || bufwinid(s:panel_buf) == -1
+    silent topleft new
+    setlocal buftype=nofile bufhidden=wipe noswapfile nobuflisted nonumber norelativenumber
+    setlocal nowrap nolist nocursorline winfixheight signcolumn=no
+    silent! file [Flow\ Buddy\ drill]
+    syntax match FlowBuddyPanelTitle /\%1l.*/
+    syntax match FlowBuddyDone /^✓.*/
+    syntax match FlowBuddyGoal /▶/
+    let s:panel_buf = bufnr()
   endif
-  if has('nvim')
-    if nvim_win_is_valid(s:panel)
-      call nvim_win_close(s:panel, v:true)
-    endif
-  else
-    call popup_close(s:panel)
+  call win_gotoid(back)
+  call setbufvar(s:panel_buf, '&modifiable', 1)
+  silent call deletebufline(s:panel_buf, 1, '$')
+  call setbufline(s:panel_buf, 1, a:lines)
+  call setbufvar(s:panel_buf, '&modifiable', 0)
+  call win_execute(bufwinid(s:panel_buf), 'resize ' . len(a:lines))
+endfunction
+
+function! s:panel_close() abort
+  let win = bufwinid(s:panel_buf)
+  if win != -1 && winnr('$') > 1
+    call win_execute(win, 'close')
   endif
-  let s:panel = -1
+  let s:panel_buf = -1
+endfunction
+
+" What the panel says now, for the tests.
+function! flowbuddy#practice#panel() abort
+  return s:panel_buf == -1 ? [] : getbufline(s:panel_buf, 1, '$')
 endfunction
 
 " The flowbuddy command: on the PATH, or where the installer puts it.
@@ -253,27 +325,6 @@ function! flowbuddy#practice#map() abort
   highlight default link FlowBuddyLearning Identifier
   highlight default link FlowBuddyReady Title
   highlight default link FlowBuddyLater Comment
-endfunction
-
-" A small window at the top right with the round's instructions.
-function! s:show(lines) abort
-  if has('nvim')
-    if s:panel != -1 && nvim_win_is_valid(s:panel)
-      call nvim_win_close(s:panel, v:true)
-    endif
-    let buf = nvim_create_buf(v:false, v:true)
-    call nvim_buf_set_lines(buf, 0, -1, v:false, a:lines)
-    let width = max(map(copy(a:lines), 'strdisplaywidth(v:val)')) + 1
-    let s:panel = nvim_open_win(buf, v:false, {'relative': 'editor', 'anchor': 'NE',
-          \ 'row': 0, 'col': &columns, 'width': width, 'height': len(a:lines),
-          \ 'style': 'minimal', 'border': 'rounded', 'focusable': v:false, 'zindex': 250})
-  else
-    if s:panel != -1
-      call popup_close(s:panel)
-    endif
-    let s:panel = popup_create(a:lines, {'line': 1, 'col': &columns, 'pos': 'topright',
-          \ 'highlight': 'Pmenu', 'border': [], 'padding': [0, 1, 0, 1], 'zindex': 250})
-  endif
 endfunction
 
 " For the tests.

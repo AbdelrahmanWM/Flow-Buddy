@@ -229,6 +229,10 @@ function! flowbuddy#show_tip(msg) abort
   if !flowbuddy#shows_tips() || type(get(a:msg, 'nudge_id', 0)) != v:t_string
     return
   endif
+  " Not over a practice drill.
+  if get(g:, 'flowbuddy_practising', 0)
+    return
+  endif
   call s:close_tip('seen')
   let width = max([20, min([60, &columns - 6])])
   let lines = flowbuddy#tip_lines(a:msg, width)

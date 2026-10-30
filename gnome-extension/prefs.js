@@ -363,6 +363,14 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
 
     _toolsPage() {
         const page = new Adw.PreferencesPage({title: 'Tools', icon_name: 'utilities-terminal-symbolic'});
+        const start = new Adw.PreferencesGroup({
+            title: 'New here?',
+            description: 'How Flow Buddy works, in seven short parts, in a terminal.',
+        });
+        start.add(this._toolRow('Tour', 'What it watches and keeps, a sample tip and how to answer it, the settings that matter, and the learning tools',
+            'Start', () => this._inTerminal('tour')));
+        page.add(start);
+
         const look = new Adw.PreferencesGroup({
             title: 'See how you\'re doing',
             description: 'The same as the terminal\'s flowbuddy commands, shown here.',
@@ -388,7 +396,7 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
             description: 'A two-minute drill on your weakest habit, in Vim. In Vim itself: :FlowBuddyPractice.',
         });
         practise.add(this._toolRow('Practice', 'Rounds like "go to the marked line" or "empty the brackets", in as few keys as you can',
-            'Start', () => this._practise()));
+            'Start', () => this._inTerminal('practice')));
         page.add(practise);
 
         const data = new Adw.PreferencesGroup({
@@ -437,11 +445,12 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
         dialog.present(this._window);
     }
 
-    // `flowbuddy practice` in a terminal: the drill runs in Vim.
-    _practise() {
-        const argv = model.inTerminal([this._cli, 'practice'], name => GLib.find_program_in_path(name));
+    // `flowbuddy practice` (or another command) in a terminal: the drill
+    // runs in Vim, the tour asks questions.
+    _inTerminal(command) {
+        const argv = model.inTerminal([this._cli, command], name => GLib.find_program_in_path(name));
         if (!argv) {
-            this._toast('No terminal found: run flowbuddy practice in one');
+            this._toast(`No terminal found: run flowbuddy ${command} in one`);
             return;
         }
         try {

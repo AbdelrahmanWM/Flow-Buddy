@@ -21,6 +21,7 @@ command! FlowBuddyGotIt call flowbuddy#respond('dismiss')
 command! FlowBuddyNotHelpful call flowbuddy#respond('false_positive')
 command! -nargs=? -complete=customlist,s:drills FlowBuddyPractice call flowbuddy#practice#start(<f-args>)
 command! FlowBuddyMap call flowbuddy#practice#map()
+command! FlowBuddyTour call flowbuddy#practice#tour()
 
 function! s:drills(lead, ...) abort
   return filter(['vertical', 'horizontal', 'delete', 'inside'], 'v:val =~# "^" . a:lead')

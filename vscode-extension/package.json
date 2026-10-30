@@ -25,13 +25,18 @@
   "contributes": {
     "commands": [
       {
+        "command": "flowbuddy.tour",
+        "title": "Tour: how Flow Buddy works",
+        "category": "Flow Buddy"
+      },
+      {
         "command": "flowbuddy.settings",
-        "title": "Settings\u2026",
+        "title": "Settings…",
         "category": "Flow Buddy"
       },
       {
         "command": "flowbuddy.profile",
-        "title": "Use a profile\u2026",
+        "title": "Use a profile…",
         "category": "Flow Buddy"
       },
       {
@@ -56,7 +61,7 @@
       },
       {
         "command": "flowbuddy.practice",
-        "title": "Practice (a two-minute drill in Vim)",
+        "title": "Practice (a two-minute drill in Vim: pick one)",
         "category": "Flow Buddy"
       },
       {
@@ -94,6 +99,71 @@
           "description": "How Flow Buddy's tips show in VS Code."
         }
       }
-    }
+    },
+    "walkthroughs": [
+      {
+        "id": "start",
+        "title": "Get started with Flow Buddy",
+        "description": "A Vim coach: tips for shorter ways to do what you just did, a daily lesson, and drills.",
+        "steps": [
+          {
+            "id": "tour",
+            "title": "Take the tour",
+            "description": "How Flow Buddy works in seven short parts, in a terminal: what it watches and keeps, a sample tip, and the settings that matter.\n[Start the tour](command:flowbuddy.tour)",
+            "media": {
+              "markdown": "walkthrough/tour.md"
+            },
+            "completionEvents": [
+              "onCommand:flowbuddy.tour"
+            ]
+          },
+          {
+            "id": "check",
+            "title": "Check that it's running",
+            "description": "Every piece, and how to fix what's missing.\n[Check setup](command:flowbuddy.checkSetup)",
+            "media": {
+              "markdown": "walkthrough/check.md"
+            },
+            "completionEvents": [
+              "onCommand:flowbuddy.checkSetup"
+            ]
+          },
+          {
+            "id": "tips",
+            "title": "Choose where tips show",
+            "description": "On Flow Buddy's desktop card (the default), as a VS Code notification, or only in the status bar.\n[Open the setting](command:workbench.action.openSettings?%5B%22flowbuddy.tips%22%5D)",
+            "media": {
+              "markdown": "walkthrough/tips.md"
+            },
+            "completionEvents": [
+              "onSettingChanged:flowbuddy.tips"
+            ]
+          },
+          {
+            "id": "settings",
+            "title": "Set how often",
+            "description": "How often tips come, your Vim level, an AI for coaching, or a ready-made profile.\n[Settings](command:flowbuddy.settings)\n[Profiles](command:flowbuddy.profile)",
+            "media": {
+              "markdown": "walkthrough/settings.md"
+            },
+            "completionEvents": [
+              "onCommand:flowbuddy.settings",
+              "onCommand:flowbuddy.profile"
+            ]
+          },
+          {
+            "id": "practice",
+            "title": "Try a drill",
+            "description": "Two minutes in Vim, counting your keys against the fewest that would do.\n[Practice](command:flowbuddy.practice)\n[Skill map](command:flowbuddy.skillMap)",
+            "media": {
+              "markdown": "walkthrough/practice.md"
+            },
+            "completionEvents": [
+              "onCommand:flowbuddy.practice"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

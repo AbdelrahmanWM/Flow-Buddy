@@ -7,6 +7,7 @@ mod report;
 mod review;
 mod setup;
 mod tips;
+mod tour;
 
 use clap::{Parser, Subcommand};
 use flowbuddy_core::editor::EditorMode;
@@ -106,6 +107,9 @@ enum Cmd {
     /// A few questions about how you'd like to be coached, saved to the
     /// config file.
     Setup,
+    /// New here? How Flow Buddy works, in seven short parts: it checks your
+    /// setup, shows a sample tip and asks the setup questions.
+    Tour,
     /// Show tips here as they come, with what their commands do: keep it
     /// open in a terminal beside your work. Ctrl-C to stop.
     Watch,
@@ -412,6 +416,7 @@ fn main() {
         }
         Cmd::Watch => watch(),
         Cmd::Setup => run_setup(),
+        Cmd::Tour => run_tour(),
         Cmd::Doctor => {
             let status = Client::connect(ClientKind::Cli)
                 .and_then(|mut c| c.query(Command::Status))
@@ -1201,7 +1206,7 @@ fn practice_cmd(
         }
         return Ok(());
     }
-    let (family, why) = practice_pick(drill)?;
+    let (family, why) = practice_pick(drill, &sessions)?;
     match &why {
         Some(habit) => println!("A drill for: {habit}"),
         None if drill.is_none() => println!("Nothing to go on yet, so: moving up and down."),
@@ -1229,7 +1234,8 @@ fn practice_cmd(
 /// `--print-drill`: the drill for `:FlowBuddyPractice`, with why it was
 /// picked.
 fn practice_print(drill: Option<&str>, rounds: usize) -> anyhow::Result<()> {
-    let (family, why) = practice_pick(drill)?;
+    let sessions = practice::load(&practice::history_file());
+    let (family, why) = practice_pick(drill, &sessions)?;
     let d = flowbuddy_core::practice::drill(family, rounds, practice::seed());
     let mut json = serde_json::to_value(&d)?;
     json["why"] = serde_json::json!(why);
@@ -1276,9 +1282,10 @@ fn practice_keep(
     Ok(())
 }
 
-/// Which drill: the one named, or your weakest habit's, and why.
+/// Which drill: the one named, or the one picked for you, and why.
 fn practice_pick(
     drill: Option<&str>,
+    sessions: &[flowbuddy_core::practice::Session],
 ) -> anyhow::Result<(flowbuddy_core::practice::Family, Option<String>)> {
     use flowbuddy_core::practice::Family;
     Ok(match drill {
@@ -1299,9 +1306,9 @@ fn practice_pick(
                     (&week.0, &week.1),
                     now / 1000,
                 )?;
-                practice::pick(&export.patterns)
+                practice::pick(&export.patterns, sessions)
             }
-            None => (Family::Vertical, None),
+            None => practice::pick(&[], sessions),
         },
     })
 }
@@ -1628,6 +1635,40 @@ fn run_setup() -> anyhow::Result<()> {
         );
     }
     println!("flowbuddy doctor checks the rest.");
+    Ok(())
+}
+
+fn run_tour() -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    let path = flowbuddy_core::paths::config_file();
+    let status = || {
+        Client::connect(ClientKind::Cli)
+            .and_then(|mut c| c.query(Command::Status))
+            .map_err(|e| format!("{e:#}"))
+            .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
+    };
+    let checks = || doctor::checks(&doctor::Env::gather(status()));
+    let sample = || {
+        Client::connect(ClientKind::Cli)
+            .and_then(|mut c| c.query(Command::SampleTip))
+            .map(|v| v["shown"].as_str().unwrap_or("card").to_string())
+            .map_err(|_| "the daemon isn't running".to_string())
+    };
+    let save = |text: &str| {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, text)
+    };
+    let stdout = std::io::stdout();
+    let env = tour::Env {
+        checks: &checks,
+        sample: &sample,
+        config: std::fs::read_to_string(&path).unwrap_or_default(),
+        save: &save,
+        color: stdout.is_terminal() && std::env::var_os("NO_COLOR").is_none(),
+    };
+    tour::run(&env, &mut std::io::stdin().lock(), &mut stdout.lock())?;
     Ok(())
 }
 

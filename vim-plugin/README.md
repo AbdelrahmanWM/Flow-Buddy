@@ -19,7 +19,7 @@ Tips for what you do in Vim show in Vim, in a small window at the top right, for
 
 ## Practice and the skill map
 
-`:FlowBuddyPractice` runs a two-minute drill on your weakest habit in the Vim you're in (`:FlowBuddyPractice delete` for a given one; Tab completes the names), and reports how it went when it ends; `:bd` closes it. `:FlowBuddyMap` shows every skill as a tile in a split. Both need the `flowbuddy` command.
+`:FlowBuddyPractice` runs a two-minute drill on your weakest habit in the Vim you're in (`:FlowBuddyPractice delete` for a given one; Tab completes the names), and reports how it went when it ends; `:bd` closes it. `:FlowBuddyMap` shows every skill as a tile in a split, and `:FlowBuddyTour` runs `flowbuddy tour`, how Flow Buddy works, in a terminal window. All need the `flowbuddy` command.
 
 From a terminal, `flowbuddy practice` starts Vim with `flowbuddy#practice#run`, which runs the drill in a scratch buffer and counts your keys with buffer-local mappings that pass each key through. `:q` stops early; the rounds done are kept.
 

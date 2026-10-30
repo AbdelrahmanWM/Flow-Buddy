@@ -832,6 +832,35 @@ impl App {
         self.last_nudge_ms = Some(now_ms);
     }
 
+    /// A made-up tip for the tour, as a card: shown like any other, but not
+    /// kept, counted or answerable. Where it went: "card" (the top bar) or
+    /// "notification".
+    fn show_sample(&mut self, now_ms: u64) -> &'static str {
+        const TEXT: &str = "That took 7 keys. `}` gets there in 1, or `7j` in 2.";
+        self.nudge_seq += 1;
+        let nudge = Nudge {
+            nudge_id: format!("sample-{now_ms}-{}", self.nudge_seq),
+            rule_id: "tour.sample".into(),
+            title: "A sample tip".into(),
+            text: TEXT.into(),
+            ttl_ms: 20_000,
+            style: NudgeStyle::Card,
+            explain: glossary::explain(TEXT, false),
+            in_editor: false,
+        };
+        self.broadcast(ServerMsg::Nudge(nudge.clone()));
+        if self.extension_connected() {
+            return "card";
+        }
+        let mut body = glossary::plain(&nudge.text);
+        for line in &nudge.explain {
+            body.push('\n');
+            body.push_str(&glossary::plain(line));
+        }
+        self.notifier.notify(&nudge.title, &body, nudge.ttl_ms);
+        "notification"
+    }
+
     /// The editor plugin to show a tip in: the one the context comes from,
     /// if it shows tips and they're wanted there.
     fn tip_editor(&self) -> Option<ConnId> {
@@ -2193,6 +2222,10 @@ impl App {
                     data: serde_json::to_value(tips).unwrap_or_default(),
                 }
             }
+            Command::SampleTip => ServerMsg::Result {
+                id,
+                data: json!({ "shown": self.show_sample(now_ms) }),
+            },
             Command::LastSlow => ServerMsg::Result {
                 id,
                 data: serde_json::to_value(&self.last_slow).unwrap_or_default(),
@@ -3328,6 +3361,32 @@ pub(crate) mod tests {
             n[0].explain[0],
             "`}`: down to the next blank line (end of the paragraph)"
         );
+    }
+
+    #[test]
+    fn the_sample_tip_is_shown_but_not_kept() {
+        let mut app = test_app(CoachingMode::Off);
+        let mut ext = ext_hello(&mut app, 1);
+        let reply = app.on_command(Some(1), Command::SampleTip, 1_000);
+        assert_eq!(
+            reply,
+            ServerMsg::Result {
+                id: Some(1),
+                data: json!({ "shown": "card" })
+            }
+        );
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].style, NudgeStyle::Card);
+        assert_eq!(
+            n[0].explain[0],
+            "`}`: down to the next blank line (end of the paragraph)"
+        );
+        // Answering it changes nothing, and it isn't in the history.
+        let id = n[0].nudge_id.clone();
+        app.on_nudge_response(&id, NudgeAction::MuteRule, 2_000);
+        assert!(app.state.muted().is_empty());
+        assert!(app.memory.history(10).is_empty());
     }
 
     #[test]

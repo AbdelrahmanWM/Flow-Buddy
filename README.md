@@ -64,7 +64,7 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal or their own window (
 
 `flowbuddy rules` lists all of them, and [docs/coverage.md](docs/coverage.md) shows what's coached in each place. Tips move one step at a time: Flow Buddy notices which commands you already use, and won't suggest `ci(` before you use `ciw`, or `t` before `f` (`flowbuddy learn` shows where you are). Motion coaching (the first three rows) compares each movement with the cheapest motion that lands in the same place. It needs the editor plugins, which tell Flow Buddy where a movement ended without sending any text: [vim-plugin/](vim-plugin/README.md) and [vscode-extension/](vscode-extension/README.md). Without them, the simpler rules that count repeated keys take over.
 
-`flowbuddy practice` is a two-minute drill in Vim on your weakest habit, the way keybr drills your weakest key: six small rounds (reach the marked line, delete the marked words, empty the brackets), counting your keys against the fewest that would do. It tells you where fewer would do and how you did against last time; `--history` and `flowbuddy learn --report` show how drills have gone. Pick one with `flowbuddy practice vertical` (or `horizontal`, `delete`, `inside`). It's also `:FlowBuddyPractice` in Vim, **Practice** in the settings window's Tools, and **Flow Buddy: Practice** in VS Code. The text is made up; nothing of yours is opened.
+`flowbuddy practice` is a two-minute drill in Vim on your weakest habit, the way keybr drills your weakest key: six small rounds (reach the marked line, delete the marked words, empty the brackets), counting your keys against the fewest that would do. It tells you where fewer would do and how you did against last time; `--history` and `flowbuddy learn --report` show how drills have gone. Run it again and you get a different one: after your weakest habit's drill comes the one you haven't done for the longest. Or pick one: `flowbuddy practice vertical` (or `horizontal`, `delete`, `inside`), `:FlowBuddyPractice delete`, or the list in VS Code. It's also `:FlowBuddyPractice` in Vim, **Practice** in the settings window's Tools, and **Flow Buddy: Practice** in VS Code. The text is made up; nothing of yours is opened.
 
 `flowbuddy coach` asks an AI of your choice (your Claude subscription, an API key, or a local model) for advice based on the mistake memory. It's off until you set it up, and `--prompt` shows exactly what would be sent:
 
@@ -123,12 +123,15 @@ scripts/install.sh --dry-run      # see what it will do
 scripts/install.sh --with-udev    # install; --with-udev lets the active session read keyboards (sudo)
 ```
 
-Then log out and back in so GNOME loads the extension, and check:
+Then log out and back in so GNOME loads the extension, and take the tour:
 
 ```sh
+flowbuddy tour            # how it works in seven short parts: checks your setup, shows a sample tip, asks the settings that matter
 flowbuddy doctor          # every piece, and how to fix what's missing
 flowbuddy status          # what it sees now; --watch, then switch windows
 ```
+
+The tour is also **Tour** in the settings window's Tools, `:FlowBuddyTour` in Vim, and **Get started with Flow Buddy** in VS Code's Welcome page (or **Flow Buddy: Tour** in the command palette).
 
 To update, pull and run `scripts/install.sh` again: it restarts the daemon, and GNOME picks up the new extension at the next login. Restart VS Code and Vim too.
 
@@ -145,6 +148,7 @@ To update, pull and run `scripts/install.sh` again: it restarts the daemon, and 
 ## Use
 
 ```sh
+flowbuddy tour                    # new here? how it all works, in seven short parts
 flowbuddy setup                   # a few questions: how often, your level, AI, text features
 flowbuddy doctor                  # checks every piece and says how to fix what's missing
 flowbuddy mode balanced           # off | passive | balanced | active

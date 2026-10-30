@@ -49,6 +49,18 @@ impl Family {
         }
     }
 
+    /// The commands it practises, in a few words, for every round.
+    pub fn how(self) -> &'static str {
+        match self {
+            Family::Vertical => {
+                "a count (5j, 12k: the line numbers say how far), or } and { to the next blank line"
+            }
+            Family::Horizontal => "w with a count (3w), or f and the word's first letter (fd)",
+            Family::Delete => "dw, a count (d2w), up to a character (dt,), or to the end (D)",
+            Family::Inside => "di( di\" di{ di[ from anywhere inside",
+        }
+    }
+
     /// The commands it practises, as a hint before the first round.
     pub fn about(self) -> &'static str {
         match self {
@@ -119,6 +131,9 @@ pub struct Drill {
     pub family: Family,
     pub title: String,
     pub about: String,
+    /// The commands it practises, in a few words.
+    #[serde(default)]
+    pub how: String,
     /// Show relative line numbers, so counts can be read off.
     pub relative_numbers: bool,
     pub rounds: Vec<Round>,
@@ -187,6 +202,7 @@ pub fn drill(family: Family, rounds: usize, seed: u64) -> Drill {
         family,
         title: family.title().into(),
         about: family.about().into(),
+        how: family.how().into(),
         relative_numbers: family == Family::Vertical,
         rounds,
     }

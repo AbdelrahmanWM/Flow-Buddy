@@ -75,7 +75,7 @@ function progressText(json) {
         return 'Nothing recorded yet: is the daemon running?';
     const lines = [];
     if (json.latest)
-        lines.push(`Latest: ${json.latest.text}`, '');
+        lines.push(`Latest: ${json.latest.text}`, ...(json.latest.example ? [`Example: ${json.latest.example}`] : []), '');
     for (const level of [1, 2, 3, 4]) {
         const items = json.items.filter(i => i.level === level);
         const known = items.filter(i => i.state === 'known').length;

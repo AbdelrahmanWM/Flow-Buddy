@@ -16,6 +16,7 @@ Flow Buddy coaches in five places. Each one supports a different part of Vim, so
 | Text objects (`ciw`, `di(`) and shorter operator motions | ✓ with the companion | ✓ with the plugin | | | |
 | Scrolling, marks, `g;`, `Ctrl-o`, `42G` | ✓ | ✓ with the plugin | | | |
 | `}}` then `2j`, `/` a few letters, `]]`, `[(` | ✓ | ✓ with the plugin | | | |
+| A click to move the cursor: the keys that do it | ✓ with the companion | ✓ with the plugin (with `mouse` on) | | | |
 | `(` `)` sentences, `gj` `gk` on wrapped lines | | ✓ with the plugin | | | |
 | The same selection again (`gv`) | ✓ with the companion | ✓ with the plugin | | | |
 | Windows and buffers | ✓ (editor groups) | ✓ | | | |

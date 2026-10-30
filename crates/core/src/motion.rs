@@ -31,6 +31,8 @@ pub struct OperatorEvent {
 pub struct MotionEvent {
     pub motion: Motion,
     pub keys_used: u32,
+    /// The mouse made this move: a click, and no keys.
+    pub clicked: bool,
 }
 
 /// The kind of motion a plan is built around; one rule each.
@@ -917,6 +919,95 @@ impl Rule for ScrollRule {
     }
 }
 
+/// Clicking to move in Vim: usually a sign you didn't know the keys, so
+/// they're named, worked out from where the click landed.
+#[derive(Default)]
+pub struct ClickRule {
+    known: Known,
+}
+
+impl ClickRule {
+    pub const ID: &'static str = "motion.mouse";
+    /// Past this, the keys aren't much of an answer to a click.
+    const MAX_COST: u32 = 8;
+}
+
+impl Rule for ClickRule {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn description(&self) -> &'static str {
+        "Clicking to move the cursor in Vim"
+    }
+
+    fn title(&self) -> &'static str {
+        "The keys for that click"
+    }
+
+    fn contexts(&self) -> &'static [ContextKind] {
+        VIM
+    }
+
+    fn needs_editor(&self) -> bool {
+        true
+    }
+
+    fn on_step(&mut self, _step: &Step, _out: &mut Vec<RuleEvent>) {}
+
+    fn on_motion(&mut self, ev: &MotionEvent, out: &mut Vec<RuleEvent>) {
+        let m = &ev.motion;
+        if !ev.clicked || m.mode != crate::editor::EditorMode::Normal {
+            return;
+        }
+        let all = plans_for(m, &self.known);
+        let Some(plan) = all.first().filter(|p| p.cost <= Self::MAX_COST) else {
+            return;
+        };
+        let alt = all
+            .iter()
+            .find(|p| p.category != plan.category && p.cost <= plan.cost + 2);
+        let text = match alt {
+            Some(alt) => format!(
+                "You clicked to get there. From the keyboard: {} ({}), or {} ({}).",
+                marked(&plan.keys),
+                keys(plan.cost),
+                marked(&alt.keys),
+                alt.cost
+            ),
+            None => format!(
+                "You clicked to get there. From the keyboard: {} ({}).",
+                marked(&plan.keys),
+                keys(plan.cost)
+            ),
+        };
+        out.push(RuleEvent::Finding(Finding {
+            rule_id: Self::ID,
+            title: self.title(),
+            text,
+            shape: Shape::fixed("a click to move"),
+            mode: VimMode::Normal,
+            at_ms: m.end_ms,
+            start_ms: m.start_ms,
+        }));
+    }
+
+    fn set_known(&mut self, known: &Known) {
+        self.known = known.clone();
+    }
+
+    fn reset(&mut self) {}
+}
+
+/// "1 key", "3 keys".
+fn keys(n: u32) -> String {
+    if n == 1 {
+        "1 key".into()
+    } else {
+        format!("{n} keys")
+    }
+}
+
 /// Walking back to the same line again and again where a mark jumps.
 #[derive(Default)]
 pub struct MarkRule;
@@ -1304,6 +1395,7 @@ pub fn all() -> Vec<Box<dyn Rule>> {
         .map(|c| Box::new(MotionRule::new(c)) as Box<dyn Rule>)
         .collect();
     rules.push(Box::new(ScrollRule::default()));
+    rules.push(Box::new(ClickRule::default()));
     rules.push(Box::new(MarkRule));
     rules.push(Box::new(TextObjectRule::default()));
     rules.push(Box::new(OperatorMotionRule::default()));
@@ -1529,6 +1621,7 @@ mod tests {
         let ev = MotionEvent {
             motion: motion(lines, cols, facts),
             keys_used,
+            clicked: false,
         };
         let mut out = Vec::new();
         for mut rule in all() {
@@ -1587,6 +1680,7 @@ mod tests {
                 facts,
             },
             keys_used,
+            clicked: false,
         }
     }
 
@@ -1650,6 +1744,7 @@ mod tests {
         let ev = MotionEvent {
             motion: motion(0, 20, facts),
             keys_used: 20,
+            clicked: false,
         };
         let fire = |known: Known| {
             let mut out = Vec::new();
@@ -1959,6 +2054,7 @@ mod tests {
                 facts: MotionFacts::default(),
             },
             keys_used: 8,
+            clicked: false,
         };
         let tips = |ev: &MotionEvent| {
             let mut out = Vec::new();

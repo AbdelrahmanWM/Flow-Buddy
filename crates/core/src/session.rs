@@ -50,6 +50,8 @@ pub enum Entry {
         t: u64,
         motion: Motion,
         keys_used: u32,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        clicked: bool,
     },
     Operator {
         t: u64,
@@ -372,12 +374,16 @@ pub fn replay_with(entries: &[Entry], settings: &RuleSettings) -> Vec<Finding> {
                 keep(engine.on_step(context, &step));
             }
             Entry::Motion {
-                motion, keys_used, ..
+                motion,
+                keys_used,
+                clicked,
+                ..
             } => keep(engine.on_motion(
                 context,
                 &MotionEvent {
                     motion: motion.clone(),
                     keys_used: *keys_used,
+                    clicked: *clicked,
                 },
             )),
             Entry::Operator {

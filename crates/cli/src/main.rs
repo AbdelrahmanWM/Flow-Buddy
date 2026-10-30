@@ -763,11 +763,22 @@ fn coach(question: &str, show_prompt: bool) -> anyhow::Result<()> {
         print!("{prompt}");
         return Ok(());
     }
-    match coach::ask(&config.ai, &prompt, &mut std::io::stdout()) {
+    use std::io::IsTerminal;
+    let tty = std::io::stdout().is_terminal();
+    if tty && config.ai.provider != flowbuddy_core::config::AiProvider::None {
+        eprintln!("Asking your AI…");
+    }
+    // The whole answer, then shown for the terminal: models write Markdown.
+    let mut answer = Vec::new();
+    match coach::ask(&config.ai, &prompt, &mut answer) {
         None => print!("{}", coach::SETUP),
         Some(result) => {
             result.map_err(|e| anyhow::anyhow!("{e}"))?;
-            println!();
+            let color = tty && std::env::var_os("NO_COLOR").is_none();
+            print!(
+                "{}",
+                coach::for_terminal(&String::from_utf8_lossy(&answer), color)
+            );
         }
     }
     Ok(())

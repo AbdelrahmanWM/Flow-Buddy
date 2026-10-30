@@ -75,19 +75,54 @@ class Tips {
     }
 }
 
+// How a tip shows: the desktop card (the default: tips don't come here at
+// all), a notification at the bottom right with its answers, or only the
+// status bar. For the last two the status bar keeps it, highlighted, for
+// its time.
+function style(vscode) {
+    return vscode.workspace.getConfiguration('flowbuddy').get('tips', 'desktop');
+}
+
+// The notification's text: the title and the tip, without command marks.
+function notificationText(nudge) {
+    return `Flow Buddy · ${nudge.title ?? 'Tip'}: ${plain(nudge.text)}`;
+}
+
 // The status-bar item and the commands, in VS Code.
 function register(vscode, link, subscriptions) {
     const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1000);
     item.name = 'Flow Buddy tip';
     item.command = 'flowbuddy.tipActions';
+    item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     subscriptions.push(item);
-    const tips = new Tips(msg => link.send(msg), {
+    let tips = null;
+    // The answers on a notification; "What does it do?" shows the
+    // explanation and its example, with the answers again.
+    const ask = async (tip, text) => {
+        const buttons = ['Got it', 'Not helpful'];
+        if (tip.explain?.length && text === notificationText(tip))
+            buttons.push('What does it do?');
+        const pick = await vscode.window.showInformationMessage(text, ...buttons);
+        if (tips.current !== tip)
+            return;
+        if (pick === 'Got it')
+            tips.answer('dismiss');
+        else if (pick === 'Not helpful')
+            tips.answer('false_positive');
+        else if (pick === 'What does it do?') {
+            tips.hold();
+            await ask(tip, `${plain(tip.text)} ${tip.explain.map(plain).join(' ')}`);
+        }
+    };
+    tips = new Tips(msg => link.send(msg), {
         show(nudge) {
             item.text = statusText(nudge);
             const md = new vscode.MarkdownString(tooltip(nudge));
             md.isTrusted = {enabledCommands: ['flowbuddy.gotIt', 'flowbuddy.notHelpful']};
             item.tooltip = md;
             item.show();
+            if (style(vscode) === 'notification')
+                ask(nudge, notificationText(nudge));
         },
         hide() {
             item.hide();
@@ -103,16 +138,8 @@ function register(vscode, link, subscriptions) {
             if (!tip)
                 return;
             tips.hold();
-            const explain = tip.explain?.length ? `\n\n${tip.explain.map(plain).join('\n')}` : '';
-            const pick = await vscode.window.showInformationMessage(plain(tip.text), {modal: false, detail: explain},
-                'Got it', 'Not helpful');
-            if (tips.current !== tip)
-                return;
-            if (pick === 'Got it')
-                tips.answer('dismiss');
-            else if (pick === 'Not helpful')
-                tips.answer('false_positive');
-            else
+            await ask(tip, `${plain(tip.text)} ${(tip.explain ?? []).map(plain).join(' ')}`.trim());
+            if (tips.current === tip)
                 tips.answer('seen');
         },
     };
@@ -121,4 +148,4 @@ function register(vscode, link, subscriptions) {
     return tips;
 }
 
-module.exports = {plain, statusText, tooltip, Tips, register};
+module.exports = {plain, statusText, tooltip, notificationText, style, Tips, register};

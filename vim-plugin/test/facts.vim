@@ -346,6 +346,16 @@ function! Test_a_tip_is_answered_once() abort
   call assert_true(empty(popup_list()))
 endfunction
 
+function! Test_practice_shows_start_and_goal() abort
+  " Lines 18 and 29 in a window 20 tall: both fit, centred.
+  let top = flowbuddy#practice#topline(18, 29, 20)
+  call assert_true(top <= 18 && top + 19 >= 29, top)
+  call assert_equal(1, flowbuddy#practice#topline(2, 5, 20))
+  " Too far apart for the window: the goal wins.
+  let top = flowbuddy#practice#topline(1, 40, 10)
+  call assert_true(top + 9 >= 40, top)
+endfunction
+
 function! Test_practice_counts_keys() abort
   let drill = tempname()
   let out = tempname()
@@ -356,16 +366,29 @@ function! Test_practice_counts_keys() abort
         \ {'lines': ['alpha bright, cedar'], 'cursor': [1, 1], 'ask': 'x',
         \  'goal': {'text': ['alpha , cedar']}, 'mark': [1, 7, 6], 'par': 3, 'best': 'dt,'}]})], drill)
   call flowbuddy#practice#run(drill, out, 0)
+  " The panel says what to do; the goal line has the ▶ sign.
+  call assert_match('round 1 of 2', flowbuddy#practice#panel()[0])
+  call assert_equal('Goal   x ▶, 5 lines down', flowbuddy#practice#panel()[1])
+  call assert_equal('Aim    2 keys      You  0 keys', flowbuddy#practice#panel()[2])
+  " The goal ▶ on line 6, and where you start on line 1.
+  call assert_equal([[1, 'FlowBuddyStart'], [6, 'FlowBuddyGoal']], sort(map(sign_getplaced(bufnr(), {'group': 'flowbuddy_practice'})[0].signs, '[v:val.lnum, v:val.name]')))
+  " A tip arriving now isn't shown over the drill.
+  call flowbuddy#on_daemon('{"type":"nudge","nudge_id":"n-p","rule_id":"r","title":"T","text":"x","ttl_ms":5000}')
+  call assert_true(empty(popup_list()))
   sleep 20m
-  call feedkeys('jjj2j', 'xt')
+  call feedkeys('jj', 'xt')
+  sleep 300m
+  call assert_equal('Aim    2 keys      You  2 keys', flowbuddy#practice#panel()[2], 'counted live')
+  call feedkeys('j2j', 'xt')
   call flowbuddy#practice#check()
   call assert_equal([5, 1], [flowbuddy#practice#state().results[0].keys, flowbuddy#practice#state().round])
-  sleep 1200m
+  sleep 1500m
   " t counts the character it takes.
   call feedkeys('wdt,', 'xt')
   call flowbuddy#practice#check()
   let got = json_decode(readfile(out)[0])
   call assert_equal([5, 4], map(copy(got.rounds), 'v:val.keys'))
+  call assert_equal(['All done.'], flowbuddy#practice#panel())
   call assert_equal('false', json_encode(got.stopped))
   call popup_clear()
   bwipe!

@@ -191,7 +191,11 @@ export function progressLines(json) {
         return ['Nothing recorded yet: is the daemon running?'];
     const lines = [];
     if (json.latest)
-        lines.push(`Latest: ${json.latest.text} (${json.latest.learned ? 'learned' : 'not used yet'})`, '');
+        lines.push(`Latest: ${json.latest.text} (${json.latest.learned ? 'learned' : 'not used yet'})`);
+    if (json.latest?.example)
+        lines.push(`Example: ${json.latest.example}`);
+    if (json.latest)
+        lines.push('');
     const names = {1: 'Basics', 2: 'Bigger moves', 3: 'Power tools', 4: 'Advanced'};
     for (const level of [1, 2, 3, 4]) {
         const items = json.items.filter(i => i.level === level);

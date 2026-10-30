@@ -17,11 +17,13 @@ function socketPath() {
 }
 
 class DaemonLink {
-    constructor({version, onConnected, onNudge}) {
+    constructor({version, onConnected, onNudge, showsTips = () => true}) {
         this._version = version;
         this._onConnected = onConnected;
         // A tip to show here.
         this._onNudge = onNudge;
+        // Whether tips should come here, or go to the desktop.
+        this._showsTips = showsTips;
         // [text] settings from the daemon; see textguard.js.
         this.editorConfig = null;
         this.snippets = new SnippetRing();
@@ -56,6 +58,20 @@ class DaemonLink {
         this._sock.write(`${JSON.stringify({v: PROTOCOL_VERSION, ...msg})}\n`);
     }
 
+    // Hello again after the tips setting changes: the daemon takes the
+    // latest one.
+    hello() {
+        this.send({
+            type: 'hello',
+            client: 'editor',
+            client_version: this._version,
+            editor: 'vscode',
+            // The daemon walks up from here to the focused window's pid.
+            pid: process.pid,
+            shows_tips: !!this._onNudge && this._showsTips(),
+        });
+    }
+
     _connect() {
         const sock = net.createConnection(socketPath());
         this._sock = sock;
@@ -64,15 +80,7 @@ class DaemonLink {
         sock.on('connect', () => {
             this._backoff = 1;
             this._ready = true;
-            this.send({
-                type: 'hello',
-                client: 'editor',
-                client_version: this._version,
-                editor: 'vscode',
-                // The daemon walks up from here to the focused window's pid.
-                pid: process.pid,
-                shows_tips: !!this._onNudge,
-            });
+            this.hello();
             this._onConnected?.();
         });
         sock.on('data', chunk => {

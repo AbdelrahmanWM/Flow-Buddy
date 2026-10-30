@@ -104,6 +104,8 @@ pub struct App {
     /// For the VS Code pack: when the last click came, and the last VS Code
     /// shortcut (Ctrl-P, Ctrl-`) as its letter and time.
     last_click_ms: Option<u64>,
+    /// When an editor last took focus: a click then was to bring it up.
+    editor_focus_ms: Option<u64>,
     last_shortcut: Option<(char, u64)>,
     /// Recent tips in an editor: (rule, text, when), for snippets.
     recent_tips: VecDeque<(&'static str, String, u64)>,
@@ -222,6 +224,10 @@ const COMMAND_HISTORY: usize = 256;
 /// long before a movement's reported start, and this long after its end.
 const MOTION_LEAD_MS: u64 = 1500;
 const MOTION_LAG_MS: u64 = 200;
+/// A click this long before the cursor moved made the move.
+const CLICK_LEAD_MS: u64 = 500;
+/// A click this close to an editor taking focus was to bring it up.
+const FOCUS_CLICK_MS: u64 = 1000;
 
 /// How recent VS Code editor activity must be for keys to count as typed
 /// into the editor.
@@ -334,6 +340,7 @@ impl App {
             claude_checked_ms: None,
             claude_probe: crate::claude::vim_mode_on,
             last_click_ms: None,
+            editor_focus_ms: None,
             last_shortcut: None,
             mode_guess: ModeGuess::default(),
             timings: Default::default(),
@@ -694,7 +701,14 @@ impl App {
             self.memory.unhelpful_in_a_row(f.rule_id, now_ms),
         );
         let text = self.shapes_hint(f.rule_id, text);
-        self.show(f.rule_id, f.title, &text, f.mode == VimMode::Insert, now_ms);
+        self.show(
+            f.rule_id,
+            f.title,
+            &text,
+            f.mode == VimMode::Insert,
+            None,
+            now_ms,
+        );
         self.memory.nudged(f.rule_id, now_ms);
         self.memory
             .tip_shown(f.rule_id, self.mode.as_str(), hour, now_ms);
@@ -746,7 +760,16 @@ impl App {
     }
 
     /// Put a tip on screen: through the extension, or as a notification.
-    fn show(&mut self, rule_id: &'static str, title: &str, text: &str, insert: bool, now_ms: u64) {
+    /// `example`: a worked example, as the explanation's last line.
+    fn show(
+        &mut self,
+        rule_id: &'static str,
+        title: &str,
+        text: &str,
+        insert: bool,
+        example: Option<&str>,
+        now_ms: u64,
+    ) {
         self.nudge_seq += 1;
         let nudge = Nudge {
             nudge_id: format!("n-{now_ms}-{}", self.nudge_seq),
@@ -759,7 +782,11 @@ impl App {
                 CoachingMode::Active | CoachingMode::Balanced => NudgeStyle::Card,
                 _ => NudgeStyle::Bar,
             }),
-            explain: glossary::explain(text, insert),
+            explain: {
+                let mut lines = glossary::explain(text, insert);
+                lines.extend(example.map(|e| format!("Example: {e}")));
+                lines
+            },
             in_editor: false,
         };
         // In the editor you're typing in, where you're looking.
@@ -909,7 +936,8 @@ impl App {
         } else {
             "Something new"
         };
-        self.show(RULE, title, &text, item.while_typing(), now_ms);
+        let example = flowbuddy_core::curriculum::demo(item.id);
+        self.show(RULE, title, &text, item.while_typing(), example, now_ms);
         self.memory.learn_shown(item.id, now_ms);
         self.todays_lesson = Some(item.id);
     }
@@ -1008,7 +1036,7 @@ impl App {
                 .challenge_ended(&c.item, c.set_at, "done", now_ms);
             if let Some(item) = flowbuddy_core::curriculum::find(&c.item) {
                 let text = format!("You used {}: challenge done.", item.keys);
-                self.show(CHALLENGE_RULE, "Nice", &text, false, now_ms);
+                self.show(CHALLENGE_RULE, "Nice", &text, false, None, now_ms);
             }
         } else if now_ms / 1000 >= c.set_at + u64::from(self.config.learn.challenge_days) * 86_400 {
             self.state.challenge = None;
@@ -1336,6 +1364,27 @@ impl App {
             return 0;
         }
         keys
+    }
+
+    /// The mouse made this move: a click just before or during it, no
+    /// moving keys, and not the click that brought the editor up.
+    fn clicked_move(&self, m: &Motion) -> bool {
+        let Some(click) = self.last_click_ms else {
+            return false;
+        };
+        let from = m.start_ms.saturating_sub(CLICK_LEAD_MS);
+        if click < from || click > m.end_ms {
+            return false;
+        }
+        if self
+            .editor_focus_ms
+            .is_some_and(|f| f.abs_diff(click) < FOCUS_CLICK_MS)
+        {
+            return false;
+        }
+        !self.commands.iter().any(|c| {
+            c.kind == CmdKind::Motion && c.at_ms >= from && c.at_ms <= m.end_ms + MOTION_LAG_MS
+        })
     }
 
     /// Keys pressed for an operator the editor reported: the operator
@@ -1960,6 +2009,9 @@ impl App {
                 if !focused && panel == Some(Panel::Terminal) && self.is_vscode(conn) {
                     self.on_ui(UiWhat::TerminalFocused, '`', now_ms);
                 }
+                if focused {
+                    self.editor_focus_ms = Some(now_ms);
+                }
                 self.resolver.editor_focus(conn, focused, panel, now_ms);
                 self.update_context(None, now_ms);
                 self.release_held(now_ms);
@@ -1986,6 +2038,7 @@ impl App {
             ClientMsg::Motion(m) if self.resolved.editor == Some(conn) => {
                 let ev = MotionEvent {
                     keys_used: self.keys_for(&m, conn),
+                    clicked: self.clicked_move(&m),
                     motion: m,
                 };
                 self.record(now_ms, |t| {
@@ -1993,6 +2046,7 @@ impl App {
                         t,
                         motion: ev.motion.clone(),
                         keys_used: ev.keys_used,
+                        clicked: ev.clicked,
                     })
                 });
                 let best = motion::best_for_motion(&ev, self.engine.known());
@@ -3276,6 +3330,57 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
+    fn a_click_to_move_gets_the_keys() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        let motion = |at: u64| Motion {
+            start_ms: at,
+            end_ms: at,
+            moves: 1,
+            mode: EditorMode::Normal,
+            lines: 7,
+            cols: 0,
+            facts: flowbuddy_core::editor::MotionFacts {
+                paragraph_hops: Some(1),
+                ..Default::default()
+            },
+        };
+        // The click that brings Vim up only focuses it.
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            5_000,
+        );
+        app.on_pointer_click(5_100);
+        send(&mut app, 3, ClientMsg::Motion(motion(5_200)), 5_300);
+        assert!(nudges(&mut ext).is_empty());
+        // Later, a click moves the cursor seven lines down.
+        app.on_pointer_click(20_000);
+        send(&mut app, 3, ClientMsg::Motion(motion(20_100)), 20_200);
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].rule_id, "motion.mouse");
+        assert_eq!(
+            glossary::plain(&n[0].text),
+            "You clicked to get there. From the keyboard: } (1 key), or 7j (2)."
+        );
+    }
+
     /// An editor plugin that shows tips itself.
     fn tipping_editor(
         app: &mut App,
@@ -3745,6 +3850,17 @@ pub(crate) mod tests {
         app.show_lesson(pick, 1_000);
         let n = nudges(&mut ext);
         assert_eq!(n[0].title, "Remember this?");
+        assert_eq!(
+            n[0].explain.last().map(String::as_str),
+            Some(
+                format!(
+                    "Example: {}",
+                    flowbuddy_core::curriculum::demo("find").unwrap()
+                )
+                .as_str()
+            ),
+            "the worked example is the last explanation line"
+        );
         assert!(
             n[0].text
                 .starts_with(&format!("You haven't used {} in 21 days. ", item.keys)),
@@ -4023,6 +4139,7 @@ pub(crate) mod tests {
             "Undo further at once",
             "`7u` undoes that many.",
             false,
+            None,
             1_000_000,
         );
         app.show(
@@ -4030,6 +4147,7 @@ pub(crate) mod tests {
             "Try a count",
             "Try `7j`.",
             false,
+            None,
             2_000_000,
         );
         while cli.try_recv().is_ok() {}
@@ -4336,12 +4454,26 @@ pub(crate) mod tests {
         let mut watch = connect(&mut app, 2);
         send(&mut app, 2, hello(ClientKind::Watch), 0);
         // Without the extension: a notification, and the watcher too.
-        app.show("vim.repeat-jk", "Try a count", "Try `7j`.", false, 1_000);
+        app.show(
+            "vim.repeat-jk",
+            "Try a count",
+            "Try `7j`.",
+            false,
+            None,
+            1_000,
+        );
         assert_eq!(nudges(&mut watch).len(), 1);
         assert_eq!(notes.0.borrow().len(), 1);
         // With it: the extension and the watcher, no notification.
         let mut ext = ext_hello(&mut app, 1);
-        app.show("vim.repeat-jk", "Try a count", "Try `7j`.", false, 2_000);
+        app.show(
+            "vim.repeat-jk",
+            "Try a count",
+            "Try `7j`.",
+            false,
+            None,
+            2_000,
+        );
         assert_eq!(nudges(&mut ext).len(), 1);
         assert_eq!(nudges(&mut watch).len(), 1);
         assert_eq!(notes.0.borrow().len(), 1);
@@ -4372,7 +4504,14 @@ pub(crate) mod tests {
         let mut ext = ext_hello(&mut app, 1);
         app.tick(1_000);
         assert!(app.on_record(None, 1_000).unwrap().recording);
-        app.show("vim.repeat-jk", "Try a count", "Try `7j`.", false, 2_000);
+        app.show(
+            "vim.repeat-jk",
+            "Try a count",
+            "Try `7j`.",
+            false,
+            None,
+            2_000,
+        );
         let id = nudges(&mut ext)[0].nudge_id.clone();
         send(
             &mut app,

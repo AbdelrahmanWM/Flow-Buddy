@@ -652,7 +652,7 @@ pub fn learn_json(
         .values()
         .max_by_key(|r| r.last_shown)
         .and_then(|r| curriculum::find(&r.item_id).map(|i| (i, r.learned_at.is_some())))
-        .map(|(i, learned)| serde_json::json!({"id": i.id, "text": flowbuddy_core::glossary::plain(&curriculum::tip_text(i)), "learned": learned}));
+        .map(|(i, learned)| serde_json::json!({"id": i.id, "text": flowbuddy_core::glossary::plain(&curriculum::tip_text(i)), "example": curriculum::demo(i.id).map(flowbuddy_core::glossary::plain), "learned": learned}));
     Ok(serde_json::json!({ "version": 1, "latest": latest, "items": items }))
 }
 
@@ -783,6 +783,9 @@ pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<Str
             "Latest: {} ({status})",
             plain(&curriculum::tip_text(item))
         )?;
+        if let Some(demo) = curriculum::demo(item.id) {
+            writeln!(out, "  Example: {}", plain(demo))?;
+        }
     }
     writeln!(
         out,

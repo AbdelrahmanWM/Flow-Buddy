@@ -368,13 +368,18 @@ function! Test_practice_counts_keys() abort
   call flowbuddy#practice#run(drill, out, 0)
   " The panel says what to do; the goal line has the ▶ sign.
   call assert_match('round 1 of 2', flowbuddy#practice#panel()[0])
-  call assert_match('marked ▶ in yellow', flowbuddy#practice#panel()[1])
-  call assert_equal([6], map(sign_getplaced(bufnr(), {'group': 'flowbuddy_practice'})[0].signs, 'v:val.lnum'))
+  call assert_equal('Goal   x ▶, 5 lines down', flowbuddy#practice#panel()[1])
+  call assert_equal('Aim    2 keys      You  0 keys', flowbuddy#practice#panel()[2])
+  " The goal ▶ on line 6, and where you start on line 1.
+  call assert_equal([[1, 'FlowBuddyStart'], [6, 'FlowBuddyGoal']], sort(map(sign_getplaced(bufnr(), {'group': 'flowbuddy_practice'})[0].signs, '[v:val.lnum, v:val.name]')))
   " A tip arriving now isn't shown over the drill.
   call flowbuddy#on_daemon('{"type":"nudge","nudge_id":"n-p","rule_id":"r","title":"T","text":"x","ttl_ms":5000}')
   call assert_true(empty(popup_list()))
   sleep 20m
-  call feedkeys('jjj2j', 'xt')
+  call feedkeys('jj', 'xt')
+  sleep 300m
+  call assert_equal('Aim    2 keys      You  2 keys', flowbuddy#practice#panel()[2], 'counted live')
+  call feedkeys('j2j', 'xt')
   call flowbuddy#practice#check()
   call assert_equal([5, 1], [flowbuddy#practice#state().results[0].keys, flowbuddy#practice#state().round])
   sleep 1500m

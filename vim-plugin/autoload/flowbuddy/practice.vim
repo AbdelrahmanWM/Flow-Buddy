@@ -18,6 +18,8 @@ let s:quit = 1
 " record the result when it ends.
 let s:record = []
 let s:buf = -1
+let s:counter = -1
+let s:shown_keys = 0
 
 " Keys that read one more character.
 let s:TAKES_CHAR = ['f', 't', 'F', 'T', 'r', 'm', "'", '`', '"', 'q', '@']
@@ -95,26 +97,48 @@ function! flowbuddy#practice#run(drill_path, out_path, ...) abort
 endfunction
 
 function! s:colours() abort
+  " Fixed colours, not the scheme's: they must stand out on any of them.
   highlight FlowBuddyGoal ctermfg=16 ctermbg=220 cterm=bold guifg=#000000 guibg=#f6d32d gui=bold
-  highlight FlowBuddyDone ctermfg=16 ctermbg=114 cterm=bold guifg=#000000 guibg=#8ff0a4 gui=bold
-  highlight default link FlowBuddyPanelTitle Title
+  highlight FlowBuddyCut ctermfg=231 ctermbg=160 cterm=bold guifg=#ffffff guibg=#c01c28 gui=bold
+  highlight FlowBuddyStart ctermfg=40 cterm=bold guifg=#26a269 gui=bold
+  highlight FlowBuddyBar ctermfg=231 ctermbg=25 cterm=bold guifg=#ffffff guibg=#1c71d8 gui=bold
+  highlight FlowBuddyLabel ctermfg=75 cterm=bold guifg=#62a0ea gui=bold
+  highlight FlowBuddyExpect ctermfg=40 cterm=bold guifg=#26a269 gui=bold
+  highlight FlowBuddyOver ctermfg=203 cterm=bold guifg=#f66151 gui=bold
+  highlight FlowBuddyPerfect ctermfg=16 ctermbg=114 cterm=bold guifg=#000000 guibg=#8ff0a4 gui=bold
+  highlight FlowBuddyClose ctermfg=16 ctermbg=220 cterm=bold guifg=#000000 guibg=#f6d32d gui=bold
+  highlight FlowBuddyDotDone ctermfg=120 ctermbg=25 guifg=#8ff0a4 guibg=#1c71d8
+  highlight FlowBuddyDotNow ctermfg=220 ctermbg=25 guifg=#f6d32d guibg=#1c71d8
   call sign_define('FlowBuddyGoal', {'text': '▶', 'texthl': 'FlowBuddyGoal', 'linehl': 'FlowBuddyGoal'})
   call sign_define('FlowBuddySpot', {'text': '▶', 'texthl': 'FlowBuddyGoal'})
+  call sign_define('FlowBuddyCutHere', {'text': '▶', 'texthl': 'FlowBuddyCut'})
+  call sign_define('FlowBuddyStart', {'text': '●', 'texthl': 'FlowBuddyStart'})
 endfunction
 
-" What the panel says for round `r`.
-function! flowbuddy#practice#instructions(drill, round) abort
+" What the panel says for round `round`: a bar with the drill and the
+" rounds done, the goal, the fewest keys and yours so far, and how.
+function! flowbuddy#practice#instructions(drill, round, keys) abort
   let r = a:drill.rounds[a:round]
-  let lines = [printf('%s · round %d of %d', a:drill.title, a:round + 1, len(a:drill.rounds))]
+  let n = len(a:drill.rounds)
+  let dots = join(map(range(n), 'v:val < a:round ? "●" : v:val == a:round ? "◉" : "○"'), ' ')
+  let lines = [printf(' Flow Buddy practice · %s   %s   round %d of %d ', a:drill.title, dots, a:round + 1, n)]
   if has_key(r.goal, 'text')
-    let lines += [r.ask . ' (marked ▶ in yellow), so it reads:', '    ' . join(r.goal.text, ' / ')]
+    let lines += ['Goal   ' . r.ask . ' (in red), so the line reads:', '         ' . join(r.goal.text, ' / ')]
+  elseif has_key(r.goal, 'line')
+    let d = r.goal.line - r.cursor[0]
+    let lines += [printf('Goal   %s ▶, %d line%s %s', r.ask, abs(d), abs(d) == 1 ? '' : 's', d > 0 ? 'down' : 'up')]
   else
-    let lines += [r.ask . ' (marked ▶ in yellow).']
+    let lines += ['Goal   ' . r.ask . ' (in yellow)']
   endif
-  if a:round == 0
-    let lines += flowbuddy#wrap(a:drill.about, max([40, &columns - 4]))
-  endif
-  return lines + [':q stops; the rounds done are kept.']
+  let lines += [flowbuddy#practice#score_line(r.par, a:keys)]
+  let lines += ['How    ' . get(a:drill, 'how', a:drill.about)]
+  return lines + ['       :q stops; the rounds done are kept']
+endfunction
+
+" "Aim 3 keys   You 5 keys (2 over)".
+function! flowbuddy#practice#score_line(par, keys) abort
+  let line = printf('Aim    %d key%s      You  %d key%s', a:par, a:par == 1 ? '' : 's', a:keys, a:keys == 1 ? '' : 's')
+  return a:keys > a:par ? line . printf(' (%d over)', a:keys - a:par) : line
 endfunction
 
 function! s:load() abort
@@ -125,18 +149,27 @@ function! s:load() abort
   call clearmatches()
   call sign_unplace('flowbuddy_practice')
   let [ml, mc, mlen] = r.mark
+  let deleting = has_key(r.goal, 'text')
   if mlen == 0
     call sign_place(0, 'flowbuddy_practice', 'FlowBuddyGoal', s:buf, {'lnum': ml})
   else
-    call matchaddpos('FlowBuddyGoal', [[ml, mc, mlen]])
-    call sign_place(0, 'flowbuddy_practice', 'FlowBuddySpot', s:buf, {'lnum': ml})
+    call matchaddpos(deleting ? 'FlowBuddyCut' : 'FlowBuddyGoal', [[ml, mc, mlen]])
+    call sign_place(0, 'flowbuddy_practice', deleting ? 'FlowBuddyCutHere' : 'FlowBuddySpot', s:buf, {'lnum': ml})
   endif
-  call s:panel(flowbuddy#practice#instructions(s:drill, s:round))
+  " Where you start, when it's another line.
+  if r.cursor[0] != ml
+    call sign_place(0, 'flowbuddy_practice', 'FlowBuddyStart', s:buf, {'lnum': r.cursor[0]})
+  endif
+  call s:panel(flowbuddy#practice#instructions(s:drill, s:round, 0))
   " Where you start and the goal both on screen, the goal never hidden.
   call winrestview({'topline': flowbuddy#practice#topline(r.cursor[0], ml, winheight(0)),
         \ 'lnum': r.cursor[0], 'col': r.cursor[1] - 1, 'curswant': r.cursor[1] - 1})
   let s:keys = 0
+  let s:shown_keys = 0
   let s:started = reltime()
+  " Your keys so far, as you type them.
+  call timer_stop(s:counter)
+  let s:counter = timer_start(150, {-> s:update_count()}, {'repeat': -1})
   " The setline above fires TextChanged later; it isn't a move.
   call timer_start(0, {-> s:loaded()})
 endfunction
@@ -150,6 +183,21 @@ function! flowbuddy#practice#topline(a, b, height) abort
     return max([1, bot - a:height + 2])
   endif
   return max([1, top - (a:height - span) / 2])
+endfunction
+
+function! s:update_count() abort
+  if s:loading || s:done || s:panel_buf == -1 || s:keys == s:shown_keys
+    return
+  endif
+  let s:shown_keys = s:keys
+  let r = s:drill.rounds[s:round]
+  let lines = getbufline(s:panel_buf, 1, '$')
+  let row = match(lines, '^Aim ')
+  if row >= 0
+    call setbufvar(s:panel_buf, '&modifiable', 1)
+    call setbufline(s:panel_buf, row + 1, flowbuddy#practice#score_line(r.par, s:keys))
+    call setbufvar(s:panel_buf, '&modifiable', 0)
+  endif
 endfunction
 
 function! s:loaded() abort
@@ -188,9 +236,10 @@ function! s:check() abort
   let s:loading = 1
   call sign_unplace('flowbuddy_practice')
   call clearmatches()
-  let msg = s:keys <= r.par ? printf('✓ %d keys: the fewest.', s:keys)
-        \ : printf('✓ %d keys. %s does it in %d.', s:keys, r.best, r.par)
-  call s:panel([msg, 'Next round…'])
+  call timer_stop(s:counter)
+  let msg = s:keys <= r.par ? printf(' ✓ Perfect: %d key%s, the fewest there is. ', s:keys, s:keys == 1 ? '' : 's')
+        \ : printf(' ✓ Done in %d keys. %s does it in %d. ', s:keys, r.best, r.par)
+  call s:panel([msg, '', 'Next round…'])
   call timer_start(1200, {-> s:load()})
 endfunction
 
@@ -206,6 +255,7 @@ function! s:finish(leaving) abort
     return
   endif
   let s:done = 1
+  call timer_stop(s:counter)
   unlet! g:flowbuddy_practising
   call sign_unplace('flowbuddy_practice')
   " JSON booleans, not 0 and 1.
@@ -244,9 +294,16 @@ function! s:panel(lines) abort
     setlocal buftype=nofile bufhidden=wipe noswapfile nobuflisted nonumber norelativenumber
     setlocal nowrap nolist nocursorline winfixheight signcolumn=no
     silent! file [Flow\ Buddy\ drill]
-    syntax match FlowBuddyPanelTitle /\%1l.*/
-    syntax match FlowBuddyDone /^✓.*/
+    syntax match FlowBuddyBar /^ Flow Buddy practice .*/
+    syntax match FlowBuddyDotDone /●/ contained containedin=FlowBuddyBar
+    syntax match FlowBuddyDotNow /◉/ contained containedin=FlowBuddyBar
+    syntax match FlowBuddyLabel /^\(Goal\|Aim\|How\)\>/
+    syntax match FlowBuddyLabel /\<You\>/
+    syntax match FlowBuddyOver /(\d\+ over)/
+    syntax match FlowBuddyExpect /^         \S.*/
     syntax match FlowBuddyGoal /▶/
+    syntax match FlowBuddyPerfect /^ ✓ Perfect.*/
+    syntax match FlowBuddyClose /^ ✓ Done.*/
     let s:panel_buf = bufnr()
   endif
   call win_gotoid(back)

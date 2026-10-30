@@ -74,7 +74,7 @@ const run = async args => {
 };
 t.register(vscode, run, []);
 check('commands', Object.keys(commands).sort(),
-    ['flowbuddy.checkSetup', 'flowbuddy.profile', 'flowbuddy.progress', 'flowbuddy.recentTips', 'flowbuddy.settings', 'flowbuddy.today']);
+    ['flowbuddy.checkSetup', 'flowbuddy.practice', 'flowbuddy.profile', 'flowbuddy.progress', 'flowbuddy.recentTips', 'flowbuddy.settings', 'flowbuddy.skillMap', 'flowbuddy.today']);
 
 let done = false;
 (async () => {
@@ -93,6 +93,16 @@ let done = false;
 const loop = new GLib.MainLoop(null, false);
 GLib.timeout_add(GLib.PRIORITY_DEFAULT, 20, () => (done ? (loop.quit(), false) : true));
 loop.run();
+
+const html = t.mapHtml({items: [
+    {level: 1, keys: 'w', what: 'words', tile: 'known', uses: 3, days_idle: 2},
+    {level: 1, keys: '<C-d>', what: 'down "half"', tile: 'ready', uses: 0},
+]});
+check('map tile', html.includes('<span class="tile known" title="w: words\nUsed 3 times, last 2 days ago">w</span>'), true);
+check('map escapes', html.includes('&lt;C-d&gt;') && html.includes('&quot;half&quot;') && !html.includes('<C-d>'), true);
+check('map counts', html.includes('Basics <small>you use 1 of 2</small>'), true);
+check('map: no scripts', /<script/i.test(html) || !html.includes("default-src 'none'"), false);
+check('map: nothing yet', t.mapHtml({nothing_yet: true}).includes('Nothing recorded yet'), true);
 
 print(`${passed} passed, ${failed} failed`);
 if (failed)

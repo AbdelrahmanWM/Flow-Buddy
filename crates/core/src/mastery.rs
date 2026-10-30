@@ -66,6 +66,14 @@ impl Skill {
         (pct(self.mastery), pct(self.recall(model)))
     }
 
+    /// Days for the chance of recalling it to halve, from your practice.
+    pub fn half_life_days(&self, model: &Model) -> u32 {
+        model
+            .half_life(self.right, self.wrong)
+            .round()
+            .clamp(0.0, 100_000.0) as u32
+    }
+
     pub fn known(&self, model: &Model) -> bool {
         self.mastery >= MASTERED && self.recall(model) >= RECALLED
     }

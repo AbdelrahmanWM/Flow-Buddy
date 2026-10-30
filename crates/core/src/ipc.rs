@@ -199,6 +199,9 @@ pub enum ClientMsg {
         editor: Option<EditorKind>,
         #[serde(default)]
         pid: Option<u32>,
+        /// Editor clients: it shows tips itself, where you're typing.
+        #[serde(default)]
+        shows_tips: bool,
     },
     Focus {
         app_id: Option<String>,
@@ -352,6 +355,10 @@ pub struct Nudge {
     /// with backticks (see `glossary`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub explain: Vec<String>,
+    /// The editor you're typing in shows it: the top bar only keeps it in
+    /// its menu.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_editor: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

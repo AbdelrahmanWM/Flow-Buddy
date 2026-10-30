@@ -287,8 +287,10 @@ class FlowBuddyIndicator extends PanelMenu.Button {
     }
 
     // `inBar`: also show the title next to the icon for the nudge's ttl.
+    // A tip shown in the editor (`in_editor`) is the editor's to answer,
+    // and gets no unread dot.
     showNudge(nudge, inBar) {
-        if (this._nudge)
+        if (this._nudge && !this._nudge.in_editor)
             this._link.send({type: 'nudge_response', nudge_id: this._nudge.nudge_id, action: 'seen'});
         this._nudge = nudge;
         // A kept tip stays as it is: you're still practising it.
@@ -299,7 +301,7 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         this._updateKeep();
         this._recent = [nudge, ...this._recent.filter(t => t.text !== nudge.text)].slice(0, RECENT);
         this._fillRecent();
-        this._dot.visible = !this.menu.isOpen;
+        this._dot.visible = !nudge.in_editor && !this.menu.isOpen;
         if (!inBar)
             return;
         this._label.text = ` ${nudge.title}`;

@@ -85,9 +85,63 @@ function progressText(json) {
     return lines.join('\n');
 }
 
+const LEVELS = {1: 'Basics', 2: 'Bigger moves', 3: 'Power tools', 4: 'Advanced'};
+const TILES = [
+    ['known', 'You use it'],
+    ['slipping', 'Slipping: not used lately'],
+    ['learning', 'Learning'],
+    ['ready', 'Ready to learn'],
+    ['later', 'Later'],
+];
+
+function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c]);
+}
+
+function tileTitle(i) {
+    const used = i.uses ? `Used ${i.uses === 1 ? 'once' : `${i.uses} times`}${i.days_idle ? `, last ${i.days_idle === 1 ? 'yesterday' : `${i.days_idle} days ago`}` : ''}` : 'Not used yet';
+    return `${i.keys}: ${i.what}\n${used}`;
+}
+
+// The skill map as a page: a tile per skill, coloured by where you are
+// with it, from `learn --json`. Styles only, no scripts.
+function mapHtml(json) {
+    const tile = (cls, text, title) => `<span class="tile ${cls}"${title ? ` title="${escapeHtml(title)}"` : ''}>${escapeHtml(text)}</span>`;
+    const body = [];
+    body.push('<h1>Your Vim skills</h1>');
+    body.push(`<p class="legend">${TILES.map(([cls, text]) => tile(cls, text)).join(' ')}</p>`);
+    if (json.nothing_yet) {
+        body.push('<p>Nothing recorded yet: is the daemon running?</p>');
+    } else {
+        for (const level of [1, 2, 3, 4]) {
+            const items = json.items.filter(i => i.level === level);
+            if (!items.length)
+                continue;
+            const state = i => i.tile ?? (i.state === 'known' ? 'known' : i.state === 'ready' ? 'ready' : 'later');
+            const known = items.filter(i => state(i) === 'known').length;
+            body.push(`<h2>${LEVELS[level]} <small>you use ${known} of ${items.length}</small></h2>`);
+            body.push(`<p>${items.map(i => tile(state(i), i.keys, tileTitle(i))).join(' ')}</p>`);
+        }
+    }
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+<style>
+body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 0 16px; }
+p { line-height: 2.2; }
+small { opacity: .7; font-weight: normal; }
+.tile { padding: 3px 8px; border-radius: 5px; font-family: var(--vscode-editor-font-family); white-space: nowrap; }
+.known { background: #2ec27e; color: #000; }
+.slipping { background: #f6d32d; color: #000; }
+.learning { background: #99c1f1; color: #000; }
+.ready { border: 1px solid currentColor; }
+.later { opacity: .45; border: 1px dashed currentColor; }
+</style></head><body>${body.join('\n')}</body></html>`;
+}
+
 // The Command Palette's commands. `vscode` and `run` (run flowbuddy with
 // arguments, resolving to {ok, out, err}) are passed in.
-function register(vscode, run, subscriptions) {
+// `cli`: where the flowbuddy command is, for what runs in a terminal.
+function register(vscode, run, subscriptions, cli = () => null) {
     const output = vscode.window.createOutputChannel('Flow Buddy');
     subscriptions.push(output);
     const say = (title, text) => {
@@ -178,9 +232,25 @@ function register(vscode, run, subscriptions) {
         'flowbuddy.progress': tool('Progress', ['learn', '--json'], progressText),
         'flowbuddy.today': tool('Today', ['summary', '--json'], j => j.nothing_yet ? 'Nothing recorded yet.' : j.text),
         'flowbuddy.recentTips': tool('Recent tips', ['tips'], (_j, r) => r.out),
+        // The drill runs in Vim, so in a terminal: vscodevim can't run it.
+        'flowbuddy.practice': async () => {
+            const path = cli();
+            if (!path)
+                throw new Error('the flowbuddy command isn\'t installed: run scripts/install.sh from the Flow Buddy folder');
+            const term = vscode.window.createTerminal({name: 'Flow Buddy practice', shellPath: path, shellArgs: ['practice']});
+            term.show();
+        },
+        'flowbuddy.skillMap': async () => {
+            const r = await run(['learn', '--json']);
+            if (!r.ok)
+                throw new Error(r.err.trim());
+            const panel = vscode.window.createWebviewPanel('flowbuddy.skillMap', 'Flow Buddy: skills',
+                vscode.ViewColumn.Active, {enableScripts: false});
+            panel.webview.html = mapHtml(JSON.parse(r.out));
+        },
     };
     for (const [id, fn] of Object.entries(commands))
         subscriptions.push(vscode.commands.registerCommand(id, () => fn().catch(failed)));
 }
 
-module.exports = {cliPath, settingItems, choices, typed, needsConfirm, doctorText, progressText, register};
+module.exports = {cliPath, settingItems, choices, typed, needsConfirm, doctorText, progressText, mapHtml, register};

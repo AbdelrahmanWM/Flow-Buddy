@@ -17,6 +17,7 @@ const {UiReporter} = require('./ui');
 const {MappingReporter} = require('./mappings');
 const {version} = require('./package.json');
 const tools = require('./tools');
+const tips = require('./tips');
 
 let link = null;
 
@@ -27,6 +28,7 @@ function activate(context) {
     let operators = null;
     let mappings = null;
     let ui = null;
+    let shown = null;
     link = new DaemonLink({
         version,
         onConnected: () => {
@@ -34,7 +36,9 @@ function activate(context) {
             modes?.resend();
             mappings?.resend();
         },
+        onNudge: nudge => shown?.show(nudge),
     });
+    shown = tips.register(require('vscode'), link, context.subscriptions);
     focus = new FocusReporter(link);
     modes = new ModeTracker(link, (previous, mode) => {
         motions?.modeChanged();
@@ -85,7 +89,7 @@ function registerTools(subscriptions) {
             resolve({ok: !error, out: out ?? '', err: err ?? ''});
         });
     });
-    tools.register(vscode, run, subscriptions);
+    tools.register(vscode, run, subscriptions, () => tools.cliPath(process.env.PATH, os.homedir(), exists));
 }
 
 function deactivate() {

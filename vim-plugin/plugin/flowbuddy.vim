@@ -17,6 +17,15 @@ if has('nvim') && !has('nvim-0.9')
 endif
 let g:loaded_flowbuddy = 1
 
+command! FlowBuddyGotIt call flowbuddy#respond('dismiss')
+command! FlowBuddyNotHelpful call flowbuddy#respond('false_positive')
+command! -nargs=? -complete=customlist,s:drills FlowBuddyPractice call flowbuddy#practice#start(<f-args>)
+command! FlowBuddyMap call flowbuddy#practice#map()
+
+function! s:drills(lead, ...) abort
+  return filter(['vertical', 'horizontal', 'delete', 'inside'], 'v:val =~# "^" . a:lead')
+endfunction
+
 augroup flowbuddy
   autocmd!
   autocmd VimEnter * call flowbuddy#start()

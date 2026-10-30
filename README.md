@@ -33,6 +33,7 @@ Flow Buddy is a local companion that helps you get better at your tools continuo
 ```
 
 - **Coaching modes:** `off`, `passive` (summaries only), `balanced` (occasional batched tips) and `active` (real-time nudges).
+- **Tips where you look:** with the editor plugins, tips for what you do in Vim show in Vim (a small window at the top right) and in VS Code (the status bar); everywhere else, on the desktop. `coaching.show_in` changes it.
 - **Tips you can keep:** the top-bar menu lists recent tips and can keep one on screen while you practise it. `Super+Alt+T` keeps the current tip, `Super+Alt+D` dismisses it, `Super+Alt+N` marks it not helpful (change them with `gsettings` under `org.gnome.shell.extensions.flowbuddy`).
 - **Mistake memory:** remembers which patterns you repeat and how each habit is progressing (new → improving → mastered), so coaching adapts over time.
 
@@ -62,6 +63,8 @@ Vim in VS Code (vscodevim), Vim and Neovim in the terminal or their own window (
 | `↑↑↑↑` hunting shell history | `Ctrl-r` |
 
 `flowbuddy rules` lists all of them, and [docs/coverage.md](docs/coverage.md) shows what's coached in each place. Tips move one step at a time: Flow Buddy notices which commands you already use, and won't suggest `ci(` before you use `ciw`, or `t` before `f` (`flowbuddy learn` shows where you are). Motion coaching (the first three rows) compares each movement with the cheapest motion that lands in the same place. It needs the editor plugins, which tell Flow Buddy where a movement ended without sending any text: [vim-plugin/](vim-plugin/README.md) and [vscode-extension/](vscode-extension/README.md). Without them, the simpler rules that count repeated keys take over.
+
+`flowbuddy practice` is a two-minute drill in Vim on your weakest habit, the way keybr drills your weakest key: six small rounds (reach the marked line, delete the marked words, empty the brackets), counting your keys against the fewest that would do. It tells you where fewer would do and how you did against last time; `--history` and `flowbuddy learn --report` show how drills have gone. Pick one with `flowbuddy practice vertical` (or `horizontal`, `delete`, `inside`). It's also `:FlowBuddyPractice` in Vim, **Practice** in the settings window's Tools, and **Flow Buddy: Practice** in VS Code. The text is made up; nothing of yours is opened.
 
 `flowbuddy coach` asks an AI of your choice (your Claude subscription, an API key, or a local model) for advice based on the mistake memory. It's off until you set it up, and `--prompt` shows exactly what would be sent:
 
@@ -149,6 +152,8 @@ flowbuddy pause 1h                # or 30m, until-tomorrow; `flowbuddy resume`
 flowbuddy summary [--week]        # how you're doing vs. before
 flowbuddy next                    # the one habit worth working on now
 flowbuddy learn                   # today's "something new" and your progress through Vim; `learn --know ciw,marks` / `--forget` / `--reset`, `--list` for the ids
+flowbuddy learn --map             # every skill as a coloured tile: you use it, slipping, learning, ready, later (also in Settings → Skills, and VS Code's "Flow Buddy: Skill map")
+flowbuddy practice                # a two-minute drill on your weakest habit; `--history` for how drills have gone
 flowbuddy watch                   # tips as they come, with what they mean, in a terminal you keep open
 flowbuddy tips [words] [-e]       # your recent tips, or those that match; -e says what each command does
 flowbuddy explain 'ci"'            # what keys do, piece by piece; `explain --last`: your last slow move, done better
@@ -172,6 +177,7 @@ balanced_interval_minutes = 30
 quiet_hours = "22:00-08:00"
 when = "now"                 # or "pause": tips wait until you stop typing for a moment
 nudge_style = "card"              # or "bar"; default: card in active and balanced mode
+show_in = "editor"           # tips in Vim or VS Code when their plugin is there; or "desktop" / "both"
 
 [rules."vim.repeat-jk"]
 threshold = 8

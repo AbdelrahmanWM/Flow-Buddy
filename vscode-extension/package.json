@@ -53,6 +53,26 @@
         "command": "flowbuddy.recentTips",
         "title": "Recent tips",
         "category": "Flow Buddy"
+      },
+      {
+        "command": "flowbuddy.practice",
+        "title": "Practice (a two-minute drill in Vim)",
+        "category": "Flow Buddy"
+      },
+      {
+        "command": "flowbuddy.skillMap",
+        "title": "Skill map",
+        "category": "Flow Buddy"
+      },
+      {
+        "command": "flowbuddy.gotIt",
+        "title": "Got it (the tip on show)",
+        "category": "Flow Buddy"
+      },
+      {
+        "command": "flowbuddy.notHelpful",
+        "title": "Not helpful (the tip on show)",
+        "category": "Flow Buddy"
       }
     ]
   }

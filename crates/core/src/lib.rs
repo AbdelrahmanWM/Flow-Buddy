@@ -15,6 +15,7 @@ pub mod mastery;
 pub mod motion;
 pub mod paths;
 pub mod policy;
+pub mod practice;
 pub mod rule;
 pub mod rules;
 pub mod session;

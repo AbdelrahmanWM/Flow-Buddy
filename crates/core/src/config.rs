@@ -85,6 +85,9 @@ pub struct LearnConfig {
     pub again_after_days: u32,
     /// Times a lesson is shown at most, if you don't take it up.
     pub max_showings: u32,
+    /// A skill you've mastered comes back for review once the chance
+    /// you'd recall it drops under this, in percent.
+    pub review_at: u8,
 }
 
 impl Default for LearnConfig {
@@ -98,6 +101,7 @@ impl Default for LearnConfig {
             challenge_days: 2,
             again_after_days: 7,
             max_showings: 3,
+            review_at: crate::curriculum::REVIEW_AT,
         }
     }
 }
@@ -244,6 +248,23 @@ pub struct CoachingConfig {
     /// With `when = "pause"`: how long you stop typing for it to count as
     /// a pause, in milliseconds.
     pub pause_ms: u32,
+    /// Where tips show: in the editor you're typing in, when its plugin
+    /// can show them; on the desktop; or both.
+    pub show_in: ShowIn,
+}
+
+/// Where a tip shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ShowIn {
+    /// In the editor the keys came from, if its plugin shows tips; on the
+    /// desktop otherwise.
+    #[default]
+    Editor,
+    /// Always on the desktop: the top bar, a card or a notification.
+    Desktop,
+    /// In the editor and on the desktop.
+    Both,
 }
 
 /// When a live tip shows.
@@ -272,6 +293,7 @@ impl Default for CoachingConfig {
             when: TipTiming::Now,
             hold_ms: 800,
             pause_ms: 1500,
+            show_in: ShowIn::Editor,
         }
     }
 }
@@ -451,6 +473,11 @@ pub struct State {
     pub last_learn_day: Option<String>,
     /// The open challenge: use this item the next time it fits.
     pub challenge: Option<Challenge>,
+    /// The one-time hint that text shapes make tips exact was given.
+    pub shapes_hinted: bool,
+    /// The last week's daily lessons: when (Unix seconds), and whether
+    /// each was a review. Reviews don't outnumber new lessons.
+    pub recent_lessons: Vec<(u64, bool)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]

@@ -2,6 +2,7 @@ mod client;
 mod coach;
 mod config_cmd;
 mod doctor;
+mod practice;
 mod report;
 mod review;
 mod setup;
@@ -73,6 +74,32 @@ enum Cmd {
         /// know and recall each skill.
         #[arg(long)]
         report: bool,
+        /// Every skill as a tile, coloured by where you are with it.
+        #[arg(long)]
+        map: bool,
+    },
+    /// A two-minute drill in Vim on your weakest habit, counting your keys.
+    Practice {
+        /// Which drill: vertical, horizontal, delete or inside (default:
+        /// the one for your weakest habit).
+        drill: Option<String>,
+        /// How many rounds.
+        #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u16).range(1..=30))]
+        rounds: u16,
+        /// The editor to run it in (default vim; nvim works too).
+        #[arg(long, default_value = "vim")]
+        editor: String,
+        /// How your drills have gone so far, and stop.
+        #[arg(long)]
+        history: bool,
+        /// Print the drill as JSON instead of starting an editor: for
+        /// `:FlowBuddyPractice`, which runs it in the Vim you're in.
+        #[arg(long, hide = true)]
+        print_drill: bool,
+        /// Keep and report how a drill went, from the result file the
+        /// plugin wrote (with the drill's name).
+        #[arg(long, hide = true, requires = "drill")]
+        record: Option<std::path::PathBuf>,
     },
     /// Check everything Flow Buddy needs, and say how to fix what's missing.
     Doctor,
@@ -324,6 +351,18 @@ fn main() {
         Cmd::Mode { mode } => set_mode(mode),
         Cmd::Summary { week } => summary(week, json),
         Cmd::Next => next(),
+        Cmd::Practice {
+            drill,
+            rounds,
+            editor,
+            history,
+            print_drill,
+            record,
+        } => match (print_drill, record) {
+            (_, Some(result)) => practice_record(drill.as_deref().unwrap_or_default(), &result),
+            (true, None) => practice_print(drill.as_deref(), rounds.into()),
+            _ => practice_cmd(drill.as_deref(), rounds.into(), &editor, history),
+        },
         Cmd::Learn {
             know,
             forget,
@@ -332,8 +371,11 @@ fn main() {
             audit,
             coverage,
             report: learn_report,
+            map,
         } => {
-            if learn_report {
+            if map {
+                learn_map()
+            } else if learn_report {
                 learn_report_cmd(json)
             } else if coverage && json {
                 print_json(&coverage_json());
@@ -1053,8 +1095,9 @@ fn takes_json(cmd: &Cmd) -> bool {
             reset,
             list,
             audit,
+            map,
             ..
-        } => know.is_empty() && forget.is_empty() && reset.is_empty() && !list && !audit,
+        } => know.is_empty() && forget.is_empty() && reset.is_empty() && !list && !audit && !map,
         Cmd::Config { action } => matches!(action, None | Some(config_cmd::ConfigCmd::List { .. })),
         _ => false,
     }
@@ -1112,13 +1155,162 @@ fn learn_coverage() -> String {
 }
 
 fn learn_report_cmd(json: bool) -> anyhow::Result<()> {
-    match open_db()? {
-        Some(store) if json => print_json(
-            &serde_json::json!({ "version": 1, "text": report::learn_report(&store, now_ms())? }),
-        ),
-        Some(store) => print!("{}", report::learn_report(&store, now_ms())?),
-        None => nothing_yet(json),
+    let Some(store) = open_db()? else {
+        nothing_yet(json);
+        return Ok(());
+    };
+    let mut text = report::learn_report(&store, now_ms())?;
+    // Drills, beside how the habits went at work.
+    let drills = practice::history(&practice::load(&practice::history_file()));
+    if !drills.is_empty() {
+        text.push_str("\nPractice (flowbuddy practice), first score to latest:\n");
+        text.push_str(&drills);
     }
+    if json {
+        print_json(&serde_json::json!({ "version": 1, "text": text }));
+    } else {
+        print!("{text}");
+    }
+    Ok(())
+}
+
+fn practice_cmd(
+    drill: Option<&str>,
+    rounds: usize,
+    editor: &str,
+    history: bool,
+) -> anyhow::Result<()> {
+    let path = practice::history_file();
+    let mut sessions = practice::load(&path);
+    if history {
+        if sessions.is_empty() {
+            println!("No drills yet: try `flowbuddy practice`.");
+        } else {
+            print!("{}", practice::history(&sessions));
+        }
+        return Ok(());
+    }
+    let (family, why) = practice_pick(drill)?;
+    match &why {
+        Some(habit) => println!("A drill for: {habit}"),
+        None if drill.is_none() => println!("Nothing to go on yet, so: moving up and down."),
+        None => {}
+    }
+    let d = flowbuddy_core::practice::drill(family, rounds, practice::seed());
+    let dir = std::env::temp_dir().join(format!("flowbuddy-practice-{}", std::process::id()));
+    let drill_path = practice::write_drill(&dir, &d)?;
+    let out = dir.join("result.json");
+    let cmd = practice::editor_command(editor, &drill_path, &out);
+    let status = std::process::Command::new(&cmd[0]).args(&cmd[1..]).status();
+    let result = std::fs::read_to_string(&out);
+    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(e) = status {
+        anyhow::bail!("couldn't start {editor}: {e}");
+    }
+    let Ok(result) = result else {
+        anyhow::bail!(
+            "the drill didn't run: is the Flow Buddy Vim plugin installed? (scripts/install.sh)"
+        );
+    };
+    practice_keep(family, &result, &mut sessions, &path)
+}
+
+/// `--print-drill`: the drill for `:FlowBuddyPractice`, with why it was
+/// picked.
+fn practice_print(drill: Option<&str>, rounds: usize) -> anyhow::Result<()> {
+    let (family, why) = practice_pick(drill)?;
+    let d = flowbuddy_core::practice::drill(family, rounds, practice::seed());
+    let mut json = serde_json::to_value(&d)?;
+    json["why"] = serde_json::json!(why);
+    println!("{json}");
+    Ok(())
+}
+
+/// `--record`: keep a drill run elsewhere, and say how it went.
+fn practice_record(drill: &str, result: &std::path::Path) -> anyhow::Result<()> {
+    let family = flowbuddy_core::practice::Family::parse(drill)
+        .ok_or_else(|| anyhow::anyhow!("no drill called {drill}"))?;
+    let text = std::fs::read_to_string(result)
+        .map_err(|e| anyhow::anyhow!("can't read {}: {e}", result.display()))?;
+    let path = practice::history_file();
+    let mut sessions = practice::load(&path);
+    practice_keep(family, &text, &mut sessions, &path)
+}
+
+/// Report a result and add it to the history.
+fn practice_keep(
+    family: flowbuddy_core::practice::Family,
+    result: &str,
+    sessions: &mut Vec<flowbuddy_core::practice::Session>,
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let outcome: practice::Outcome = serde_json::from_str(result)
+        .map_err(|e| anyhow::anyhow!("the drill's result is unreadable: {e}"))?;
+    if outcome.rounds.is_empty() {
+        println!("Stopped before the first round was done; nothing kept.");
+        return Ok(());
+    }
+    let session = flowbuddy_core::practice::Session {
+        at: now_ms() / 1000,
+        family,
+        rounds: outcome.rounds,
+    };
+    let before = sessions.iter().rev().find(|s| s.family == family).cloned();
+    print!(
+        "{}",
+        practice::report(&session, before.as_ref(), outcome.stopped, session.at)
+    );
+    sessions.push(session);
+    practice::save(path, sessions)?;
+    Ok(())
+}
+
+/// Which drill: the one named, or your weakest habit's, and why.
+fn practice_pick(
+    drill: Option<&str>,
+) -> anyhow::Result<(flowbuddy_core::practice::Family, Option<String>)> {
+    use flowbuddy_core::practice::Family;
+    Ok(match drill {
+        Some(name) => (
+            Family::parse(name).ok_or_else(|| {
+                anyhow::anyhow!("no drill called {name}: vertical, horizontal, delete or inside")
+            })?,
+            None,
+        ),
+        None => match open_db()? {
+            Some(store) => {
+                let now = now_ms();
+                let week = flowbuddy_store::days::range(now, 7, 0);
+                let describe = |id: &str| Some(report::describe(id));
+                let export = flowbuddy_store::Export::build(
+                    &store,
+                    &describe,
+                    (&week.0, &week.1),
+                    now / 1000,
+                )?;
+                practice::pick(&export.patterns)
+            }
+            None => (Family::Vertical, None),
+        },
+    })
+}
+
+fn learn_map() -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    let Some(store) = open_db()? else {
+        nothing_yet(false);
+        return Ok(());
+    };
+    let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
+        .unwrap_or_default();
+    let json = report::learn_json(&store, now_ms(), config.learn.level.known_levels())?;
+    let tty = std::io::stdout().is_terminal();
+    let color = tty && std::env::var_os("NO_COLOR").is_none();
+    let width = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(80);
+    print!("{}", report::skill_map(&json, color, width));
     Ok(())
 }
 

@@ -206,7 +206,7 @@ command -v nvim >/dev/null && vim_packs+=("${XDG_DATA_HOME:-$HOME/.local/share}/
 if ((${#vim_packs[@]})); then
     say "Installing the Vim plugin"
     for pack in "${vim_packs[@]}"; do
-        for f in plugin/flowbuddy.vim autoload/flowbuddy.vim README.md; do
+        for f in plugin/flowbuddy.vim autoload/flowbuddy.vim autoload/flowbuddy/practice.vim README.md; do
             run install -Dm644 "$repo/vim-plugin/$f" "$pack/$f"
         done
     done

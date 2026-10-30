@@ -316,6 +316,61 @@ function! Test_snippets() abort
   bwipe!
 endfunction
 
+function! Test_unknown_ex_command() abort
+  call assert_true(flowbuddy#is_unknown_ex('E492: Not an editor command: W'))
+  call assert_false(flowbuddy#is_unknown_ex('E37: No write since last change'))
+  call assert_false(flowbuddy#is_unknown_ex(''))
+endfunction
+
+function! Test_tip_lines() abort
+  let msg = {'title': 'Delete inside', 'text': 'That took 6 keys. `di(` does it from anywhere inside, in 3.',
+        \ 'explain': ['`di(` delete inside the brackets']}
+  call assert_equal(['Delete inside', 'That took 6 keys. `di(`', 'does it from anywhere', 'inside, in 3.',
+        \ '  `di(` delete inside', '  the brackets'], flowbuddy#tip_lines(msg, 23))
+  call assert_equal(['Flow Buddy'], flowbuddy#tip_lines({}, 40))
+endfunction
+
+function! Test_shows_tips_is_a_boolean() abort
+  call assert_equal('true', json_encode(flowbuddy#shows_tips()))
+  let g:flowbuddy_tips = 0
+  call assert_equal('false', json_encode(flowbuddy#shows_tips()))
+  unlet g:flowbuddy_tips
+endfunction
+
+function! Test_a_tip_is_answered_once() abort
+  " Not connected: shown and closed without errors, and nothing is left.
+  call flowbuddy#on_daemon('{"type":"nudge","nudge_id":"n-1","rule_id":"r","title":"T","text":"x","ttl_ms":5000}')
+  call flowbuddy#respond('dismiss')
+  call assert_equal([{'type': 'nudge_response', 'nudge_id': 'n-1', 'action': 'dismiss'}], flowbuddy#answers())
+  call assert_equal('Flow Buddy: no tip to answer', trim(execute('call flowbuddy#respond("dismiss")')))
+  call assert_true(empty(popup_list()))
+endfunction
+
+function! Test_practice_counts_keys() abort
+  let drill = tempname()
+  let out = tempname()
+  call writefile([json_encode({'version': 1, 'family': 'vertical', 'title': 'T', 'about': 'a',
+        \ 'relative_numbers': v:true, 'rounds': [
+        \ {'lines': ['a b', 'c d', 'e f', 'g h', 'i j', 'k l'], 'cursor': [1, 1], 'ask': 'x',
+        \  'goal': {'line': 6}, 'mark': [6, 1, 0], 'par': 2, 'best': '5j'},
+        \ {'lines': ['alpha bright, cedar'], 'cursor': [1, 1], 'ask': 'x',
+        \  'goal': {'text': ['alpha , cedar']}, 'mark': [1, 7, 6], 'par': 3, 'best': 'dt,'}]})], drill)
+  call flowbuddy#practice#run(drill, out, 0)
+  sleep 20m
+  call feedkeys('jjj2j', 'xt')
+  call flowbuddy#practice#check()
+  call assert_equal([5, 1], [flowbuddy#practice#state().results[0].keys, flowbuddy#practice#state().round])
+  sleep 1200m
+  " t counts the character it takes.
+  call feedkeys('wdt,', 'xt')
+  call flowbuddy#practice#check()
+  let got = json_decode(readfile(out)[0])
+  call assert_equal([5, 4], map(copy(got.rounds), 'v:val.keys'))
+  call assert_equal('false', json_encode(got.stopped))
+  call popup_clear()
+  bwipe!
+endfunction
+
 " Runner
 let s:failed = 0
 for s:name in sort(filter(map(split(execute('function /^Test_'), "\n"), {_, l -> matchstr(l, 'Test_\w\+')}), '!empty(v:val)'))
@@ -334,9 +389,3 @@ for s:name in sort(filter(map(split(execute('function /^Test_'), "\n"), {_, l ->
 endfor
 call writefile([s:failed ? 'FAILED' : 'PASSED'], $OUT, 'a')
 qa!
-
-function! Test_unknown_ex_command() abort
-  call assert_true(flowbuddy#is_unknown_ex('E492: Not an editor command: W'))
-  call assert_false(flowbuddy#is_unknown_ex('E37: No write since last change'))
-  call assert_false(flowbuddy#is_unknown_ex(''))
-endfunction

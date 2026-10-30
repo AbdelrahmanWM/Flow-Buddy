@@ -17,6 +17,12 @@ Flow Buddy teaches Vim while you work: it notices habits, suggests better ways, 
 
 None of this research is about learning text editors: it's about memory, skills and practice in general. So these choices are a starting point, and Flow Buddy measures whether they work for you (`flowbuddy learn --report`).
 
+## Reviews
+
+A mastered skill comes back as the day's lesson ("Remember this?") once the chance you'd recall it drops under `learn.review_at` (70% by default), worked out from its half-life: the days for that chance to halve, which grows each time you use it after a gap. The review says how long it's been ("You haven't used `ci(` in 21 days"). Reviews and new lessons compete in one ranking, but reviews never outnumber new lessons over a week by more than one. `flowbuddy learn --json` gives each skill's `recall` and `half_life_days`, and the skill map shows the ones slipping.
+
+The other way to practise is on purpose: `flowbuddy practice` drills the habit you trip on most, and `learn --report` shows how drills have gone next to how tips have.
+
 ## What it covers
 
 The inventory starts from Vim's own command index (`:help index`, `runtime/doc/index.txt`): every command, by mode. `flowbuddy learn --coverage` shows how much of it the curriculum teaches and how much a rule can coach.

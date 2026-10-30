@@ -6,7 +6,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
-use flowbuddy_core::config::{self, Config, State};
+use flowbuddy_core::config::{self, Config, ShowIn, State};
 use flowbuddy_core::context::{ContextKind, VimMode};
 use flowbuddy_core::editor::{EditorKind, Motion};
 use flowbuddy_core::engine::Engine;
@@ -35,6 +35,8 @@ use crate::resolver::{AppIds, Resolved, Resolver, ShellState};
 struct Client {
     kind: Option<ClientKind>,
     tx: mpsc::UnboundedSender<ServerMsg>,
+    /// An editor plugin that shows tips itself.
+    shows_tips: bool,
 }
 
 /// A `flowbuddy coach` waiting for editors' snippets.
@@ -691,10 +693,29 @@ impl App {
             self.memory.stage(f.rule_id, ctx),
             self.memory.unhelpful_in_a_row(f.rule_id, now_ms),
         );
+        let text = self.shapes_hint(f.rule_id, text);
         self.show(f.rule_id, f.title, &text, f.mode == VimMode::Insert, now_ms);
         self.memory.nudged(f.rule_id, now_ms);
         self.memory
             .tip_shown(f.rule_id, self.mode.as_str(), hour, now_ms);
+    }
+
+    /// Once ever, on a tip that counted keys where the editor plugin could
+    /// have named the exact command: how to have it do that.
+    fn shapes_hint(&mut self, rule_id: &str, text: String) -> String {
+        const VAGUE: [&str; 1] = ["vim.repeat-x"];
+        if self.config.text.shapes
+            || self.state.shapes_hinted
+            || self.resolved.editor.is_none()
+            || !VAGUE.contains(&rule_id)
+        {
+            return text;
+        }
+        self.state.shapes_hinted = true;
+        self.save_state();
+        format!(
+            "{text} With text shapes on, Flow Buddy can name the exact command: flowbuddy config set text.shapes true (the text stays in the editor)."
+        )
     }
 
     /// Today's sentences from `tips.json`, written by `flowbuddy coach
@@ -739,11 +760,21 @@ impl App {
                 _ => NudgeStyle::Bar,
             }),
             explain: glossary::explain(text, insert),
+            in_editor: false,
         };
-        // To the extension and anyone watching; a notification if there's
-        // no extension to show it.
+        // In the editor you're typing in, where you're looking.
+        let editor = self.tip_editor();
+        if let Some(id) = editor {
+            self.reply(id, ServerMsg::Nudge(nudge.clone()));
+        }
+        let nudge = Nudge {
+            in_editor: editor.is_some() && self.config.coaching.show_in == ShowIn::Editor,
+            ..nudge
+        };
+        // To the extension and anyone watching; a notification if neither
+        // the editor nor the extension shows it.
         self.broadcast(ServerMsg::Nudge(nudge.clone()));
-        if !self.extension_connected() {
+        if !self.extension_connected() && !nudge.in_editor {
             // Plain notifications show no markup: drop the markers and put
             // the explanation underneath.
             let mut body = glossary::plain(&nudge.text);
@@ -772,6 +803,17 @@ impl App {
         }
         self.nudges.push_back((nudge.nudge_id, rule_id));
         self.last_nudge_ms = Some(now_ms);
+    }
+
+    /// The editor plugin to show a tip in: the one the context comes from,
+    /// if it shows tips and they're wanted there.
+    fn tip_editor(&self) -> Option<ConnId> {
+        if self.config.coaching.show_in == ShowIn::Desktop {
+            return None;
+        }
+        self.resolved
+            .editor
+            .filter(|id| self.clients.get(id).is_some_and(|c| c.shows_tips))
     }
 
     /// Once a day, in every mode but off: one thing from the curriculum you
@@ -807,7 +849,11 @@ impl App {
         {
             return;
         }
-        let Some(pick) = self.memory.pick_something_new(self.resolved.kind, now_ms) else {
+        let Some(pick) = self.memory.pick_something_new(
+            self.resolved.kind,
+            self.reviews_allowed(now_ms),
+            now_ms,
+        ) else {
             return;
         };
         self.state.last_learn_day = Some(today);
@@ -815,11 +861,35 @@ impl App {
         self.show_lesson(pick, now_ms);
     }
 
+    /// Whether today's lesson may be a review: not more reviews than new
+    /// lessons in the last week.
+    fn reviews_allowed(&self, now_ms: u64) -> bool {
+        let week_ago = (now_ms / 1000).saturating_sub(7 * 86_400);
+        let recent = || {
+            self.state
+                .recent_lessons
+                .iter()
+                .filter(|(t, _)| *t >= week_ago)
+        };
+        let reviews = recent().filter(|(_, review)| *review).count();
+        reviews <= recent().count() - reviews
+    }
+
     /// Show a lesson (or a review), with its challenge.
     fn show_lesson(&mut self, pick: flowbuddy_core::curriculum::Pick, now_ms: u64) {
         const RULE: &str = "learn.daily";
         let item = pick.item;
         let mut text = flowbuddy_core::curriculum::tip_text(item);
+        // A review says why it's back.
+        if pick.review
+            && let Some(days) = pick.idle_days.filter(|d| *d >= 2)
+        {
+            text = format!("You haven't used {} in {days} days. {text}", item.keys);
+        }
+        let week_ago = (now_ms / 1000).saturating_sub(7 * 86_400);
+        self.state.recent_lessons.retain(|(t, _)| *t >= week_ago);
+        self.state.recent_lessons.push((now_ms / 1000, pick.review));
+        self.save_state();
         // Producing it beats reading about it: a challenge to use it.
         if self.config.learn.challenges {
             text.push_str(" Challenge: use it the next time it fits.");
@@ -902,7 +972,11 @@ impl App {
         }
         // Not this one again soon: it was shown, and isn't picked again
         // within `again_after_days`.
-        let Some(pick) = self.memory.pick_something_new(self.resolved.kind, now_ms) else {
+        let Some(pick) = self.memory.pick_something_new(
+            self.resolved.kind,
+            self.reviews_allowed(now_ms),
+            now_ms,
+        ) else {
             return;
         };
         if Some(pick.item.id) == self.todays_lesson {
@@ -1654,7 +1728,14 @@ impl App {
     pub fn on_conn(&mut self, ev: ConnEvent, now_ms: u64) {
         match ev {
             ConnEvent::Opened { id, tx } => {
-                self.clients.insert(id, Client { kind: None, tx });
+                self.clients.insert(
+                    id,
+                    Client {
+                        kind: None,
+                        tx,
+                        shows_tips: false,
+                    },
+                );
             }
             ConnEvent::Closed { id } => {
                 self.clients.remove(&id);
@@ -1693,10 +1774,12 @@ impl App {
                 client,
                 editor,
                 pid,
+                shows_tips,
                 ..
             } => {
                 if let Some(c) = self.clients.get_mut(&conn) {
                     c.kind = Some(client);
+                    c.shows_tips = shows_tips && client == ClientKind::Editor;
                 }
                 self.reply(
                     conn,
@@ -2249,6 +2332,7 @@ pub(crate) mod tests {
             client_version: "test".into(),
             editor: None,
             pid: None,
+            shows_tips: false,
         }
     }
 
@@ -3009,6 +3093,7 @@ pub(crate) mod tests {
                 client_version: "test".into(),
                 editor: Some(kind),
                 pid: Some(pid),
+                shows_tips: false,
             },
             0,
         );
@@ -3189,6 +3274,171 @@ pub(crate) mod tests {
             n[0].explain[0],
             "`}`: down to the next blank line (end of the paragraph)"
         );
+    }
+
+    /// An editor plugin that shows tips itself.
+    fn tipping_editor(
+        app: &mut App,
+        id: ConnId,
+        kind: EditorKind,
+        pid: u32,
+    ) -> UnboundedReceiver<ServerMsg> {
+        let rx = connect(app, id);
+        send(
+            app,
+            id,
+            ClientMsg::Hello {
+                client: ClientKind::Editor,
+                client_version: "test".into(),
+                editor: Some(kind),
+                pid: Some(pid),
+                shows_tips: true,
+            },
+            0,
+        );
+        rx
+    }
+
+    /// In terminal Vim with the plugin (conn 3): `F(ldt)`, which gets a
+    /// tip for `di(`.
+    fn delete_inside_by_hand(app: &mut App) {
+        use flowbuddy_core::editor::{Operator, OperatorReport, TextObject};
+        send(
+            app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(app, "org.gnome.Terminal", 100);
+        keys(app, "F(ldt)");
+        let report = OperatorReport {
+            op: Operator::Delete,
+            at_ms: 650,
+            objects: vec![TextObject::InnerParen],
+            range: None,
+        };
+        send(app, 3, ClientMsg::Operator(report), 700);
+    }
+
+    #[test]
+    fn a_vague_tip_says_once_how_to_get_exact_ones() {
+        let mut app = test_app(CoachingMode::Active);
+        app.config.coaching.cooldown_minutes = 0;
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        keys(&mut app, "xxxxxw");
+        let first = nudges(&mut ext);
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert!(
+            first[0].text.contains("text.shapes true"),
+            "{}",
+            first[0].text
+        );
+        assert!(app.state.shapes_hinted);
+        type_at(&mut app, "xxxxxw", 120_000);
+        let again = nudges(&mut ext);
+        assert!(
+            again.iter().all(|n| !n.text.contains("text.shapes")),
+            "{again:?}"
+        );
+    }
+
+    #[test]
+    fn no_shapes_hint_when_they_are_on_or_without_a_plugin() {
+        let mut app = test_app(CoachingMode::Active);
+        app.config.text.shapes = true;
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        focus(&mut app, "org.gnome.Terminal", 100);
+        keys(&mut app, "<Esc>xxxxxw");
+        assert!(
+            nudges(&mut ext)
+                .iter()
+                .all(|n| !n.text.contains("text.shapes"))
+        );
+
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        keys(&mut app, "<Esc>xxxxxw");
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1);
+        assert!(!n[0].text.contains("text.shapes"));
+        assert!(!app.state.shapes_hinted);
+    }
+
+    #[test]
+    fn tips_show_in_the_editor_you_type_in() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let mut vim = tipping_editor(&mut app, 3, EditorKind::Vim, 210);
+        delete_inside_by_hand(&mut app);
+        let in_vim = nudges(&mut vim);
+        assert_eq!(in_vim.len(), 1);
+        let bar = nudges(&mut ext);
+        assert_eq!(bar.len(), 1);
+        assert!(bar[0].in_editor, "the top bar only keeps it in its menu");
+        assert_eq!(bar[0].nudge_id, in_vim[0].nudge_id);
+    }
+
+    #[test]
+    fn tips_stay_on_the_desktop_for_plugins_that_dont_show_them() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let mut vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        delete_inside_by_hand(&mut app);
+        assert!(nudges(&mut vim).is_empty());
+        let bar = nudges(&mut ext);
+        assert_eq!(bar.len(), 1);
+        assert!(!bar[0].in_editor);
+    }
+
+    #[test]
+    fn where_tips_show_can_be_chosen() {
+        for (show_in, in_vim, in_editor) in [(ShowIn::Desktop, 0, false), (ShowIn::Both, 1, false)]
+        {
+            let mut app = test_app(CoachingMode::Active);
+            app.config.coaching.show_in = show_in;
+            let mut ext = ext_hello(&mut app, 1);
+            let mut vim = tipping_editor(&mut app, 3, EditorKind::Vim, 210);
+            delete_inside_by_hand(&mut app);
+            assert_eq!(nudges(&mut vim).len(), in_vim, "{show_in:?}");
+            let bar = nudges(&mut ext);
+            assert_eq!(bar.len(), 1, "{show_in:?}");
+            assert_eq!(bar[0].in_editor, in_editor, "{show_in:?}");
+        }
+    }
+
+    #[test]
+    fn no_notification_for_a_tip_the_editor_shows() {
+        let recorder = crate::notify::fake::Recorder::default();
+        let state = State {
+            mode: Some(CoachingMode::Active),
+            ..Default::default()
+        };
+        let mut app = App::new(
+            test_config(),
+            state,
+            test_resolver(),
+            Box::new(recorder.clone()),
+        );
+        app.claude_probe = || false;
+        app.hold_ms = 0;
+        let mut vim = tipping_editor(&mut app, 3, EditorKind::Vim, 210);
+        delete_inside_by_hand(&mut app);
+        assert_eq!(nudges(&mut vim).len(), 1);
+        assert!(recorder.0.borrow().is_empty());
     }
 
     #[test]
@@ -3466,6 +3716,42 @@ pub(crate) mod tests {
                 .unwrap()
                 .ends_with("1 skipped today")
         );
+    }
+
+    #[test]
+    fn reviews_dont_outnumber_new_lessons() {
+        let mut app = test_app(CoachingMode::Active);
+        let now = 30 * 86_400_000;
+        let day = 86_400;
+        assert!(app.reviews_allowed(now), "nothing yet");
+        app.state.recent_lessons = vec![(29 * day, true), (28 * day, false)];
+        assert!(app.reviews_allowed(now));
+        app.state.recent_lessons.push((27 * day, true));
+        assert!(!app.reviews_allowed(now), "two reviews to one lesson");
+        // A week on, they don't count.
+        assert!(app.reviews_allowed(now + 8 * 86_400_000));
+    }
+
+    #[test]
+    fn a_review_says_how_long_its_been() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let item = flowbuddy_core::curriculum::find("find").unwrap();
+        let pick = flowbuddy_core::curriculum::Pick {
+            item,
+            review: true,
+            idle_days: Some(21),
+        };
+        app.show_lesson(pick, 1_000);
+        let n = nudges(&mut ext);
+        assert_eq!(n[0].title, "Remember this?");
+        assert!(
+            n[0].text
+                .starts_with(&format!("You haven't used {} in 21 days. ", item.keys)),
+            "{}",
+            n[0].text
+        );
+        assert_eq!(app.state.recent_lessons, vec![(1, true)]);
     }
 
     #[test]

@@ -11,6 +11,8 @@ pub struct Question {
     pub section: &'static str,
     pub key: &'static str,
     pub ask: &'static str,
+    /// More about it, under the question.
+    pub about: Option<&'static str>,
     pub choices: &'static [(&'static str, &'static str)],
 }
 
@@ -19,6 +21,7 @@ pub const QUESTIONS: &[Question] = &[
         section: "coaching",
         key: "default_mode",
         ask: "How often should tips come?",
+        about: None,
         choices: &[
             (
                 "\"balanced\"",
@@ -35,6 +38,7 @@ pub const QUESTIONS: &[Question] = &[
         section: "coaching",
         key: "when",
         ask: "When should a live tip show?",
+        about: None,
         choices: &[
             ("\"now\"", "right away"),
             ("\"pause\"", "when you stop typing for a moment"),
@@ -44,6 +48,7 @@ pub const QUESTIONS: &[Question] = &[
         section: "learn",
         key: "level",
         ask: "How much Vim do you know?",
+        about: None,
         choices: &[
             (
                 "\"beginner\"",
@@ -63,6 +68,7 @@ pub const QUESTIONS: &[Question] = &[
         section: "ai",
         key: "provider",
         ask: "Use an AI for `coach`, the weekly note and reviews?",
+        about: None,
         choices: &[
             (
                 "\"none\"",
@@ -83,8 +89,14 @@ pub const QUESTIONS: &[Question] = &[
     Question {
         section: "text",
         key: "shapes",
-        ask: "Let the editor plugins look at the text around edits for exact tips (it stays in the editor)?",
-        choices: &[("false", "no"), ("true", "yes")],
+        ask: "Exact tips: let the editor plugins look at the text around your edits?",
+        about: Some(
+            "With it, a tip can name the exact command for what you just did (d} or de, not \"use a motion\"). The Vim plugin and the VS Code companion read the text inside the editor and send only counts; the text never leaves the editor, and files that look secret (.env, keys) are never read.",
+        ),
+        choices: &[
+            ("false", "no, tips from keys only"),
+            ("true", "yes, exact tips"),
+        ],
     },
 ];
 
@@ -115,6 +127,9 @@ pub fn ask(
     for (qi, q) in QUESTIONS.iter().enumerate() {
         let now = current(text, q).unwrap_or(0);
         writeln!(out, "\n{}", q.ask)?;
+        if let Some(about) = q.about {
+            writeln!(out, "{about}")?;
+        }
         for (i, (_, what)) in q.choices.iter().enumerate() {
             let mark = if i == now { "*" } else { " " };
             writeln!(out, " {mark}{}. {what}", i + 1)?;
@@ -185,6 +200,11 @@ mod tests {
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains(" *2. as you work"));
         assert!(out.contains("Type a number from 1 to"));
+        assert!(out.contains("the text never leaves the editor"));
+        assert!(
+            out.contains(" *1. no, tips from keys only"),
+            "off unless you say"
+        );
     }
 
     #[test]

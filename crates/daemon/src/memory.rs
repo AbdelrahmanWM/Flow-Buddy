@@ -41,6 +41,8 @@ fn pace(config: &Config) -> curriculum::Pace {
     curriculum::Pace {
         again_after_days: u64::from(config.learn.again_after_days),
         max_showings: config.learn.max_showings,
+        review_at: config.learn.review_at,
+        reviews: true,
     }
 }
 
@@ -535,6 +537,7 @@ impl Memory {
             let row = items.get(id);
             let u = uses.get(id).copied().unwrap_or_default();
             let skill = skills.get(id).map(|s| s.percents(&model));
+            let half_life = skills.get(id).map(|s| s.half_life_days(&model));
             curriculum::Progress {
                 uses: u.total,
                 recent_uses: u.recent,
@@ -544,6 +547,7 @@ impl Memory {
                 learned: row.is_some_and(|r| r.learned_at.is_some()),
                 mastery: skill.map(|s| s.0),
                 recall: skill.map(|s| s.1),
+                half_life,
             }
         })
     }
@@ -581,7 +585,13 @@ impl Memory {
     }
 
     /// The day's "something new", or a review, if anything's left.
-    pub fn pick_something_new(&self, ctx: ContextKind, now_ms: u64) -> Option<curriculum::Pick> {
+    /// `reviews`: whether a review may come today.
+    pub fn pick_something_new(
+        &self,
+        ctx: ContextKind,
+        reviews: bool,
+        now_ms: u64,
+    ) -> Option<curriculum::Pick> {
         let progress = self.progress(Some(ctx), now_ms)?;
         // This week's habits, most hits first.
         let (from, to) = flowbuddy_store::days::range(now_ms, 7, 0);
@@ -598,7 +608,10 @@ impl Memory {
             now_ms / 1000,
             ctx,
             &habits,
-            self.pace,
+            curriculum::Pace {
+                reviews,
+                ..self.pace
+            },
         )
     }
 

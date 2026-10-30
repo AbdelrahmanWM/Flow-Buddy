@@ -118,6 +118,12 @@ pub static SETTINGS: &[Setting] = &[
         "How long a tip stays on screen, in seconds",
     )),
     s(
+        "coaching.show_in",
+        Kind::Choice(&["editor", "desktop", "both"]),
+        COACHING,
+        "Where tips show: in the editor you're typing in, on the desktop, or both",
+    ),
+    s(
         "coaching.nudge_style",
         Kind::Choice(&["bar", "card"]),
         COACHING,
@@ -192,6 +198,12 @@ pub static SETTINGS: &[Setting] = &[
         TIMING,
         "Times a lesson is shown at most, if you don't take it up",
     ),
+    s(
+        "learn.review_at",
+        Kind::Int { min: 20, max: 95 },
+        TIMING,
+        "Bring back a skill you know when the chance you'd recall it drops under this percent",
+    ),
     basic(s(
         "learn.daily",
         Kind::Bool,
@@ -247,12 +259,12 @@ pub static SETTINGS: &[Setting] = &[
         "Times a habit comes back in a week to count as slipping",
     ),
     notice(
-        s(
+        basic(s(
             "text.shapes",
             Kind::Bool,
             PRIVACY,
-            "Editor plugins look at the text around a move or edit to give exact tips; only numbers leave the editor",
-        ),
+            "Exact tips: editor plugins look at the text around a move or edit; only numbers leave the editor",
+        )),
         "The editor plugins will read the text around your edits (secret files never). Only counts and shapes are sent to Flow Buddy.",
     ),
     notice(
@@ -443,6 +455,10 @@ pub static MORE: &[(&str, &str)] = &[
         "How long a tip stays on screen before fading. It stays in the menu after that, and Keep on screen keeps it up until you close it.",
     ),
     (
+        "coaching.show_in",
+        "Editor: in Vim (a small window at the top right) or VS Code (the status bar), where your eyes are, when their Flow Buddy plugin is connected; everywhere else on the desktop. Desktop: always the top bar, a card or a notification. Both: in the two.",
+    ),
+    (
         "coaching.nudge_style",
         "A label in the top bar is the quietest; a card at the top of the screen is easier to read. By default active and balanced mode use the card, passive the bar.",
     ),
@@ -489,6 +505,10 @@ pub static MORE: &[(&str, &str)] = &[
     (
         "learn.max_showings",
         "How many times a lesson you don't take up is shown at all. After that it's left alone (\"I know this\" in the menu skips it at once).",
+    ),
+    (
+        "learn.review_at",
+        "70 by default. Flow Buddy works out from your own gaps between uses how fast each skill fades (its half-life), and brings a mastered one back as the day's lesson before you'd forget it: \"Remember this?\". Higher: sooner and more often; lower: only once it's nearly gone. Reviews never outnumber new lessons in a week by more than one.",
     ),
     (
         "learn.daily",

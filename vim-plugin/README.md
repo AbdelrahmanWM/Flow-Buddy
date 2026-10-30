@@ -13,6 +13,16 @@ It does nothing when the daemon isn't running, and retries every few seconds. To
 
 The facts are worked out by trying motions on the buffer, which stops after 15 ms per movement so long files and slow folding stay responsive (`let g:flowbuddy_facts_budget_ms = 30` to allow more). `:echo flowbuddy#stats()` shows how many movements were looked at, how many ran out of time, and the slowest in milliseconds.
 
+## Tips
+
+Tips for what you do in Vim show in Vim, in a small window at the top right, for a few seconds (`coaching.nudge_seconds`). It doesn't take the cursor; a click closes it. `:FlowBuddyGotIt` and `:FlowBuddyNotHelpful` answer the tip on show, like the top-bar menu does. To have them on the desktop instead: `flowbuddy config set coaching.show_in desktop`, or `let g:flowbuddy_tips = 0` for this Vim only. Needs Vim's popup windows (`+popupwin`) or Neovim.
+
+## Practice and the skill map
+
+`:FlowBuddyPractice` runs a two-minute drill on your weakest habit in the Vim you're in (`:FlowBuddyPractice delete` for a given one; Tab completes the names), and reports how it went when it ends; `:bd` closes it. `:FlowBuddyMap` shows every skill as a tile in a split. Both need the `flowbuddy` command.
+
+From a terminal, `flowbuddy practice` starts Vim with `flowbuddy#practice#run`, which runs the drill in a scratch buffer and counts your keys with buffer-local mappings that pass each key through. `:q` stops early; the rounds done are kept.
+
 ## Over ssh
 
 Run `flowbuddy ssh-config <host>` on your machine and add what it prints to `~/.ssh/config`. It forwards Flow Buddy's socket to the remote host as `/tmp/flowbuddy-<you>.sock` (readable only by you), where the plugin looks for it whenever `$SSH_CONNECTION` is set. Install the plugin on the remote host too. Vim there then counts while its terminal has focus, if your terminal and ssh pass focus events through.

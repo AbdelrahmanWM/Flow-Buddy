@@ -17,6 +17,18 @@ export function cliPath(onPath, exists, home) {
     return null;
 }
 
+// A terminal running `argv`: the desktop's chosen one, else one we know.
+// `onPath(name)` is its path or null.
+export function inTerminal(argv, onPath) {
+    if (onPath('xdg-terminal-exec'))
+        return ['xdg-terminal-exec', ...argv];
+    for (const t of ['ptyxis', 'kgx', 'gnome-terminal']) {
+        if (onPath(t))
+            return [t, '--', ...argv];
+    }
+    return null;
+}
+
 // Short names for the settings shown first; the rest are named from
 // their key.
 const LABELS = {
@@ -24,10 +36,12 @@ const LABELS = {
     'coaching.when': 'When tips appear',
     'coaching.quiet_hours': 'Quiet hours',
     'coaching.nudge_seconds': 'Seconds a tip stays',
+    'coaching.show_in': 'Where tips show',
     'learn.daily': 'Something new every day',
     'learn.level': 'Your level',
     'learn.challenges': 'Challenges after lessons',
     'learn.holdout': 'Tips held back to measure',
+    'learn.review_at': 'Review a skill when recall drops below (%)',
     'text.shapes': 'Exact tips from the text',
     'text.ai_snippets': 'Snippets for your AI',
     'text.cloud': 'Snippets to a cloud AI',
@@ -189,6 +203,44 @@ export function progressLines(json) {
     if (next)
         lines.push('', `Ready next: ${next.keys}: ${next.what}`);
     return lines;
+}
+
+export const LEVELS = {1: 'Basics', 2: 'Bigger moves', 3: 'Power tools', 4: 'Advanced'};
+
+// What each colour on the skill map means, in order.
+export const TILES = [
+    ['known', 'You use it'],
+    ['slipping', 'Slipping: not used lately'],
+    ['learning', 'Learning'],
+    ['ready', 'Ready to learn'],
+    ['later', 'Later'],
+];
+
+// The skill map from `learn --json`: per level, its tiles and how many
+// you use. An older `flowbuddy` without `tile` falls back on `state`.
+export function skillGroups(json) {
+    if (json.nothing_yet)
+        return [];
+    return [1, 2, 3, 4].map(level => {
+        const items = json.items.filter(i => i.level === level);
+        const tiles = items.map(i => ({
+            keys: i.keys,
+            tile: i.tile ?? (i.state === 'known' ? 'known' : i.state === 'ready' ? 'ready' : 'later'),
+            tooltip: tileTooltip(i),
+        }));
+        return {name: LEVELS[level], known: tiles.filter(t => t.tile === 'known').length, tiles};
+    }).filter(g => g.tiles.length);
+}
+
+export function tileTooltip(item) {
+    const lines = [`${item.keys}: ${item.what}`];
+    if (item.uses)
+        lines.push(`Used ${item.uses === 1 ? 'once' : `${item.uses} times`}${item.days_idle ? `, last ${item.days_idle === 1 ? 'yesterday' : `${item.days_idle} days ago`}` : ''}`);
+    else
+        lines.push('Not used yet');
+    if (item.recall !== null && item.recall !== undefined)
+        lines.push(`About ${item.recall}% likely you'd remember it today`);
+    return lines.join('\n');
 }
 
 export function coverageLines(json) {

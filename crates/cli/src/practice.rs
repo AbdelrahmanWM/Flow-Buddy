@@ -11,13 +11,50 @@ use flowbuddy_core::practice::{self, Drill, Family, RoundResult, Session};
 /// Sessions kept in the history.
 const KEEP: usize = 200;
 
-/// Which drill, and why: the most pressing habit that has one.
-pub fn pick(patterns: &[flowbuddy_store::PatternExport]) -> (Family, Option<String>) {
-    patterns
+/// Which drill, and why: the most pressing habit that has one, unless
+/// that was the last drill; then the one not done for the longest, so
+/// running it again gives something different.
+pub fn pick(
+    patterns: &[flowbuddy_store::PatternExport],
+    sessions: &[Session],
+) -> (Family, Option<String>) {
+    let habit = patterns
         .iter()
         .filter(|p| p.stage != flowbuddy_core::learning::Stage::Mastered)
-        .find_map(|p| practice::family_for(&p.rule).map(|f| (f, Some(p.description.clone()))))
-        .unwrap_or((Family::Vertical, None))
+        .find_map(|p| practice::family_for(&p.rule).map(|f| (f, p.description.clone())));
+    let Some(last) = sessions.last().map(|s| s.family) else {
+        return habit.map_or((Family::Vertical, None), |(f, why)| (f, Some(why)));
+    };
+    if let Some((f, why)) = habit.filter(|(f, _)| *f != last) {
+        return (f, Some(why));
+    }
+    let done = |f: Family| sessions.iter().rev().position(|s| s.family == f);
+    let other = Family::ALL
+        .into_iter()
+        .filter(|f| *f != last)
+        // Never done first, then the longest ago.
+        .min_by_key(|f| std::cmp::Reverse(done(*f).unwrap_or(usize::MAX)))
+        .unwrap_or(last);
+    (
+        other,
+        Some(format!(
+            "something different from last time ({})",
+            last.title().to_lowercase()
+        )),
+    )
+}
+
+/// The other drills, by name, for the end of a report.
+pub fn others(family: Family) -> String {
+    let names: Vec<String> = Family::ALL
+        .into_iter()
+        .filter(|f| *f != family)
+        .map(|f| format!("{} ({})", f.name(), f.title().to_lowercase()))
+        .collect();
+    format!(
+        "Other drills: {}. Run `flowbuddy practice <name>`, or `:FlowBuddyPractice <name>` in Vim; with no name, the next one is picked for you.",
+        names.join(", ")
+    )
 }
 
 pub fn history_file() -> PathBuf {
@@ -109,6 +146,7 @@ pub fn report(session: &Session, before: Option<&Session>, stopped: bool, now: u
     if stopped {
         let _ = writeln!(out, "\nStopped early; the rounds done are kept.");
     }
+    let _ = writeln!(out, "\n{}", others(session.family));
     out
 }
 
@@ -218,6 +256,36 @@ mod tests {
         );
         assert!(text.contains("  3 keys; 5j does it in 2"), "{text}");
         assert!(!text.contains("Stopped"));
+    }
+
+    #[test]
+    fn running_it_again_gives_another_drill() {
+        let s = |f| Session {
+            family: f,
+            ..session(1, &[(2, 2)])
+        };
+        // No habit to go on, nothing done: up and down.
+        assert_eq!(pick(&[], &[]).0, Family::Vertical);
+        // Just done: the drill never done, then the one done longest ago.
+        let (f, why) = pick(&[], &[s(Family::Vertical)]);
+        assert_eq!(f, Family::Horizontal);
+        assert_eq!(
+            why.as_deref(),
+            Some("something different from last time (moving up and down)")
+        );
+        let done = [
+            s(Family::Delete),
+            s(Family::Horizontal),
+            s(Family::Inside),
+            s(Family::Vertical),
+        ];
+        assert_eq!(pick(&[], &done).0, Family::Delete);
+        // With no habit, round them all.
+        assert_eq!(pick(&[], &[s(Family::Inside)]).0, Family::Vertical);
+        assert_eq!(
+            pick(&[], &[s(Family::Vertical), s(Family::Horizontal)]).0,
+            Family::Delete
+        );
     }
 
     #[test]

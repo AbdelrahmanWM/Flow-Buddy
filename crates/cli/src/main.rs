@@ -1201,7 +1201,7 @@ fn practice_cmd(
         }
         return Ok(());
     }
-    let (family, why) = practice_pick(drill)?;
+    let (family, why) = practice_pick(drill, &sessions)?;
     match &why {
         Some(habit) => println!("A drill for: {habit}"),
         None if drill.is_none() => println!("Nothing to go on yet, so: moving up and down."),
@@ -1229,7 +1229,8 @@ fn practice_cmd(
 /// `--print-drill`: the drill for `:FlowBuddyPractice`, with why it was
 /// picked.
 fn practice_print(drill: Option<&str>, rounds: usize) -> anyhow::Result<()> {
-    let (family, why) = practice_pick(drill)?;
+    let sessions = practice::load(&practice::history_file());
+    let (family, why) = practice_pick(drill, &sessions)?;
     let d = flowbuddy_core::practice::drill(family, rounds, practice::seed());
     let mut json = serde_json::to_value(&d)?;
     json["why"] = serde_json::json!(why);
@@ -1276,9 +1277,10 @@ fn practice_keep(
     Ok(())
 }
 
-/// Which drill: the one named, or your weakest habit's, and why.
+/// Which drill: the one named, or the one picked for you, and why.
 fn practice_pick(
     drill: Option<&str>,
+    sessions: &[flowbuddy_core::practice::Session],
 ) -> anyhow::Result<(flowbuddy_core::practice::Family, Option<String>)> {
     use flowbuddy_core::practice::Family;
     Ok(match drill {
@@ -1299,9 +1301,9 @@ fn practice_pick(
                     (&week.0, &week.1),
                     now / 1000,
                 )?;
-                practice::pick(&export.patterns)
+                practice::pick(&export.patterns, sessions)
             }
-            None => (Family::Vertical, None),
+            None => practice::pick(&[], sessions),
         },
     })
 }

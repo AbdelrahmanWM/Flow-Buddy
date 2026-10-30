@@ -85,6 +85,15 @@ function progressText(json) {
     return lines.join('\n');
 }
 
+// The drills for the Practice command; the first lets Flow Buddy choose.
+const DRILLS = [
+    {label: 'Picked for you', description: 'your weakest habit, or another one than last time', args: []},
+    {label: 'Moving up and down', description: '5j, 12k, } and {', args: ['vertical']},
+    {label: 'Moving along a line', description: '3w, fd', args: ['horizontal']},
+    {label: 'Deleting by words', description: 'dw, d2w, dt, and D', args: ['delete']},
+    {label: 'Inside brackets and quotes', description: 'di( di" di{ di[', args: ['inside']},
+];
+
 const LEVELS = {1: 'Basics', 2: 'Bigger moves', 3: 'Power tools', 4: 'Advanced'};
 const TILES = [
     ['known', 'You use it'],
@@ -237,7 +246,11 @@ function register(vscode, run, subscriptions, cli = () => null) {
             const path = cli();
             if (!path)
                 throw new Error('the flowbuddy command isn\'t installed: run scripts/install.sh from the Flow Buddy folder');
-            const term = vscode.window.createTerminal({name: 'Flow Buddy practice', shellPath: path, shellArgs: ['practice']});
+            const pick = await vscode.window.showQuickPick(DRILLS, {title: 'Flow Buddy: which drill?'});
+            if (!pick)
+                return;
+            const term = vscode.window.createTerminal({name: 'Flow Buddy practice', shellPath: path,
+                shellArgs: ['practice', ...pick.args]});
             term.show();
         },
         'flowbuddy.skillMap': async () => {
@@ -253,4 +266,4 @@ function register(vscode, run, subscriptions, cli = () => null) {
         subscriptions.push(vscode.commands.registerCommand(id, () => fn().catch(failed)));
 }
 
-module.exports = {cliPath, settingItems, choices, typed, needsConfirm, doctorText, progressText, mapHtml, register};
+module.exports = {cliPath, settingItems, choices, typed, needsConfirm, doctorText, progressText, mapHtml, DRILLS, register};

@@ -102,6 +102,7 @@ check('map tile', html.includes('<span class="tile known" title="w: words\nUsed 
 check('map escapes', html.includes('&lt;C-d&gt;') && html.includes('&quot;half&quot;') && !html.includes('<C-d>'), true);
 check('map counts', html.includes('Basics <small>you use 1 of 2</small>'), true);
 check('map: no scripts', /<script/i.test(html) || !html.includes("default-src 'none'"), false);
+check('drills: the CLI\'s names', t.DRILLS.map(d => d.args.join('')).join(' '), ' vertical horizontal delete inside');
 check('map: nothing yet', t.mapHtml({nothing_yet: true}).includes('Nothing recorded yet'), true);
 
 print(`${passed} passed, ${failed} failed`);

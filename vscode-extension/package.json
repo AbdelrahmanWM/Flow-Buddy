@@ -56,7 +56,7 @@
       },
       {
         "command": "flowbuddy.practice",
-        "title": "Practice (a two-minute drill in Vim)",
+        "title": "Practice (a two-minute drill in Vim: pick one)",
         "category": "Flow Buddy"
       },
       {

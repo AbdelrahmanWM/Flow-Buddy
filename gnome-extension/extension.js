@@ -15,6 +15,7 @@ import {getInputSourceManager} from 'resource:///org/gnome/shell/ui/status/keybo
 import {DaemonLink} from './daemon.js';
 import {FocusReporter} from './focus.js';
 import {Card} from './card.js';
+import {WELCOME} from './settings-model.js';
 import {Indicator} from './indicator.js';
 
 // Our request for recent tips; its answer comes back with this id.
@@ -35,7 +36,12 @@ export default class FlowBuddyExtension extends Extension {
             },
             onDisconnected: () => this._indicator.setConnected(false),
         });
-        this._indicator = new Indicator(this._link, () => this.openPreferences(), this.getSettings());
+        this._indicator = new Indicator(this._link, () => this.openPreferences(), this.getSettings(),
+            () => {
+                // The settings window opens the tour when it sees this.
+                this.getSettings().set_boolean('open-tour', true);
+                this.openPreferences();
+            });
         Main.panel.addToStatusArea(this.uuid, this._indicator);
         this._card = new Card();
         // Shortcuts for the current tip, so it's never a trip to the menu.
@@ -99,6 +105,11 @@ export default class FlowBuddyExtension extends Extension {
         switch (msg.type) {
         case 'welcome':
             this._indicator.setMode(msg.mode, null);
+            // Once ever: say it's running, and where the tour is.
+            if (!this._settings.get_boolean('welcomed')) {
+                this._settings.set_boolean('welcomed', true);
+                this._card.show(WELCOME);
+            }
             break;
         case 'result':
             if (msg.id === RECENT_ID && Array.isArray(msg.data))

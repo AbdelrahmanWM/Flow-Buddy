@@ -25,6 +25,10 @@ Every setting, then every rule's two settings.
 
 `{"version": 1, "ok": false, "checks": [{"ok": true, "what": "…", "fix": null}, …]}`. `fix` says what to do when `ok` is false. It exits 1 when any check fails, as without `--json`.
 
+## `flowbuddy tour --json`
+
+The tour's parts, for the settings window's Welcome dialog: `{"version": 1, "parts": [...], "settings": [...]}`. Each part has `title`, `text` and `after` (paragraphs separated by a blank line; commands in backticks), `rows` (pairs of a command or label and what it is), and `action`: `none`, `checks` (show the doctor's checks after the text), `sample` (offer the sample tip, `flowbuddy tour --sample`, which prints `{"shown": "card" | "notification"}`) or `settings` (show the settings listed in `settings`, which are `config` keys).
+
 ## `flowbuddy learn --json`
 
 `{"version": 1, "latest": {"id", "text", "example", "learned"} or null, "items": [{"id", "level", "keys", "what", "state", "tile", "uses", "days_idle", "half_life_days", "mastery", "recall"}, …]}`. `state` is `known`, `ready` (one step up from what you know) or `later`. `tile` is how the skill map colours it: `known`, `slipping` (known, but under even odds you'd recall it today), `learning` (used, not known yet), `ready` or `later`. `days_idle` is days since you last used it, or `null`. `half_life_days` is how many days the chance of recalling it takes to halve, fitted to your use (`null` without evidence). `mastery` and `recall` are percentages, or `null` without evidence.

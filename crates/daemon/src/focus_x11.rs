@@ -25,10 +25,29 @@ pub fn class(wm_class: &[u8]) -> Option<String> {
     String::from_utf8(class.to_vec()).ok()
 }
 
-/// Whether to watch X11 for focus: an X11 session.
+/// Whether to watch X11 for focus: an X11 session with a display on this
+/// machine. A remote one (`localhost:10.0` from `ssh -X`) would be a
+/// network connection, and the daemon makes none.
 pub fn wanted() -> bool {
     std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "x11")
-        && std::env::var_os("DISPLAY").is_some()
+        && std::env::var("DISPLAY").is_ok_and(|d| {
+            let local = local_display(&d);
+            if !local {
+                tracing::warn!(display = %d, "not watching a display over the network");
+            }
+            local
+        })
+}
+
+/// `:0`, `:1.0`, `unix:0` or a socket path: reached through a Unix socket.
+pub fn local_display(display: &str) -> bool {
+    if display.starts_with('/') {
+        return true;
+    }
+    match display.rsplit_once(':') {
+        Some((host, _)) => host.is_empty() || host == "unix",
+        None => false,
+    }
 }
 
 /// Send the focused window, and again each time the X server says it
@@ -104,6 +123,16 @@ fn run(tx: &UnboundedSender<Focus>) -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn only_local_displays() {
+        for d in [":0", ":1.0", "unix:0", "/tmp/.X11-unix/X0"] {
+            assert!(local_display(d), "{d}");
+        }
+        for d in ["localhost:10.0", "192.168.1.5:0", "host:0", "", "0"] {
+            assert!(!local_display(d), "{d}");
+        }
+    }
 
     #[test]
     fn class_from_wm_class() {

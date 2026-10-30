@@ -1,0 +1,29 @@
+name: A wrong or unhelpful tip
+description: A tip that suggested the wrong thing, came at the wrong moment, or didn't help.
+labels: [area:rules]
+body:
+  - type: textarea
+    attributes:
+      label: The tip
+      description: "`flowbuddy tips` lists your recent tips; paste this one's title and text."
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What you were doing
+      description: The keys you pressed if you remember them (for example `jjjjj` then `dw`), and where (Vim, VS Code, the shell). Please don't paste code from private files.
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: What was wrong with it
+      options:
+        - The suggestion doesn't do the same thing
+        - It's right, but not shorter or not worth it
+        - I already do this
+        - It came at a bad moment
+        - Something else
+  - type: input
+    attributes:
+      label: Version
+      description: "`flowbuddy --version`"

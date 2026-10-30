@@ -103,13 +103,23 @@ enum Cmd {
         record: Option<std::path::PathBuf>,
     },
     /// Check everything Flow Buddy needs, and say how to fix what's missing.
-    Doctor,
+    Doctor {
+        /// Markdown for a bug report: versions, your desktop, the checks and
+        /// changed settings. Nothing you typed, no paths, no secrets.
+        #[arg(long)]
+        report: bool,
+    },
     /// A few questions about how you'd like to be coached, saved to the
     /// config file.
     Setup,
     /// New here? How Flow Buddy works, in seven short parts: it checks your
     /// setup, shows a sample tip and asks the setup questions.
-    Tour,
+    Tour {
+        /// Show the sample tip and say where it went, for the settings
+        /// window's tour.
+        #[arg(long, hide = true)]
+        sample: bool,
+    },
     /// Show tips here as they come, with what their commands do: keep it
     /// open in a terminal beside your work. Ctrl-C to stop.
     Watch,
@@ -325,7 +335,9 @@ fn main() {
     let args = Args::parse();
     let json = args.json;
     if json && !takes_json(&args.command) {
-        eprintln!("flowbuddy: --json works with doctor, learn, summary, rules and config list");
+        eprintln!(
+            "flowbuddy: --json works with doctor, learn, summary, rules, tour and config list"
+        );
         std::process::exit(2);
     }
     let result = match args.command {
@@ -416,13 +428,27 @@ fn main() {
         }
         Cmd::Watch => watch(),
         Cmd::Setup => run_setup(),
-        Cmd::Tour => run_tour(),
-        Cmd::Doctor => {
-            let status = Client::connect(ClientKind::Cli)
-                .and_then(|mut c| c.query(Command::Status))
-                .map_err(|e| format!("{e:#}"))
-                .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()));
+        Cmd::Tour { sample: true } => Client::connect(ClientKind::Cli)
+            .and_then(|mut c| c.query(Command::SampleTip))
+            .map(|shown| print_json(&shown)),
+        Cmd::Tour { sample: false } if json => {
+            print_json(&tour::json());
+            Ok(())
+        }
+        Cmd::Tour { sample: false } => run_tour(),
+        Cmd::Doctor { report } => {
+            let status: Result<flowbuddy_core::ipc::Status, String> =
+                Client::connect(ClientKind::Cli)
+                    .and_then(|mut c| c.query(Command::Status))
+                    .map_err(|e| format!("{e:#}"))
+                    .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()));
+            let daemon = status.as_ref().ok().map(|s| s.daemon_version.clone());
             let checks = doctor::checks(&doctor::Env::gather(status));
+            if report {
+                // A report is for pasting; it says what failed itself.
+                print!("{}", doctor::bug_report(&report_facts(checks, daemon)));
+                std::process::exit(0);
+            }
             if json {
                 print_json(&serde_json::json!({
                     "version": 1,
@@ -1103,7 +1129,10 @@ fn print_json(v: &serde_json::Value) {
 /// Which commands print `--json`.
 fn takes_json(cmd: &Cmd) -> bool {
     match cmd {
-        Cmd::Doctor | Cmd::Summary { .. } | Cmd::Rules { action: None } => true,
+        Cmd::Doctor { .. }
+        | Cmd::Summary { .. }
+        | Cmd::Tour { .. }
+        | Cmd::Rules { action: None } => true,
         Cmd::Rules { action: Some(a) } => matches!(a, RulesCmd::List),
         Cmd::Learn {
             know,
@@ -1636,6 +1665,101 @@ fn run_setup() -> anyhow::Result<()> {
     }
     println!("flowbuddy doctor checks the rest.");
     Ok(())
+}
+
+/// What `doctor --report` says, gathered from this machine.
+fn report_facts(checks: Vec<doctor::Check>, daemon: Option<String>) -> doctor::ReportFacts {
+    let first_line = |cmd: &str, args: &[&str]| {
+        std::process::Command::new(cmd)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .next()
+                    .map(str::to_string)
+            })
+    };
+    let env = |k: &str| std::env::var(k).unwrap_or_else(|_| "unset".into());
+    let mut versions = vec![("flowbuddy".to_string(), flowbuddy_core::VERSION.to_string())];
+    versions.push((
+        "flowbuddyd".into(),
+        daemon.unwrap_or_else(|| "not running".into()),
+    ));
+    for (what, cmd, args) in [
+        ("GNOME Shell", "gnome-shell", &["--version"][..]),
+        ("Vim", "vim", &["--version"][..]),
+        ("Neovim", "nvim", &["--version"][..]),
+        ("VS Code", "code", &["--version"][..]),
+    ] {
+        if let Some(v) = first_line(cmd, args) {
+            versions.push((what.into(), v));
+        }
+    }
+    let os = std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .find_map(|l| l.strip_prefix("PRETTY_NAME="))
+                .map(|v| v.trim_matches('"').to_string())
+        })
+        .unwrap_or_else(|| "unknown".into());
+    let system = vec![
+        ("OS".into(), os),
+        (
+            "desktop".into(),
+            format!(
+                "{}, {}",
+                env("XDG_CURRENT_DESKTOP"),
+                env("XDG_SESSION_TYPE")
+            ),
+        ),
+        ("shell".into(), env("SHELL")),
+    ];
+    let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
+        .unwrap_or_default();
+    let defaults = flowbuddy_core::config::Config::default();
+    let changed = flowbuddy_core::settings::SETTINGS
+        .iter()
+        .filter_map(|s| {
+            let now = flowbuddy_core::settings::value(&config, s.key);
+            (now != flowbuddy_core::settings::value(&defaults, s.key))
+                .then(|| (s.key.to_string(), now.to_string()))
+        })
+        .collect();
+    let log = {
+        std::process::Command::new("journalctl")
+            .args([
+                "--user",
+                "-u",
+                "flowbuddyd",
+                "-n",
+                "40",
+                "--no-pager",
+                "-o",
+                "cat",
+            ])
+            .output()
+            .ok()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    doctor::ReportFacts {
+        versions,
+        system,
+        checks,
+        changed,
+        log,
+        home: std::env::var("HOME").unwrap_or_default(),
+        user: std::env::var("USER").unwrap_or_default(),
+    }
 }
 
 fn run_tour() -> anyhow::Result<()> {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install Flow Buddy for the current user.
 #
-#   scripts/install.sh               build and install everything
+#   scripts/install.sh               build (or, from a release, use bin/) and install everything
 #   scripts/install.sh --dry-run     print what would be done
 #   scripts/install.sh --with-udev   also install the keyboard access rule (sudo)
 #   scripts/install.sh --yes         don't ask before editing ~/.bashrc
@@ -62,23 +62,29 @@ ask() {
     [[ $reply == [yY]* ]]
 }
 
-command -v cargo >/dev/null || { echo "cargo not found: install Rust from https://rustup.rs" >&2; exit 1; }
-
-say "Building release binaries"
-# libxkbcommon reads keys in your layout (German, French, ...); without it,
-# keys are read as US.
-features=()
-if pkg-config --exists xkbcommon 2>/dev/null; then
-    features=(--features flowbuddy-daemon/xkb)
+# A release download comes with the binaries in bin/; from a clone, build.
+if [[ -x $repo/bin/flowbuddyd && -x $repo/bin/flowbuddy ]]; then
+    built=$repo/bin
+    say "Using the prebuilt binaries in bin/"
 else
-    echo "    note: libxkbcommon-dev isn't installed, so keys are read as US."
-    echo "    For other layouts: sudo apt install libxkbcommon-dev, then run this again."
+    command -v cargo >/dev/null || { echo "cargo not found: install Rust from https://rustup.rs, or download a release, which needs no Rust" >&2; exit 1; }
+    say "Building release binaries"
+    # libxkbcommon reads keys in your layout (German, French, ...); without
+    # it, keys are read as US.
+    features=()
+    if pkg-config --exists xkbcommon 2>/dev/null; then
+        features=(--features flowbuddy-daemon/xkb)
+    else
+        echo "    note: libxkbcommon-dev isn't installed, so keys are read as US."
+        echo "    For other layouts: sudo apt install libxkbcommon-dev, then run this again."
+    fi
+    run cargo build --release --manifest-path "$repo/Cargo.toml" -p flowbuddy-daemon -p flowbuddy-cli "${features[@]}"
+    built=${CARGO_TARGET_DIR:-$repo/target}/release
 fi
-run cargo build --release --manifest-path "$repo/Cargo.toml" -p flowbuddy-daemon -p flowbuddy-cli "${features[@]}"
 
 say "Installing binaries to $bin_dir"
-run install -Dm755 "$repo/target/release/flowbuddyd" "$bin_dir/flowbuddyd"
-run install -Dm755 "$repo/target/release/flowbuddy" "$bin_dir/flowbuddy"
+run install -Dm755 "$built/flowbuddyd" "$bin_dir/flowbuddyd"
+run install -Dm755 "$built/flowbuddy" "$bin_dir/flowbuddy"
 case :$PATH: in
     *:"$bin_dir":*) ;;
     *) echo "    note: $bin_dir is not on your PATH" ;;

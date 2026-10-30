@@ -1,0 +1,4 @@
+[advisories]
+# time 0.3.45 is in Cargo.lock only as an optional dependency of ureq's
+# cookie support (cookie_store), which isn't enabled: it isn't built.
+ignore = ["RUSTSEC-2026-0009"]

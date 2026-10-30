@@ -104,6 +104,14 @@ check('tile tooltip', groups[0].tiles[0].tooltip, 'w: words\nUsed 40 times, last
 check('unused tooltip', groups[0].tiles[1].tooltip, 'e: word ends\nNot used yet');
 check('map: nothing yet', m.skillGroups({nothing_yet: true}), []);
 
+const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+check('tour: commands in monospace, text escaped',
+    m.tourMarkup('Run `flowbuddy doctor` & <see>', esc), 'Run <tt>flowbuddy doctor</tt> &amp; &lt;see>');
+check('tour: no marks', m.tourMarkup('', esc), '');
+check('tour: settings in its order, missing ones left out',
+    m.tourSettings(['learn.level', 'nope', 'coaching.when'], [setting('coaching.when', 'choice'), setting('learn.level', 'choice')]).map(s => s.key),
+    ['learn.level', 'coaching.when']);
+
 print(failed ? `${failed} failed` : 'settings model ok');
 if (failed)
     System.exit(1);

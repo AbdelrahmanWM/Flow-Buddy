@@ -262,3 +262,26 @@ export function textLines(json) {
         return ['Nothing recorded yet: is the daemon running?'];
     return json.text.trimEnd().split('\n');
 }
+
+// The tour's text as Pango markup: paragraphs kept, `commands` in
+// monospace, everything else escaped.
+export function tourMarkup(text, escape) {
+    return (text ?? '').split('`').map((piece, i) => {
+        const e = escape(piece);
+        return i % 2 ? `<tt>${e}</tt>` : e;
+    }).join('');
+}
+
+// The tour's settings, from `config list --json`, in the tour's order.
+export function tourSettings(keys, settings) {
+    return keys.map(k => settings.find(s => s.key === k)).filter(Boolean);
+}
+
+// The welcome card shown once, at the first connection.
+export const WELCOME = {
+    nudge_id: 'welcome',
+    title: 'Flow Buddy is running',
+    text: 'Take the tour from its menu: what it watches, a sample tip, and the settings that matter, in a few minutes.',
+    ttl_ms: 20000,
+    explain: [],
+};

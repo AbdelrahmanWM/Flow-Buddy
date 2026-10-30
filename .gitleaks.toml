@@ -1,0 +1,11 @@
+# gitleaks: the secret scan in CI. The redaction tests hold made-up keys
+# on purpose, to check they're caught.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "made-up secrets in the redaction tests"
+paths = [
+    '''crates/core/src/text\.rs''',
+    '''crates/cli/src/coach\.rs''',
+]

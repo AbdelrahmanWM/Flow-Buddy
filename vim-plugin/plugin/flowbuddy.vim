@@ -17,6 +17,9 @@ if has('nvim') && !has('nvim-0.9')
 endif
 let g:loaded_flowbuddy = 1
 
+command! FlowBuddyGotIt call flowbuddy#respond('dismiss')
+command! FlowBuddyNotHelpful call flowbuddy#respond('false_positive')
+
 augroup flowbuddy
   autocmd!
   autocmd VimEnter * call flowbuddy#start()

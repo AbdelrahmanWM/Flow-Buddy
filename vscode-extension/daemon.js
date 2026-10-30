@@ -17,9 +17,11 @@ function socketPath() {
 }
 
 class DaemonLink {
-    constructor({version, onConnected}) {
+    constructor({version, onConnected, onNudge}) {
         this._version = version;
         this._onConnected = onConnected;
+        // A tip to show here.
+        this._onNudge = onNudge;
         // [text] settings from the daemon; see textguard.js.
         this.editorConfig = null;
         this.snippets = new SnippetRing();
@@ -69,6 +71,7 @@ class DaemonLink {
                 editor: 'vscode',
                 // The daemon walks up from here to the focused window's pid.
                 pid: process.pid,
+                shows_tips: !!this._onNudge,
             });
             this._onConnected?.();
         });
@@ -108,6 +111,8 @@ class DaemonLink {
             if (!msg.snippets)
                 this.snippets.clear();
         }
+        if (msg.type === 'nudge')
+            this._onNudge?.(msg);
         if (msg.type === 'snippet_request') {
             const snippets = this.editorConfig?.snippets ? this.snippets.pick(msg.times ?? []) : [];
             this.send({type: 'snippets', id: msg.id, snippets});

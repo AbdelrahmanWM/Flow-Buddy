@@ -244,6 +244,23 @@ pub struct CoachingConfig {
     /// With `when = "pause"`: how long you stop typing for it to count as
     /// a pause, in milliseconds.
     pub pause_ms: u32,
+    /// Where tips show: in the editor you're typing in, when its plugin
+    /// can show them; on the desktop; or both.
+    pub show_in: ShowIn,
+}
+
+/// Where a tip shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ShowIn {
+    /// In the editor the keys came from, if its plugin shows tips; on the
+    /// desktop otherwise.
+    #[default]
+    Editor,
+    /// Always on the desktop: the top bar, a card or a notification.
+    Desktop,
+    /// In the editor and on the desktop.
+    Both,
 }
 
 /// When a live tip shows.
@@ -272,6 +289,7 @@ impl Default for CoachingConfig {
             when: TipTiming::Now,
             hold_ms: 800,
             pause_ms: 1500,
+            show_in: ShowIn::Editor,
         }
     }
 }

@@ -109,7 +109,10 @@ export default class FlowBuddyExtension extends Extension {
             break;
         case 'nudge':
             // `style` is newer than protocol v0; treat it as missing = bar.
-            if (msg.style === 'card') {
+            // A tip the editor shows only goes into the menu.
+            if (msg.in_editor) {
+                this._indicator.showNudge(msg, false);
+            } else if (msg.style === 'card') {
                 this._card.show(msg);
                 this._indicator.showNudge(msg, false);
             } else {

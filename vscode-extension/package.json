@@ -53,6 +53,16 @@
         "command": "flowbuddy.recentTips",
         "title": "Recent tips",
         "category": "Flow Buddy"
+      },
+      {
+        "command": "flowbuddy.gotIt",
+        "title": "Got it (the tip on show)",
+        "category": "Flow Buddy"
+      },
+      {
+        "command": "flowbuddy.notHelpful",
+        "title": "Not helpful (the tip on show)",
+        "category": "Flow Buddy"
       }
     ]
   }

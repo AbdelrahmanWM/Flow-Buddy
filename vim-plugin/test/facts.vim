@@ -316,6 +316,36 @@ function! Test_snippets() abort
   bwipe!
 endfunction
 
+function! Test_unknown_ex_command() abort
+  call assert_true(flowbuddy#is_unknown_ex('E492: Not an editor command: W'))
+  call assert_false(flowbuddy#is_unknown_ex('E37: No write since last change'))
+  call assert_false(flowbuddy#is_unknown_ex(''))
+endfunction
+
+function! Test_tip_lines() abort
+  let msg = {'title': 'Delete inside', 'text': 'That took 6 keys. `di(` does it from anywhere inside, in 3.',
+        \ 'explain': ['`di(` delete inside the brackets']}
+  call assert_equal(['Delete inside', 'That took 6 keys. `di(`', 'does it from anywhere', 'inside, in 3.',
+        \ '  `di(` delete inside', '  the brackets'], flowbuddy#tip_lines(msg, 23))
+  call assert_equal(['Flow Buddy'], flowbuddy#tip_lines({}, 40))
+endfunction
+
+function! Test_shows_tips_is_a_boolean() abort
+  call assert_equal('true', json_encode(flowbuddy#shows_tips()))
+  let g:flowbuddy_tips = 0
+  call assert_equal('false', json_encode(flowbuddy#shows_tips()))
+  unlet g:flowbuddy_tips
+endfunction
+
+function! Test_a_tip_is_answered_once() abort
+  " Not connected: shown and closed without errors, and nothing is left.
+  call flowbuddy#on_daemon('{"type":"nudge","nudge_id":"n-1","rule_id":"r","title":"T","text":"x","ttl_ms":5000}')
+  call flowbuddy#respond('dismiss')
+  call assert_equal([{'type': 'nudge_response', 'nudge_id': 'n-1', 'action': 'dismiss'}], flowbuddy#answers())
+  call assert_equal('Flow Buddy: no tip to answer', trim(execute('call flowbuddy#respond("dismiss")')))
+  call assert_true(empty(popup_list()))
+endfunction
+
 " Runner
 let s:failed = 0
 for s:name in sort(filter(map(split(execute('function /^Test_'), "\n"), {_, l -> matchstr(l, 'Test_\w\+')}), '!empty(v:val)'))
@@ -334,9 +364,3 @@ for s:name in sort(filter(map(split(execute('function /^Test_'), "\n"), {_, l ->
 endfor
 call writefile([s:failed ? 'FAILED' : 'PASSED'], $OUT, 'a')
 qa!
-
-function! Test_unknown_ex_command() abort
-  call assert_true(flowbuddy#is_unknown_ex('E492: Not an editor command: W'))
-  call assert_false(flowbuddy#is_unknown_ex('E37: No write since last change'))
-  call assert_false(flowbuddy#is_unknown_ex(''))
-endfunction

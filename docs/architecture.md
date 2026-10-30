@@ -228,6 +228,8 @@ When nothing is focused, `app_id` is `null`. The protocol accepts an optional `t
 ```
 In `balanced` mode, one batch may contain several `nudge` messages. `style` is `card` (a card at the top centre of the screen that fades out, the default in `active` and `balanced` mode; several come one after another) or `bar` (a label next to the top-bar icon, the default otherwise); `[coaching] nudge_style` overrides it. It was added after v0 shipped, so it is optional and defaults to `bar`. Either way the icon shows a dot until the menu is opened.
 
+Editor plugins that say `"shows_tips": true` in their `hello` get the `nudge` for what you do in them, and show it there (`[coaching] show_in`, default `editor`). The extension then gets the same `nudge` with `"in_editor": true`: it only goes into the menu, with no card, label or dot, and the editor sends its `nudge_response` (each tip gets one). With no extension, a tip the editor shows gets no desktop notification.
+
 Commands in `text` are marked with backticks, the Markdown way ("Try `` `Ctrl-d` `` then `` `5j` ``"); the extension shows them in a monospace font. `explain` (optional) has one line per piece of those commands, such as "`` `Ctrl-d` ``: down half a page", from the glossary in `crates/core/src/glossary.rs`. The extension shows it in a collapsed "What does it do?" section of the menu; plain notifications drop the markers and append it.
 
 **`mode_changed`**: the coaching mode changed. Broadcast to clients that stay connected, so the indicator stays in sync.

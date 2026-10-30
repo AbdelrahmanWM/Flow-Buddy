@@ -117,6 +117,12 @@ pub static SETTINGS: &[Setting] = &[
         COACHING,
         "How long a tip stays on screen, in seconds",
     )),
+    basic(s(
+        "coaching.show_in",
+        Kind::Choice(&["editor", "desktop", "both"]),
+        COACHING,
+        "Where tips show: in the editor you're typing in, on the desktop, or both",
+    )),
     s(
         "coaching.nudge_style",
         Kind::Choice(&["bar", "card"]),
@@ -441,6 +447,10 @@ pub static MORE: &[(&str, &str)] = &[
     (
         "coaching.nudge_seconds",
         "How long a tip stays on screen before fading. It stays in the menu after that, and Keep on screen keeps it up until you close it.",
+    ),
+    (
+        "coaching.show_in",
+        "Editor: in Vim (a small window at the top right) or VS Code (the status bar), where your eyes are, when their Flow Buddy plugin is connected; everywhere else on the desktop. Desktop: always the top bar, a card or a notification. Both: in the two.",
     ),
     (
         "coaching.nudge_style",

@@ -80,7 +80,8 @@ function! s:open() abort
   " Over ssh this pid is on another machine: it would only confuse.
   call s:send({'type': 'hello', 'client': 'editor', 'client_version': s:VERSION,
         \ 'editor': has('nvim') ? 'nvim' : 'vim',
-        \ 'pid': empty($SSH_CONNECTION) ? getpid() : v:null})
+        \ 'pid': empty($SSH_CONNECTION) ? getpid() : v:null,
+        \ 'shows_tips': flowbuddy#shows_tips()})
   call s:send({'type': 'editor_mode', 'mode': s:mode_name(mode(1))})
   call s:send(extend({'type': 'editor_mappings'}, flowbuddy#mappings(execute('imap'), execute('nmap'))))
   return 1
@@ -170,10 +171,137 @@ function! flowbuddy#on_daemon(line) abort
     if !s:text.snippets
       let s:snippets = []
     endif
+  elseif type ==# 'nudge'
+    call flowbuddy#show_tip(msg)
   elseif type ==# 'snippet_request'
     let found = s:text.snippets ? flowbuddy#snippets_for(get(msg, 'times', [])) : []
     call s:send({'type': 'snippets', 'id': get(msg, 'id', 0), 'snippets': found})
   endif
+endfunction
+
+" Tips ------------------------------------------------------------------------
+
+" Tips show here, in a small window at the top right, rather than on the
+" desktop. Off with `let g:flowbuddy_tips = 0`.
+let s:tip = {}
+let s:tip_win = -1
+let s:tip_timer = -1
+
+function! flowbuddy#shows_tips() abort
+  if !get(g:, 'flowbuddy_tips', 1)
+    return v:false
+  endif
+  " A JSON true, not 1: the daemon wants a boolean.
+  return (has('nvim') ? exists('*nvim_open_win') : has('popupwin')) ? v:true : v:false
+endfunction
+
+" The tip's lines for a window `width` wide: the title, the text wrapped,
+" then what its commands do. Commands keep their backticks.
+function! flowbuddy#tip_lines(msg, width) abort
+  let lines = [get(a:msg, 'title', 'Flow Buddy')]
+  let lines += flowbuddy#wrap(get(a:msg, 'text', ''), a:width)
+  for e in get(a:msg, 'explain', [])
+    let lines += map(flowbuddy#wrap(e, a:width - 2), '"  " . v:val')
+  endfor
+  return lines
+endfunction
+
+function! flowbuddy#wrap(text, width) abort
+  let out = []
+  let line = ''
+  for word in split(a:text)
+    if line ==# ''
+      let line = word
+    elseif strdisplaywidth(line . ' ' . word) <= a:width
+      let line .= ' ' . word
+    else
+      call add(out, line)
+      let line = word
+    endif
+  endfor
+  if line !=# ''
+    call add(out, line)
+  endif
+  return out
+endfunction
+
+function! flowbuddy#show_tip(msg) abort
+  if !flowbuddy#shows_tips() || type(get(a:msg, 'nudge_id', 0)) != v:t_string
+    return
+  endif
+  call s:close_tip('seen')
+  let width = max([20, min([60, &columns - 6])])
+  let lines = flowbuddy#tip_lines(a:msg, width)
+  let ttl = get(a:msg, 'ttl_ms', 6000)
+  let s:tip = a:msg
+  if has('nvim')
+    let buf = nvim_create_buf(v:false, v:true)
+    call nvim_buf_set_lines(buf, 0, -1, v:false, lines)
+    let s:tip_win = nvim_open_win(buf, v:false, {'relative': 'editor', 'anchor': 'NE',
+          \ 'row': 0, 'col': &columns, 'width': width, 'height': len(lines),
+          \ 'style': 'minimal', 'border': 'rounded', 'focusable': v:false, 'zindex': 250})
+    call nvim_win_set_option(s:tip_win, 'winhighlight', 'Normal:Pmenu')
+    let s:tip_timer = timer_start(ttl, {-> s:close_tip('seen')})
+  else
+    let s:tip_win = popup_create(lines, {'line': 1, 'col': &columns, 'pos': 'topright',
+          \ 'minwidth': 20, 'maxwidth': width, 'time': ttl, 'highlight': 'Pmenu',
+          \ 'border': [], 'padding': [0, 1, 0, 1], 'zindex': 250, 'close': 'click',
+          \ 'callback': {-> s:tip_closed()}})
+  endif
+endfunction
+
+" The window went away on its own (timed out or clicked): seen.
+function! s:tip_closed() abort
+  " Closed by s:close_tip, which answers.
+  if s:tip_win == -1
+    return
+  endif
+  let s:tip_win = -1
+  call s:answer('seen')
+endfunction
+
+" Close the tip, answering `action` for it.
+function! s:close_tip(action) abort
+  call timer_stop(s:tip_timer)
+  let win = s:tip_win
+  let s:tip_win = -1
+  if win != -1
+    if has('nvim')
+      if nvim_win_is_valid(win)
+        call nvim_win_close(win, v:true)
+      endif
+    else
+      call popup_close(win)
+    endif
+  endif
+  call s:answer(a:action)
+endfunction
+
+" Each tip gets one answer: the first.
+function! s:answer(action) abort
+  if empty(s:tip)
+    return
+  endif
+  let msg = {'type': 'nudge_response', 'nudge_id': s:tip.nudge_id, 'action': a:action}
+  call s:send(msg)
+  call add(s:answers, msg)
+  let s:answers = s:answers[max([0, len(s:answers) - 5]):]
+  let s:tip = {}
+endfunction
+
+" The last answers sent, for the tests.
+let s:answers = []
+function! flowbuddy#answers() abort
+  return s:answers
+endfunction
+
+" :FlowBuddyGotIt and :FlowBuddyNotHelpful, for the last tip.
+function! flowbuddy#respond(action) abort
+  if empty(s:tip)
+    echo 'Flow Buddy: no tip to answer'
+    return
+  endif
+  call s:close_tip(a:action)
 endfunction
 
 " Reselecting ------------------------------------------------------------------

@@ -33,6 +33,7 @@ impl Client {
             client_version: flowbuddy_core::VERSION.into(),
             editor: None,
             pid: None,
+            shows_tips: false,
         })?;
         match client.read()? {
             ServerMsg::Welcome { .. } => Ok(client),

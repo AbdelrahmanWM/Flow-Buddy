@@ -6,7 +6,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
-use flowbuddy_core::config::{self, Config, State};
+use flowbuddy_core::config::{self, Config, ShowIn, State};
 use flowbuddy_core::context::{ContextKind, VimMode};
 use flowbuddy_core::editor::{EditorKind, Motion};
 use flowbuddy_core::engine::Engine;
@@ -35,6 +35,8 @@ use crate::resolver::{AppIds, Resolved, Resolver, ShellState};
 struct Client {
     kind: Option<ClientKind>,
     tx: mpsc::UnboundedSender<ServerMsg>,
+    /// An editor plugin that shows tips itself.
+    shows_tips: bool,
 }
 
 /// A `flowbuddy coach` waiting for editors' snippets.
@@ -739,11 +741,21 @@ impl App {
                 _ => NudgeStyle::Bar,
             }),
             explain: glossary::explain(text, insert),
+            in_editor: false,
         };
-        // To the extension and anyone watching; a notification if there's
-        // no extension to show it.
+        // In the editor you're typing in, where you're looking.
+        let editor = self.tip_editor();
+        if let Some(id) = editor {
+            self.reply(id, ServerMsg::Nudge(nudge.clone()));
+        }
+        let nudge = Nudge {
+            in_editor: editor.is_some() && self.config.coaching.show_in == ShowIn::Editor,
+            ..nudge
+        };
+        // To the extension and anyone watching; a notification if neither
+        // the editor nor the extension shows it.
         self.broadcast(ServerMsg::Nudge(nudge.clone()));
-        if !self.extension_connected() {
+        if !self.extension_connected() && !nudge.in_editor {
             // Plain notifications show no markup: drop the markers and put
             // the explanation underneath.
             let mut body = glossary::plain(&nudge.text);
@@ -772,6 +784,17 @@ impl App {
         }
         self.nudges.push_back((nudge.nudge_id, rule_id));
         self.last_nudge_ms = Some(now_ms);
+    }
+
+    /// The editor plugin to show a tip in: the one the context comes from,
+    /// if it shows tips and they're wanted there.
+    fn tip_editor(&self) -> Option<ConnId> {
+        if self.config.coaching.show_in == ShowIn::Desktop {
+            return None;
+        }
+        self.resolved
+            .editor
+            .filter(|id| self.clients.get(id).is_some_and(|c| c.shows_tips))
     }
 
     /// Once a day, in every mode but off: one thing from the curriculum you
@@ -1654,7 +1677,14 @@ impl App {
     pub fn on_conn(&mut self, ev: ConnEvent, now_ms: u64) {
         match ev {
             ConnEvent::Opened { id, tx } => {
-                self.clients.insert(id, Client { kind: None, tx });
+                self.clients.insert(
+                    id,
+                    Client {
+                        kind: None,
+                        tx,
+                        shows_tips: false,
+                    },
+                );
             }
             ConnEvent::Closed { id } => {
                 self.clients.remove(&id);
@@ -1693,10 +1723,12 @@ impl App {
                 client,
                 editor,
                 pid,
+                shows_tips,
                 ..
             } => {
                 if let Some(c) = self.clients.get_mut(&conn) {
                     c.kind = Some(client);
+                    c.shows_tips = shows_tips && client == ClientKind::Editor;
                 }
                 self.reply(
                     conn,
@@ -2249,6 +2281,7 @@ pub(crate) mod tests {
             client_version: "test".into(),
             editor: None,
             pid: None,
+            shows_tips: false,
         }
     }
 
@@ -3009,6 +3042,7 @@ pub(crate) mod tests {
                 client_version: "test".into(),
                 editor: Some(kind),
                 pid: Some(pid),
+                shows_tips: false,
             },
             0,
         );
@@ -3189,6 +3223,115 @@ pub(crate) mod tests {
             n[0].explain[0],
             "`}`: down to the next blank line (end of the paragraph)"
         );
+    }
+
+    /// An editor plugin that shows tips itself.
+    fn tipping_editor(
+        app: &mut App,
+        id: ConnId,
+        kind: EditorKind,
+        pid: u32,
+    ) -> UnboundedReceiver<ServerMsg> {
+        let rx = connect(app, id);
+        send(
+            app,
+            id,
+            ClientMsg::Hello {
+                client: ClientKind::Editor,
+                client_version: "test".into(),
+                editor: Some(kind),
+                pid: Some(pid),
+                shows_tips: true,
+            },
+            0,
+        );
+        rx
+    }
+
+    /// In terminal Vim with the plugin (conn 3): `F(ldt)`, which gets a
+    /// tip for `di(`.
+    fn delete_inside_by_hand(app: &mut App) {
+        use flowbuddy_core::editor::{Operator, OperatorReport, TextObject};
+        send(
+            app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(app, "org.gnome.Terminal", 100);
+        keys(app, "F(ldt)");
+        let report = OperatorReport {
+            op: Operator::Delete,
+            at_ms: 650,
+            objects: vec![TextObject::InnerParen],
+            range: None,
+        };
+        send(app, 3, ClientMsg::Operator(report), 700);
+    }
+
+    #[test]
+    fn tips_show_in_the_editor_you_type_in() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let mut vim = tipping_editor(&mut app, 3, EditorKind::Vim, 210);
+        delete_inside_by_hand(&mut app);
+        let in_vim = nudges(&mut vim);
+        assert_eq!(in_vim.len(), 1);
+        let bar = nudges(&mut ext);
+        assert_eq!(bar.len(), 1);
+        assert!(bar[0].in_editor, "the top bar only keeps it in its menu");
+        assert_eq!(bar[0].nudge_id, in_vim[0].nudge_id);
+    }
+
+    #[test]
+    fn tips_stay_on_the_desktop_for_plugins_that_dont_show_them() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let mut vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        delete_inside_by_hand(&mut app);
+        assert!(nudges(&mut vim).is_empty());
+        let bar = nudges(&mut ext);
+        assert_eq!(bar.len(), 1);
+        assert!(!bar[0].in_editor);
+    }
+
+    #[test]
+    fn where_tips_show_can_be_chosen() {
+        for (show_in, in_vim, in_editor) in [(ShowIn::Desktop, 0, false), (ShowIn::Both, 1, false)]
+        {
+            let mut app = test_app(CoachingMode::Active);
+            app.config.coaching.show_in = show_in;
+            let mut ext = ext_hello(&mut app, 1);
+            let mut vim = tipping_editor(&mut app, 3, EditorKind::Vim, 210);
+            delete_inside_by_hand(&mut app);
+            assert_eq!(nudges(&mut vim).len(), in_vim, "{show_in:?}");
+            let bar = nudges(&mut ext);
+            assert_eq!(bar.len(), 1, "{show_in:?}");
+            assert_eq!(bar[0].in_editor, in_editor, "{show_in:?}");
+        }
+    }
+
+    #[test]
+    fn no_notification_for_a_tip_the_editor_shows() {
+        let recorder = crate::notify::fake::Recorder::default();
+        let state = State {
+            mode: Some(CoachingMode::Active),
+            ..Default::default()
+        };
+        let mut app = App::new(
+            test_config(),
+            state,
+            test_resolver(),
+            Box::new(recorder.clone()),
+        );
+        app.claude_probe = || false;
+        app.hold_ms = 0;
+        let mut vim = tipping_editor(&mut app, 3, EditorKind::Vim, 210);
+        delete_inside_by_hand(&mut app);
+        assert_eq!(nudges(&mut vim).len(), 1);
+        assert!(recorder.0.borrow().is_empty());
     }
 
     #[test]

@@ -120,7 +120,7 @@ impl Rule for NoCommand {
                         )
                     } else {
                         format!(
-                            "That key isn't a text object after `{op}{ia}`. The objects: `w` word, `s` sentence, `p` paragraph, `(` `[` `{{` `<` brackets, `t` tag, `\"` `'` quotes: `{op}{ia}w`, `{op}{ia}(`."
+                            "That key isn't a text object after `{op}{ia}`. The objects: w word, s sentence, p paragraph, ( [ {{ < brackets, t tag, \" ' quotes, as in `{op}{ia}w` or `{op}{ia}(`."
                         )
                     }
                 }

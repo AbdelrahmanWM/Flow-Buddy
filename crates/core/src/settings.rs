@@ -121,7 +121,7 @@ pub static SETTINGS: &[Setting] = &[
         "coaching.nudge_style",
         Kind::Choice(&["bar", "card"]),
         COACHING,
-        "Tips as a label in the top bar, or a card at the top of the screen (default: a card in active mode)",
+        "Tips as a label in the top bar, or a card at the top of the screen (default: a card in active and balanced mode)",
     ),
     s(
         "coaching.balanced_interval_minutes",
@@ -304,7 +304,7 @@ pub static SETTINGS: &[Setting] = &[
         "ai.model",
         Kind::Text,
         AI,
-        "The model, for the API providers",
+        "The model: an alias like opus or sonnet, or a full name like claude-opus-5-5",
     ),
     s(
         "ai.base_url",
@@ -400,25 +400,25 @@ pub static SETTINGS: &[Setting] = &[
         "apps.vscode",
         Kind::List,
         KEYBOARD,
-        "Window ids taken as VS Code, instead of the built-in list",
+        "More window ids to take as VS Code, besides the built-in ones",
     ),
     s(
         "apps.terminals",
         Kind::List,
         KEYBOARD,
-        "Window ids taken as terminals, instead of the built-in list",
+        "More window ids to take as terminals, besides the built-in ones",
     ),
     s(
         "apps.vims",
         Kind::List,
         KEYBOARD,
-        "Command names taken as Vim, instead of the built-in list",
+        "More command names to take as Vim, besides the built-in ones",
     ),
     s(
         "apps.claudes",
         Kind::List,
         KEYBOARD,
-        "Command names taken as Claude Code, instead of the built-in list",
+        "More command names to take as Claude Code, besides the built-in ones",
     ),
 ];
 
@@ -444,7 +444,7 @@ pub static MORE: &[(&str, &str)] = &[
     ),
     (
         "coaching.nudge_style",
-        "A label in the top bar is the quietest; a card at the top of the screen is easier to read. By default active mode uses the card and the others the bar.",
+        "A label in the top bar is the quietest; a card at the top of the screen is easier to read. By default active and balanced mode use the card, passive the bar.",
     ),
     (
         "coaching.balanced_interval_minutes",
@@ -556,7 +556,7 @@ pub static MORE: &[(&str, &str)] = &[
     ),
     (
         "ai.model",
-        "Which model the API provider uses. Empty picks a sensible default.",
+        "Which model to use, for Claude Code and the API providers. Claude Code takes an alias (opus, sonnet, haiku) or a full name (claude-opus-5-5); OpenAI-compatible servers take their own names. Empty picks a sensible default.",
     ),
     (
         "ai.base_url",
@@ -612,17 +612,20 @@ pub static MORE: &[(&str, &str)] = &[
     ),
     (
         "apps.vscode",
-        "Window ids taken as VS Code. Only needed for a build the built-in list doesn't know.",
+        "Only needed for a build the built-in list doesn't know; `flowbuddy status` shows the id of the focused window. These are added to the built-in ones, which `flowbuddy config explain` lists.",
     ),
     (
         "apps.terminals",
-        "Window ids taken as terminals. Only needed for a terminal the built-in list doesn't know.",
+        "Only needed for a terminal the built-in list doesn't know; `flowbuddy status` shows the id of the focused window. These are added to the built-in ones, which `flowbuddy config explain` lists.",
     ),
     (
         "apps.vims",
-        "Command names taken as Vim in a terminal, such as a wrapper script.",
+        "Command names taken as Vim in a terminal, such as a wrapper script. These are added to the built-in ones.",
     ),
-    ("apps.claudes", "Command names taken as Claude Code."),
+    (
+        "apps.claudes",
+        "Command names taken as Claude Code, such as a wrapper script. These are added to the built-in ones.",
+    ),
 ];
 
 /// The longer explanation of `key`: from [`MORE`], or a rule's own.
@@ -829,9 +832,13 @@ pub fn to_toml(setting: &Setting, value: &str) -> Result<String, String> {
         Kind::Time => crate::config::parse_hm(v)
             .map(|_| quoted(v))
             .ok_or_else(|| "expected a time like 18:00".into()),
-        Kind::TimeRange => crate::config::parse_range(v)
-            .map(|_| quoted(v))
-            .ok_or_else(|| "expected a time range like 22:00-08:00".into()),
+        Kind::TimeRange => match crate::config::parse_range(v) {
+            Some(r) if r.start == r.end => {
+                Err("the start and end are the same, so it would never begin".into())
+            }
+            Some(_) => Ok(quoted(v)),
+            None => Err("expected a time range like 22:00-08:00".into()),
+        },
         Kind::Text => Ok(quoted(v)),
         Kind::List => {
             let items: Vec<String> = v
@@ -860,6 +867,11 @@ fn place(key: &str) -> Option<(String, String)> {
 pub fn set(text: &str, key: &str, value: &str) -> Result<String, String> {
     let setting = find(key)
         .ok_or_else(|| format!("no setting called {key} (see `flowbuddy config list`)"))?;
+    if key == "ai.model"
+        && let Some(e) = crate::config::model_problem(value)
+    {
+        return Err(format!("{key}: {e}"));
+    }
     let literal = to_toml(&setting, value).map_err(|e| format!("{key}: {e}"))?;
     let (section, name) = place(key).ok_or_else(|| format!("no setting called {key}"))?;
     let out = set_key(text, &section, &name, &literal);
@@ -1011,6 +1023,21 @@ mod tests {
                 .unwrap()
                 .contains("repeats")
         );
+    }
+
+    #[test]
+    fn values_that_would_do_nothing_are_refused() {
+        assert!(set("", "coaching.quiet_hours", "22:00-22:00").is_err());
+        assert!(set("", "coaching.quiet_hours", "22:00-07:00").is_ok());
+    }
+
+    #[test]
+    fn model_names_are_one_word() {
+        let e = set("", "ai.model", "opus 5.5").unwrap_err();
+        assert!(e.contains("no spaces"), "{e}");
+        assert!(set("", "ai.model", "opus").is_ok());
+        assert!(set("", "ai.model", "claude-opus-5-5").is_ok());
+        assert!(set("", "ai.model", "llama3.2:3b").is_ok());
     }
 
     #[test]

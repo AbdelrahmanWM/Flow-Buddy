@@ -13,6 +13,8 @@ use flowbuddy_core::ipc::Panel;
 pub struct AppIds {
     pub vscode: Vec<String>,
     pub terminals: Vec<String>,
+    /// Window ids of Vim in a window of its own (gVim, Neovide).
+    pub vim_windows: Vec<String>,
     pub vims: Vec<String>,
     /// Command names of Claude Code.
     pub claudes: Vec<String>,
@@ -20,42 +22,14 @@ pub struct AppIds {
 
 impl Default for AppIds {
     fn default() -> Self {
+        use flowbuddy_core::config::{CLAUDES, TERMINALS, VIM_WINDOWS, VIMS, VSCODES};
         let s = |v: &[&str]| v.iter().map(|s| s.to_string()).collect();
         AppIds {
-            vscode: s(&[
-                "code",
-                "code_code",
-                "code-url-handler",
-                "code-oss",
-                "codium",
-                "com.visualstudio.code",
-                // X11 window classes.
-                "Code",
-                "VSCodium",
-            ]),
-            terminals: s(&[
-                "org.gnome.Terminal",
-                "org.gnome.Ptyxis",
-                "org.gnome.Console",
-                "kitty",
-                "Alacritty",
-                "org.wezfurlong.wezterm",
-                "com.mitchellh.ghostty",
-                "foot",
-                "terminator",
-                "com.gexperts.Tilix",
-                "xterm",
-                // KDE, and X11 window classes.
-                "org.kde.konsole",
-                "konsole",
-                "Gnome-terminal",
-                "XTerm",
-                "URxvt",
-                "st-256color",
-                "Xfce4-terminal",
-            ]),
-            vims: s(&["vim", "vi", "nvim", "view", "vimdiff", "nvimdiff"]),
-            claudes: s(&["claude"]),
+            vscode: s(VSCODES),
+            terminals: s(TERMINALS),
+            vim_windows: s(VIM_WINDOWS),
+            vims: s(VIMS),
+            claudes: s(CLAUDES),
         }
     }
 }
@@ -453,6 +427,14 @@ impl Resolver {
                 },
             };
         }
+        // Vim's own window: its plugin, if it has one, says the mode.
+        if contains(&self.ids.vim_windows, app_id) {
+            return Resolved {
+                kind: ContextKind::TerminalVim,
+                shell_pid: None,
+                editor: self.editor_in(self.focus.pid, &VIMS).map(|(id, _)| id),
+            };
+        }
         if !contains(&self.ids.terminals, app_id) {
             return Resolved::UNSUPPORTED;
         }
@@ -676,6 +658,20 @@ pub(crate) mod tests {
         assert_eq!(kind(&r), ContextKind::TerminalVim);
         r.editor_focus(8, false, None, 5);
         assert_eq!(kind(&r), ContextKind::BashVi);
+    }
+
+    #[test]
+    fn vim_in_its_own_window() {
+        let mut r = resolver();
+        for id in ["gvim", "Gvim", "neovide", "nvim-qt"] {
+            r.set_focus(Some(id.into()), Some(900));
+            assert_eq!(kind(&r), ContextKind::TerminalVim, "{id}");
+            assert_eq!(r.resolve().editor, None);
+        }
+        // Neovide runs nvim as its child; the plugin there reports.
+        r.set_focus(Some("neovide".into()), Some(940));
+        r.editor_hello(8, EditorKind::Nvim, Some(950), 1);
+        assert_eq!(r.resolve().editor, Some(8));
     }
 
     #[test]

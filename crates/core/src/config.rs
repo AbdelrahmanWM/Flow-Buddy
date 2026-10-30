@@ -203,6 +203,17 @@ impl Default for AiConfig {
     }
 }
 
+/// What's wrong with `[ai] model`, if anything. Model names are one word:
+/// an alias like `opus`, or a full name like `claude-opus-5-5`.
+pub fn model_problem(model: &str) -> Option<&'static str> {
+    if model.trim().contains(char::is_whitespace) {
+        return Some(
+            "a model name has no spaces: an alias like opus or sonnet, or a full name like claude-opus-5-5",
+        );
+    }
+    None
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CoachingConfig {
@@ -218,7 +229,8 @@ pub struct CoachingConfig {
     pub hourly_cap: u32,
     /// How long a hint stays on screen.
     pub nudge_seconds: u32,
-    /// "card" or "bar"; by default a card in active mode, the top bar otherwise.
+    /// "card" or "bar"; by default a card in active and balanced mode, the
+    /// top bar otherwise.
     pub nudge_style: Option<NudgeStyle>,
     /// No nudges in this local time range, e.g. "22:00-08:00".
     pub quiet_hours: Option<String>,
@@ -277,7 +289,62 @@ pub struct KeyboardConfig {
     pub insert_escapes: Vec<String>,
 }
 
-/// Replace the built-in app id / command lists.
+/// Window ids of VS Code builds (and X11 window classes).
+pub const VSCODES: &[&str] = &[
+    "code",
+    "code_code",
+    "code-url-handler",
+    "code-oss",
+    "codium",
+    "com.visualstudio.code",
+    "Code",
+    "VSCodium",
+];
+
+/// Window ids of terminals, then X11 window classes.
+pub const TERMINALS: &[&str] = &[
+    "org.gnome.Terminal",
+    "org.gnome.Ptyxis",
+    "org.gnome.Console",
+    "kitty",
+    "Alacritty",
+    "org.wezfurlong.wezterm",
+    "com.mitchellh.ghostty",
+    "foot",
+    "terminator",
+    "com.gexperts.Tilix",
+    "xterm",
+    "org.kde.konsole",
+    "konsole",
+    "Gnome-terminal",
+    "XTerm",
+    "URxvt",
+    "st-256color",
+    "Xfce4-terminal",
+];
+
+/// Window ids of Vim in a window of its own: gVim, Neovide, Neovim Qt
+/// (and X11 window classes).
+pub const VIM_WINDOWS: &[&str] = &["gvim", "Gvim", "neovide", "nvim-qt"];
+
+/// Command names of Vim.
+pub const VIMS: &[&str] = &["vim", "vi", "nvim", "view", "vimdiff", "nvimdiff"];
+
+/// Command names of Claude Code.
+pub const CLAUDES: &[&str] = &["claude"];
+
+/// The built-in list an `apps.*` setting adds to.
+pub fn builtin_apps(key: &str) -> Option<&'static [&'static str]> {
+    Some(match key {
+        "apps.vscode" => VSCODES,
+        "apps.terminals" => TERMINALS,
+        "apps.vims" => VIMS,
+        "apps.claudes" => CLAUDES,
+        _ => return None,
+    })
+}
+
+/// App ids and command names to add to the built-in lists.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AppsConfig {

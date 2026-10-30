@@ -84,6 +84,9 @@ pub fn run(cmd: ConfigCmd, path: &Path, set_mode: &dyn Fn(&str)) -> anyhow::Resu
                 }
             };
             println!("Now: {}   Default: {}", shown(&value), shown(&default));
+            if let Some(builtin) = flowbuddy_core::config::builtin_apps(&key) {
+                println!("Built in: {}", builtin.join(", "));
+            }
             if let Some(why) = s.notice {
                 println!("Turning it on: {why}");
             }

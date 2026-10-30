@@ -226,7 +226,7 @@ When nothing is focused, `app_id` is `null`. The protocol accepts an optional `t
 ```json
 {"v":0,"type":"nudge","nudge_id":"n-1729740000-3","rule_id":"vim.repeat-jk","title":"Try a count","text":"You pressed j 7 times. Try 7j, } or Ctrl-d.","ttl_ms":6000,"style":"card"}
 ```
-In `balanced` mode, one batch may contain several `nudge` messages. `style` is `card` (a card at the top centre of the screen that fades out, the default in `active` mode) or `bar` (a label next to the top-bar icon, the default otherwise); `[coaching] nudge_style` overrides it. It was added after v0 shipped, so it is optional and defaults to `bar`. Either way the icon shows a dot until the menu is opened.
+In `balanced` mode, one batch may contain several `nudge` messages. `style` is `card` (a card at the top centre of the screen that fades out, the default in `active` and `balanced` mode; several come one after another) or `bar` (a label next to the top-bar icon, the default otherwise); `[coaching] nudge_style` overrides it. It was added after v0 shipped, so it is optional and defaults to `bar`. Either way the icon shows a dot until the menu is opened.
 
 Commands in `text` are marked with backticks, the Markdown way ("Try `` `Ctrl-d` `` then `` `5j` ``"); the extension shows them in a monospace font. `explain` (optional) has one line per piece of those commands, such as "`` `Ctrl-d` ``: down half a page", from the glossary in `crates/core/src/glossary.rs`. The extension shows it in a collapsed "What does it do?" section of the menu; plain notifications drop the markers and append it.
 

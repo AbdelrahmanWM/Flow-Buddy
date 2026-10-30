@@ -13,7 +13,7 @@ A Shell extension can follow focus with `global.display`'s `notify::focus-window
 | VS Code (snap) | `code_code` | the main `code` process; the companion's extension host descends from it | `vscode-vim` (with the companion: "mode from the editor") |
 | Ptyxis | `org.gnome.Ptyxis` | the Ptyxis process; shells descend from it | `bash-vi` at a prompt, `terminal-vim` running Vim |
 
-The app id comes from `Shell.WindowTracker` (the `.desktop` name without the suffix), falling back to the GTK application id and then the WM class. The defaults in `crates/daemon/src/resolver.rs` also list GNOME Terminal, Console, kitty, Alacritty, WezTerm, Ghostty, foot, Tilix and xterm. Those weren't checked here; `[apps]` in `config.toml` can override every list.
+The app id comes from `Shell.WindowTracker` (the `.desktop` name without the suffix), falling back to the GTK application id and then the WM class. The defaults in `crates/daemon/src/resolver.rs` also list GNOME Terminal, Console, kitty, Alacritty, WezTerm, Ghostty, foot, Tilix and xterm. Those weren't checked here; `[apps]` in `config.toml` adds to each list.
 
 ## Terminal pid to shell
 

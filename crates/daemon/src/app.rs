@@ -225,15 +225,37 @@ const MOTION_LAG_MS: u64 = 200;
 /// into the editor.
 const EDITOR_ACTIVITY_MS: u64 = 2000;
 
-/// App ids from the config, falling back to the built-in lists.
+/// The built-in app ids, and the config's added to them.
 pub fn app_ids(config: &Config) -> AppIds {
     let d = AppIds::default();
+    let add = |mut list: Vec<String>, more: &Option<Vec<String>>| {
+        for m in more.iter().flatten() {
+            if !list.contains(m) {
+                list.push(m.clone());
+            }
+        }
+        list
+    };
     AppIds {
-        vscode: config.apps.vscode.clone().unwrap_or(d.vscode),
-        terminals: config.apps.terminals.clone().unwrap_or(d.terminals),
-        vims: config.apps.vims.clone().unwrap_or(d.vims),
-        claudes: config.apps.claudes.clone().unwrap_or(d.claudes),
+        vscode: add(d.vscode, &config.apps.vscode),
+        terminals: add(d.terminals, &config.apps.terminals),
+        vim_windows: d.vim_windows,
+        vims: add(d.vims, &config.apps.vims),
+        claudes: add(d.claudes, &config.apps.claudes),
     }
+}
+
+/// The longest window id kept; real ones are well under this.
+const MAX_APP_ID: usize = 128;
+
+/// A reported window id with nothing a terminal would act on: control
+/// characters dropped, and cut to [`MAX_APP_ID`].
+fn window_id(app_id: &str) -> String {
+    app_id
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_APP_ID)
+        .collect()
 }
 
 fn local_hour(now_ms: u64) -> u32 {
@@ -712,7 +734,8 @@ impl App {
             text: text.into(),
             ttl_ms: u64::from(self.config.coaching.nudge_seconds) * 1000,
             style: self.config.coaching.nudge_style.unwrap_or(match self.mode {
-                CoachingMode::Active => NudgeStyle::Card,
+                // A card to read; the top bar only fits a title.
+                CoachingMode::Active | CoachingMode::Balanced => NudgeStyle::Card,
                 _ => NudgeStyle::Bar,
             }),
             explain: glossary::explain(text, insert),
@@ -1119,7 +1142,10 @@ impl App {
             }
             return;
         }
-        self.holding.push((f, ctx, now_ms));
+        // Held from when the keys ended: a run that ends by a pause has
+        // waited long enough already.
+        let at = f.at_ms.min(now_ms);
+        self.holding.push((f, ctx, at));
     }
 
     fn pause_ms(&self) -> u64 {
@@ -1358,6 +1384,16 @@ impl App {
 
     /// Called about once a second: ends streaks that stopped without
     /// another key.
+    /// Runs that ended with a pause, and held findings that are due:
+    /// called more often than [`App::tick`], so a tip comes soon after you
+    /// stop.
+    pub fn tick_tips(&mut self, now_ms: u64) {
+        self.release(now_ms);
+        let events = self.engine.tick(self.resolved.kind, now_ms);
+        self.on_rule_events(&events, now_ms);
+        self.release(now_ms);
+    }
+
     pub fn tick(&mut self, now_ms: u64) {
         self.check_claude(now_ms);
         self.release_held(now_ms);
@@ -1388,9 +1424,7 @@ impl App {
         self.something_new(now_ms);
         self.answer_snippets(now_ms);
         self.roll_recording(now_ms);
-        self.release(now_ms);
-        let events = self.engine.tick(self.resolved.kind, now_ms);
-        self.on_rule_events(&events, now_ms);
+        self.tick_tips(now_ms);
         // A batch waits for a pause too, if you asked for that.
         let typing = self.wait_for_pause()
             && self
@@ -1583,6 +1617,11 @@ impl App {
             .flatten()
     }
 
+    /// The key options GNOME last reported.
+    pub fn reported_options(&self) -> Option<Vec<String>> {
+        self.xkb_options.clone()
+    }
+
     /// The layout GNOME last reported.
     pub fn layout(&self) -> Option<(String, String)> {
         self.layout.clone()
@@ -1603,7 +1642,7 @@ impl App {
 
     /// The focused window changed (from the GNOME extension, or X11).
     pub fn set_focus(&mut self, app_id: Option<String>, pid: Option<u32>, now_ms: u64) {
-        self.resolver.set_focus(app_id, pid);
+        self.resolver.set_focus(app_id.map(|a| window_id(&a)), pid);
         self.resolver.prune();
         self.update_context(None, now_ms);
     }
@@ -1666,6 +1705,17 @@ impl App {
                         mode: self.mode,
                     },
                 );
+                // The welcome has no pause in it: a top bar that connects
+                // while paused should offer Resume.
+                if client == ClientKind::GnomeExtension && self.paused_until.is_some() {
+                    self.reply(
+                        conn,
+                        ServerMsg::ModeChanged {
+                            mode: self.mode,
+                            paused_until: self.paused_until,
+                        },
+                    );
+                }
                 if let (ClientKind::Editor, Some(editor)) = (client, editor) {
                     self.resolver.editor_hello(conn, editor, pid, now_ms);
                     self.update_context(None, now_ms);
@@ -2091,6 +2141,7 @@ impl App {
         Status {
             running: true,
             daemon_version: flowbuddy_core::VERSION.into(),
+            pid: Some(std::process::id()),
             mode: self.mode,
             paused_until: self.paused_until.filter(|&t| t > now_s),
             context: self.resolved.kind.as_str().into(),
@@ -2124,6 +2175,29 @@ pub(crate) mod tests {
     use flowbuddy_core::learning::Stage;
     use flowbuddy_core::vim::notation::strokes;
     use tokio::sync::mpsc::UnboundedReceiver;
+
+    #[test]
+    fn app_lists_add_to_the_built_in_ones() {
+        let mut config = Config::default();
+        config.apps.terminals = Some(vec!["my-term".into(), "kitty".into()]);
+        config.apps.vims = Some(vec![]);
+        let ids = app_ids(&config);
+        assert!(ids.terminals.iter().any(|t| t == "org.gnome.Terminal"));
+        assert_eq!(ids.terminals.iter().filter(|t| *t == "kitty").count(), 1);
+        assert_eq!(ids.terminals.last().unwrap(), "my-term");
+        assert_eq!(ids.vims, AppIds::default().vims);
+    }
+
+    #[test]
+    fn window_ids_are_kept_printable() {
+        let mut app = test_app(CoachingMode::Active);
+        let id = format!("\u{1b}]0;title\u{7}\u{1b}[31mkitty\n{}", "z".repeat(500));
+        app.set_focus(Some(id), None, 0);
+        let shown = app.status(0).app.unwrap();
+        assert!(shown.starts_with("]0;title[31mkitty"));
+        assert!(!shown.chars().any(char::is_control));
+        assert_eq!(shown.chars().count(), MAX_APP_ID);
+    }
 
     /// Every tip shown: none held back, so tests see them.
     pub(crate) fn test_config() -> Config {
@@ -2188,6 +2262,22 @@ pub(crate) mod tests {
             ServerMsg::Welcome {
                 daemon_version: flowbuddy_core::VERSION.into(),
                 mode: CoachingMode::Passive
+            }
+        );
+    }
+
+    #[test]
+    fn the_top_bar_hears_of_a_pause_when_it_connects() {
+        let mut app = test_app(CoachingMode::Balanced);
+        app.paused_until = Some(5_000);
+        let mut rx = connect(&mut app, 1);
+        send(&mut app, 1, hello(ClientKind::GnomeExtension), 0);
+        rx.try_recv().unwrap();
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            ServerMsg::ModeChanged {
+                mode: CoachingMode::Balanced,
+                paused_until: Some(5_000)
             }
         );
     }
@@ -2953,6 +3043,24 @@ pub(crate) mod tests {
         type_at(&mut app, "<Esc>xxxxx<Esc>", 10_000);
         beat(&mut app, 10_700);
         assert_eq!(nudges(&mut ext).len(), 1);
+    }
+
+    #[test]
+    fn a_runs_tip_comes_soon_after_you_stop() {
+        let mut app = test_app(CoachingMode::Active);
+        app.hold_ms = u64::from(Config::default().coaching.hold_ms);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "org.gnome.Terminal", 100);
+        ctx(&mut app, CtxEvent::Fg, Some("vim"), 200);
+        // Ten keys 100 ms apart: the last at 1.9 s.
+        type_at(&mut app, "<Esc>jjjjjjjjj", 1_000);
+        let last = 1_900;
+        let mut at = last;
+        while nudges(&mut ext).is_empty() {
+            at += 250;
+            assert!(at <= last + 2_000, "no tip within 2 s of the last key");
+            app.tick_tips(at);
+        }
     }
 
     #[test]

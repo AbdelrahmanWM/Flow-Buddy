@@ -424,6 +424,9 @@ impl EditorConfig {
 pub struct Status {
     pub running: bool,
     pub daemon_version: String,
+    /// The daemon's process id, so `doctor` can check its program.
+    #[serde(default)]
+    pub pid: Option<u32>,
     pub mode: CoachingMode,
     pub paused_until: Option<u64>,
     /// Context *kind* only, never keys or titles.

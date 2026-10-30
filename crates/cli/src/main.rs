@@ -93,7 +93,8 @@ enum Cmd {
         #[arg(long, short)]
         explain: bool,
     },
-    /// Ask a local model about your habits (set `[ai] command` first).
+    /// Ask your AI about your habits: Claude Code, an API or a local model
+    /// (choose one with `flowbuddy setup` or `[ai] provider`).
     Coach {
         /// A question, e.g. "how do I move faster in big files?"
         question: Vec<String>,
@@ -266,7 +267,30 @@ enum CtxCmd {
     Mode { mode: String },
 }
 
+/// Output piped into something that stops reading (`flowbuddy tips | head`)
+/// ends quietly, as other commands do, instead of with a panic.
+fn quiet_closed_pipe() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let text = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        if text.starts_with("failed printing to stdout") {
+            let closed = text.contains("Broken pipe");
+            if !closed {
+                eprintln!("flowbuddy: couldn't write the output: {text}");
+            }
+            std::process::exit(if closed { 0 } else { 1 });
+        }
+        default(info);
+    }));
+}
+
 fn main() {
+    quiet_closed_pipe();
     let args = Args::parse();
     let json = args.json;
     if json && !takes_json(&args.command) {
@@ -444,10 +468,15 @@ fn record(action: RecordCmd) -> anyhow::Result<()> {
                 );
                 return Ok(());
             }
-            let sessions: Vec<_> = files
-                .iter()
-                .filter_map(|f| session::parse(&std::fs::read_to_string(f).ok()?).ok())
-                .collect();
+            let mut sessions = Vec::new();
+            for f in &files {
+                let text = std::fs::read_to_string(f)
+                    .map_err(|e| anyhow::anyhow!("can't read {}: {e}", f.display()))?;
+                sessions.push(
+                    session::parse(&text)
+                        .map_err(|e| anyhow::anyhow!("{} isn't a recording: {e}", f.display()))?,
+                );
+            }
             print!("{}", tune_text(&session::tune(&sessions), sessions.len()));
             return Ok(());
         }
@@ -805,9 +834,10 @@ fn last_slow_text(last: &flowbuddy_core::ipc::LastSlow, now_ms: u64) -> String {
 }
 
 fn explain(keys: &str, insert: bool) {
-    let pieces = flowbuddy_core::glossary::explain_keys(keys, insert);
+    let pieces = flowbuddy_core::glossary::explain_typed(keys, insert);
     if pieces.is_empty() {
-        println!("Not sure what {keys} does.");
+        println!("Type some keys to explain: flowbuddy explain 'ci\"'");
+        return;
     }
     let width = pieces
         .iter()
@@ -1244,7 +1274,7 @@ fn pause(duration: &str) -> anyhow::Result<()> {
     })?;
     Client::connect(ClientKind::Cli)?.command(Command::Pause { seconds })?;
     let until = chrono::Local::now() + chrono::Duration::seconds(seconds as i64);
-    println!("paused until {}", until.format("%a %H:%M"));
+    println!("paused until {}", when(until, chrono::Local::now()));
     Ok(())
 }
 
@@ -1375,7 +1405,11 @@ fn run_setup() -> anyhow::Result<()> {
     let path = flowbuddy_core::paths::config_file();
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     println!("A few questions; press Enter to keep the current choice (*).");
-    let answers = setup::ask(&text, &mut std::io::stdin().lock(), &mut std::io::stdout())?;
+    let Some(answers) = setup::ask(&text, &mut std::io::stdin().lock(), &mut std::io::stdout())?
+    else {
+        println!("\nNothing saved.");
+        return Ok(());
+    };
     let written = setup::apply(&text, &answers);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -1506,19 +1540,45 @@ fn format_day_time(unix: u64) -> String {
 
 /// Local HH:MM for a unix timestamp, via `date` to avoid a timezone dependency.
 fn format_time(unix: u64) -> String {
-    std::process::Command::new("date")
-        .args(["-d", &format!("@{unix}"), "+%H:%M"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| unix.to_string())
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_opt(unix as i64, 0)
+        .single()
+        .map_or_else(|| unix.to_string(), |t| when(t, chrono::Local::now()))
+}
+
+/// A time to come: "14:30" today, "Sat 14:30" within the week, and with
+/// the date further off.
+fn when(t: chrono::DateTime<chrono::Local>, now: chrono::DateTime<chrono::Local>) -> String {
+    if t.date_naive() == now.date_naive() {
+        t.format("%H:%M").to_string()
+    } else if t - now < chrono::Duration::days(6) {
+        t.format("%a %H:%M").to_string()
+    } else {
+        t.format("%a %-d %b %Y %H:%M").to_string()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_duration;
+    use super::{parse_duration, when};
     use chrono::TimeZone;
+
+    #[test]
+    fn times_to_come_say_the_day_when_needed() {
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 10, 29, 9, 0, 0)
+            .unwrap();
+        let at = |d, h| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 10, d, h, 30, 0)
+                .unwrap()
+        };
+        assert_eq!(when(at(29, 14), now), "14:30");
+        assert_eq!(when(at(31, 14), now), "Sat 14:30");
+        let far = now + chrono::Duration::days(400);
+        assert!(when(far, now).contains("2027"), "{}", when(far, now));
+    }
 
     #[test]
     fn durations() {
@@ -1543,6 +1603,7 @@ mod status_tests {
         Status {
             running: true,
             daemon_version: "0".into(),
+            pid: None,
             mode: CoachingMode::Active,
             paused_until: None,
             context: context.into(),

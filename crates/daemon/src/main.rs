@@ -73,16 +73,12 @@ async fn main() -> anyhow::Result<()> {
     let (cap_tx, mut cap_rx) = mpsc::channel::<CaptureEvent>(1024);
     let capture = tokio::spawn(capture::run(cap_tx));
 
-    let mut xkb_options = config
-        .keyboard
-        .xkb_options
-        .clone()
-        .unwrap_or_else(keymap::gnome_xkb_options);
+    let mut xkb_options = key_options(&config, None);
     let mut options = KeymapOptions::from_xkb(xkb_options.iter().map(String::as_str));
     let (mut keymap, layout, note) = make_keymap(&config, &xkb_options, options, None);
     let resolver =
         Resolver::new(app::app_ids(&config), Box::new(Procfs)).with_tmux(Box::new(TmuxCli));
-    let keymap_config = config.clone();
+    let mut keymap_config = config.clone();
     let mut app =
         App::new(config, state, resolver, Box::new(notify::NotifySend)).with_state_path(state_path);
     app.set_keymap_layout(layout, note);
@@ -96,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
     let (cfg_tx, mut cfg_rx) = mpsc::channel::<()>(4);
     let watcher = tokio::spawn(config_watch::run(config_path.clone(), cfg_tx));
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
+    let mut tip_ticker = tokio::time::interval(Duration::from_millis(250));
     // Outside GNOME there's no extension to say what has focus; on X11 the
     // daemon can see it itself.
     let (x11_tx, mut x11_rx) = mpsc::unbounded_channel::<focus_x11::Focus>();
@@ -137,30 +134,31 @@ async fn main() -> anyhow::Result<()> {
                 {
                     xkb_options = o;
                     options = KeymapOptions::from_xkb(xkb_options.iter().map(String::as_str));
-                    let reported = app.layout();
-                    let (k, layout, note) = make_keymap(
-                        &keymap_config,
-                        &xkb_options,
-                        options,
-                        reported.as_ref().map(|(l, v)| (l.as_str(), v.as_str())),
-                    );
                     info!(options = ?xkb_options, "keyboard options");
-                    keymap = k;
-                    app.set_keymap_layout(layout, note);
+                    keymap = rebuild(&mut app, &keymap_config, &xkb_options, options);
                 }
                 // GNOME switched layouts: follow it.
-                if let Some((l, v)) = app.take_layout() {
-                    let (k, layout, note) =
-                        make_keymap(&keymap_config, &xkb_options, options, Some((&l, &v)));
-                    info!(layout = %layout, "keyboard layout");
-                    keymap = k;
-                    app.set_keymap_layout(layout, note);
+                if let Some((l, _)) = app.take_layout() {
+                    info!(layout = %l, "keyboard layout");
+                    keymap = rebuild(&mut app, &keymap_config, &xkb_options, options);
                 }
             }
             _ = ticker.tick() => app.tick(now_ms()),
+            _ = tip_ticker.tick() => app.tick_tips(now_ms()),
             Some(f) = x11_rx.recv() => app.set_focus(f.app_id, f.pid, now_ms()),
             Some(()) = cfg_rx.recv() => match Config::load(&config_path) {
-                Ok(config) => app.reload_config(config),
+                Ok(config) => {
+                    // The keyboard settings changed: a new keymap, with the
+                    // options GNOME last reported unless the config sets them.
+                    if config.keyboard != keymap_config.keyboard {
+                        keymap_config = config.clone();
+                        xkb_options = key_options(&config, app.reported_options());
+                        options = KeymapOptions::from_xkb(xkb_options.iter().map(String::as_str));
+                        info!(options = ?xkb_options, "keyboard settings changed");
+                        keymap = rebuild(&mut app, &keymap_config, &xkb_options, options);
+                    }
+                    app.reload_config(config);
+                }
                 Err(e) => warn!(error = %e, "config not reloaded"),
             },
             _ = &mut shutdown => {
@@ -174,6 +172,35 @@ async fn main() -> anyhow::Result<()> {
     server.abort();
     watcher.abort();
     Ok(())
+}
+
+/// The xkb options to use: the config's, else what GNOME reported, else
+/// what GNOME's settings say now.
+fn key_options(config: &Config, reported: Option<Vec<String>>) -> Vec<String> {
+    config
+        .keyboard
+        .xkb_options
+        .clone()
+        .or(reported)
+        .unwrap_or_else(keymap::gnome_xkb_options)
+}
+
+/// A new keymap for the layout GNOME last reported, told to `app`.
+fn rebuild(
+    app: &mut App,
+    config: &Config,
+    xkb_options: &[String],
+    options: KeymapOptions,
+) -> Box<dyn Keymap> {
+    let reported = app.layout();
+    let (k, layout, note) = make_keymap(
+        config,
+        xkb_options,
+        options,
+        reported.as_ref().map(|(l, v)| (l.as_str(), v.as_str())),
+    );
+    app.set_keymap_layout(layout, note);
+    k
 }
 
 /// A keymap for `layout` (from the config, else the one GNOME reports,
@@ -238,5 +265,19 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_configs_key_options_win() {
+        let mut config = Config::default();
+        let gnome = Some(vec!["caps:escape".to_string()]);
+        assert_eq!(key_options(&config, gnome.clone()), ["caps:escape"]);
+        config.keyboard.xkb_options = Some(vec!["caps:swapescape".into()]);
+        assert_eq!(key_options(&config, gnome), ["caps:swapescape"]);
     }
 }

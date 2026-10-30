@@ -174,6 +174,69 @@ pub fn facts(export: &Export) -> String {
 }
 
 /// The prompt for `export`, answering `question` if there is one.
+/// The model's answer, for a terminal: Markdown it wrote anyway made
+/// readable. Headings and **bold** become bold, `commands` stand out,
+/// bullets are •, and code blocks are indented. `color`: a terminal that
+/// shows it; otherwise only the marks go.
+pub fn for_terminal(answer: &str, color: bool) -> String {
+    let (bold, code, off) = if color {
+        ("\x1b[1m", "\x1b[36m", "\x1b[0m")
+    } else {
+        ("", "", "")
+    };
+    let inline = |line: &str| -> String {
+        let mut out = String::new();
+        let mut rest = line;
+        while !rest.is_empty() {
+            if let Some(r) = rest.strip_prefix("**")
+                && let Some(end) = r.find("**")
+            {
+                let _ = write!(out, "{bold}{}{off}", &r[..end]);
+                rest = &r[end + 2..];
+            } else if let Some(r) = rest.strip_prefix('`')
+                && let Some(end) = r.find('`')
+            {
+                let _ = write!(out, "{code}{}{off}", &r[..end]);
+                rest = &r[end + 1..];
+            } else {
+                let c = rest.chars().next().unwrap_or_default();
+                out.push(c);
+                rest = &rest[c.len_utf8()..];
+            }
+        }
+        out
+    };
+    let mut out = String::new();
+    let mut in_block = false;
+    for line in answer.trim().lines() {
+        let t = line.trim_start();
+        if t.starts_with("```") {
+            in_block = !in_block;
+            continue;
+        }
+        if in_block {
+            let _ = writeln!(out, "    {code}{line}{off}");
+            continue;
+        }
+        let indent = &line[..line.len() - t.len()];
+        if let Some(h) = t.strip_prefix('#') {
+            let h = h.trim_start_matches('#').trim();
+            let _ = writeln!(
+                out,
+                "{bold}{}{off}",
+                inline(h).replace(off, &format!("{off}{bold}"))
+            );
+        } else if let Some(item) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
+            let _ = writeln!(out, "{indent}• {}", inline(item));
+        } else if t.chars().all(|c| matches!(c, '-' | '*' | '_')) && t.len() >= 3 {
+            out.push('\n');
+        } else {
+            let _ = writeln!(out, "{}", inline(line));
+        }
+    }
+    out
+}
+
 pub fn prompt(export: &Export, question: Option<&str>) -> String {
     prompt_with(export, question, &[])
 }
@@ -191,7 +254,8 @@ pub fn prompt_with(
          It only has counts and the shape of each habit, never their text.\n\n\
          Rules:\n\
          - Use only this data. Don't invent numbers or habits.\n\
-         - Be concise: at most 5 short bullet points.\n\
+         - Be concise: at most 5 short points, each starting with \"- \".\n\
+         - It's shown in a terminal: plain text, no headings, bold, tables or code blocks.\n\
          - Name exact commands in backticks, like `Ctrl-d` or `ci(`, and say in a few words what each does.\n\
          - Prefer what's practical to type over what's shortest: nobody counts 40 lines for `40j`.\n\
          - Praise real progress (improving or mastered habits) briefly.\n\n\
@@ -803,5 +867,21 @@ mod tests {
         };
         ask(&ai, "echo me", &mut out).unwrap().unwrap();
         assert_eq!(out, b"echo me");
+    }
+
+    #[test]
+    fn markdown_reads_well_in_a_terminal() {
+        let answer = "## Your habits\n\nYou press **j** a lot.\n\n- Use `5j` to move\n* or `}` for paragraphs\n\n```vim\n:set relativenumber\n```\n---\nDone.\n";
+        assert_eq!(
+            for_terminal(answer, false),
+            "Your habits\n\nYou press j a lot.\n\n• Use 5j to move\n• or } for paragraphs\n\n    :set relativenumber\n\nDone.\n"
+        );
+        let colored = for_terminal("Try `ci(` and **this**.", true);
+        assert_eq!(colored, "Try \x1b[36mci(\x1b[0m and \x1b[1mthis\x1b[0m.\n");
+        // A lone backtick or star is left alone.
+        assert_eq!(
+            for_terminal("a * b and it's `odd", false),
+            "a * b and it's `odd\n"
+        );
     }
 }

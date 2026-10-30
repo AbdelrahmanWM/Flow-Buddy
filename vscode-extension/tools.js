@@ -140,7 +140,8 @@ small { opacity: .7; font-weight: normal; }
 
 // The Command Palette's commands. `vscode` and `run` (run flowbuddy with
 // arguments, resolving to {ok, out, err}) are passed in.
-function register(vscode, run, subscriptions) {
+// `cli`: where the flowbuddy command is, for what runs in a terminal.
+function register(vscode, run, subscriptions, cli = () => null) {
     const output = vscode.window.createOutputChannel('Flow Buddy');
     subscriptions.push(output);
     const say = (title, text) => {
@@ -231,6 +232,14 @@ function register(vscode, run, subscriptions) {
         'flowbuddy.progress': tool('Progress', ['learn', '--json'], progressText),
         'flowbuddy.today': tool('Today', ['summary', '--json'], j => j.nothing_yet ? 'Nothing recorded yet.' : j.text),
         'flowbuddy.recentTips': tool('Recent tips', ['tips'], (_j, r) => r.out),
+        // The drill runs in Vim, so in a terminal: vscodevim can't run it.
+        'flowbuddy.practice': async () => {
+            const path = cli();
+            if (!path)
+                throw new Error('the flowbuddy command isn\'t installed: run scripts/install.sh from the Flow Buddy folder');
+            const term = vscode.window.createTerminal({name: 'Flow Buddy practice', shellPath: path, shellArgs: ['practice']});
+            term.show();
+        },
         'flowbuddy.skillMap': async () => {
             const r = await run(['learn', '--json']);
             if (!r.ok)

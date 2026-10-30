@@ -17,9 +17,11 @@ The facts are worked out by trying motions on the buffer, which stops after 15 m
 
 Tips for what you do in Vim show in Vim, in a small window at the top right, for a few seconds (`coaching.nudge_seconds`). It doesn't take the cursor; a click closes it. `:FlowBuddyGotIt` and `:FlowBuddyNotHelpful` answer the tip on show, like the top-bar menu does. To have them on the desktop instead: `flowbuddy config set coaching.show_in desktop`, or `let g:flowbuddy_tips = 0` for this Vim only. Needs Vim's popup windows (`+popupwin`) or Neovim.
 
-## Practice
+## Practice and the skill map
 
-`flowbuddy practice` starts Vim with `flowbuddy#practice#run`, which runs the drill in a scratch buffer and counts your keys with buffer-local mappings that pass each key through. `:q` stops early; the rounds done are kept.
+`:FlowBuddyPractice` runs a two-minute drill on your weakest habit in the Vim you're in (`:FlowBuddyPractice delete` for a given one; Tab completes the names), and reports how it went when it ends; `:bd` closes it. `:FlowBuddyMap` shows every skill as a tile in a split. Both need the `flowbuddy` command.
+
+From a terminal, `flowbuddy practice` starts Vim with `flowbuddy#practice#run`, which runs the drill in a scratch buffer and counts your keys with buffer-local mappings that pass each key through. `:q` stops early; the rounds done are kept.
 
 ## Over ssh
 

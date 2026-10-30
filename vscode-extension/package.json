@@ -55,6 +55,11 @@
         "category": "Flow Buddy"
       },
       {
+        "command": "flowbuddy.practice",
+        "title": "Practice (a two-minute drill in Vim)",
+        "category": "Flow Buddy"
+      },
+      {
         "command": "flowbuddy.skillMap",
         "title": "Skill map",
         "category": "Flow Buddy"

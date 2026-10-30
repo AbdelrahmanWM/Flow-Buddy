@@ -89,7 +89,7 @@ function registerTools(subscriptions) {
             resolve({ok: !error, out: out ?? '', err: err ?? ''});
         });
     });
-    tools.register(vscode, run, subscriptions);
+    tools.register(vscode, run, subscriptions, () => tools.cliPath(process.env.PATH, os.homedir(), exists));
 }
 
 function deactivate() {

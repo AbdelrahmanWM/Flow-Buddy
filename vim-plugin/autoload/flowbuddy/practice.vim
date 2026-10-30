@@ -15,6 +15,9 @@ let s:panel = -1
 let s:loading = 0
 let s:done = 0
 let s:quit = 1
+" With :FlowBuddyPractice: the flowbuddy command and the drill's name, to
+" record the result when it ends.
+let s:record = []
 
 " Keys that read one more character.
 let s:TAKES_CHAR = ['f', 't', 'F', 'T', 'r', 'm', "'", '`', '"', 'q', '@']
@@ -52,6 +55,7 @@ endfunction
 " the third argument is 0.
 function! flowbuddy#practice#run(drill_path, out_path, ...) abort
   let s:quit = get(a:000, 0, 1)
+  let s:record = get(a:000, 1, [])
   let s:drill = json_decode(join(readfile(a:drill_path), "\n"))
   let s:out = a:out_path
   let s:results = []
@@ -158,12 +162,97 @@ function! s:finish(leaving) abort
   " JSON booleans, not 0 and 1.
   let stopped = s:round < len(get(s:drill, 'rounds', [])) ? v:true : v:false
   call writefile([json_encode({'rounds': s:results, 'stopped': stopped})], s:out)
+  if !empty(s:record)
+    " Back to being coached; the result is kept and reported.
+    if exists('*flowbuddy#on_focus')
+      call flowbuddy#on_focus(1)
+    endif
+    let report = systemlist(s:record[0] . ' practice ' . s:record[1] . ' --record ' . shellescape(s:out))
+    call delete(s:out)
+    let s:record = []
+    if !a:leaving
+      call s:show(report + ['', ':bd closes the drill'])
+      call timer_start(15000, {-> s:close_panel()})
+    endif
+    return
+  endif
   if !a:leaving
     call s:show(s:quit ? ['All done.', 'Closing…'] : ['All done.'])
     if s:quit
       call timer_start(700, {-> execute('qa!')})
     endif
   endif
+endfunction
+
+function! s:close_panel() abort
+  if s:panel == -1
+    return
+  endif
+  if has('nvim')
+    if nvim_win_is_valid(s:panel)
+      call nvim_win_close(s:panel, v:true)
+    endif
+  else
+    call popup_close(s:panel)
+  endif
+  let s:panel = -1
+endfunction
+
+" The flowbuddy command: on the PATH, or where the installer puts it.
+function! flowbuddy#practice#cli() abort
+  let cli = exepath('flowbuddy')
+  if empty(cli) && executable(expand('~/.local/bin/flowbuddy'))
+    let cli = expand('~/.local/bin/flowbuddy')
+  endif
+  return cli
+endfunction
+
+" :FlowBuddyPractice [drill]: a drill here, in this Vim.
+function! flowbuddy#practice#start(...) abort
+  let cli = flowbuddy#practice#cli()
+  if empty(cli)
+    echohl ErrorMsg | echo 'Flow Buddy: the flowbuddy command isn''t installed (scripts/install.sh)' | echohl None
+    return
+  endif
+  let args = a:0 ? ' ' . shellescape(a:1) : ''
+  let out = system(shellescape(cli) . ' practice --print-drill' . args)
+  if v:shell_error
+    echohl ErrorMsg | echo 'Flow Buddy: ' . trim(substitute(out, '^flowbuddy: ', '', '')) | echohl None
+    return
+  endif
+  let drill = tempname()
+  call writefile([out], drill)
+  let family = json_decode(out).family
+  if type(json_decode(out).why) == v:t_string
+    echo 'A drill for: ' . json_decode(out).why
+  endif
+  call flowbuddy#practice#run(drill, tempname(), 0, [shellescape(cli), family])
+  call delete(drill)
+endfunction
+
+" :FlowBuddyMap: the skill map in a scratch window.
+function! flowbuddy#practice#map() abort
+  let cli = flowbuddy#practice#cli()
+  if empty(cli)
+    echohl ErrorMsg | echo 'Flow Buddy: the flowbuddy command isn''t installed (scripts/install.sh)' | echohl None
+    return
+  endif
+  let lines = systemlist(shellescape(cli) . ' learn --map')
+  new
+  setlocal buftype=nofile bufhidden=wipe noswapfile nonumber norelativenumber
+  silent! file [Flow\ Buddy\ skills]
+  call setline(1, lines)
+  setlocal nomodifiable
+  syntax match FlowBuddyKnown /+ [^ ].\{-}\ze\(   \|$\)/
+  syntax match FlowBuddySlipping /! [^ ].\{-}\ze\(   \|$\)/
+  syntax match FlowBuddyLearning /\~ [^ ].\{-}\ze\(   \|$\)/
+  syntax match FlowBuddyReady /> [^ ].\{-}\ze\(   \|$\)/
+  syntax match FlowBuddyLater /\. [^ ].\{-}\ze\(   \|$\)/
+  highlight default link FlowBuddyKnown DiffAdd
+  highlight default link FlowBuddySlipping WarningMsg
+  highlight default link FlowBuddyLearning Identifier
+  highlight default link FlowBuddyReady Title
+  highlight default link FlowBuddyLater Comment
 endfunction
 
 " A small window at the top right with the round's instructions.

@@ -17,6 +17,18 @@ export function cliPath(onPath, exists, home) {
     return null;
 }
 
+// A terminal running `argv`: the desktop's chosen one, else one we know.
+// `onPath(name)` is its path or null.
+export function inTerminal(argv, onPath) {
+    if (onPath('xdg-terminal-exec'))
+        return ['xdg-terminal-exec', ...argv];
+    for (const t of ['ptyxis', 'kgx', 'gnome-terminal']) {
+        if (onPath(t))
+            return [t, '--', ...argv];
+    }
+    return null;
+}
+
 // Short names for the settings shown first; the rest are named from
 // their key.
 const LABELS = {
@@ -24,10 +36,12 @@ const LABELS = {
     'coaching.when': 'When tips appear',
     'coaching.quiet_hours': 'Quiet hours',
     'coaching.nudge_seconds': 'Seconds a tip stays',
+    'coaching.show_in': 'Where tips show',
     'learn.daily': 'Something new every day',
     'learn.level': 'Your level',
     'learn.challenges': 'Challenges after lessons',
     'learn.holdout': 'Tips held back to measure',
+    'learn.review_at': 'Review a skill when recall drops below (%)',
     'text.shapes': 'Exact tips from the text',
     'text.ai_snippets': 'Snippets for your AI',
     'text.cloud': 'Snippets to a cloud AI',

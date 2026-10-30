@@ -84,6 +84,14 @@ check('progress', progress[0], 'Basics: you use 1 of 2; 1 ready to learn');
 check('progress next', progress[progress.length - 1], 'Ready next: e: word ends');
 check('nothing yet', m.textLines({nothing_yet: true}).length, 1);
 
+// A drill in a terminal.
+const found = names => n => (names.includes(n) ? `/usr/bin/${n}` : null);
+check('desktop terminal', m.inTerminal(['fb', 'practice'], found(['xdg-terminal-exec', 'ptyxis'])), ['xdg-terminal-exec', 'fb', 'practice']);
+check('ptyxis', m.inTerminal(['fb', 'practice'], found(['ptyxis'])), ['ptyxis', '--', 'fb', 'practice']);
+check('no terminal', m.inTerminal(['fb'], found([])), null);
+check('new labels', [m.label({key: 'coaching.show_in'}), m.label({key: 'learn.review_at'})],
+    ['Where tips show', 'Review a skill when recall drops below (%)']);
+
 // The skill map.
 const groups = m.skillGroups({items: [
     {level: 1, keys: 'w', what: 'words', tile: 'known', uses: 40, days_idle: 1, recall: 90},

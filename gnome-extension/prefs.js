@@ -383,6 +383,14 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
             look.add(this._toolRow(title, subtitle, 'Show', () => this._show(title, args, lines)));
         page.add(look);
 
+        const practise = new Adw.PreferencesGroup({
+            title: 'Practise',
+            description: 'A two-minute drill on your weakest habit, in Vim. In Vim itself: :FlowBuddyPractice.',
+        });
+        practise.add(this._toolRow('Practice', 'Rounds like "go to the marked line" or "empty the brackets", in as few keys as you can',
+            'Start', () => this._practise()));
+        page.add(practise);
+
         const data = new Adw.PreferencesGroup({
             title: 'Your data',
             description: 'Everything Flow Buddy remembers stays on this machine.',
@@ -427,6 +435,20 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
         const dialog = new Adw.AlertDialog({heading: title, extra_child: scroll});
         dialog.add_response('close', 'Close');
         dialog.present(this._window);
+    }
+
+    // `flowbuddy practice` in a terminal: the drill runs in Vim.
+    _practise() {
+        const argv = model.inTerminal([this._cli, 'practice'], name => GLib.find_program_in_path(name));
+        if (!argv) {
+            this._toast('No terminal found: run flowbuddy practice in one');
+            return;
+        }
+        try {
+            Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE);
+        } catch (e) {
+            this._toast(`Couldn't open a terminal: ${e.message ?? e}`);
+        }
     }
 
     async _export() {

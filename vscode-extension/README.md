@@ -84,4 +84,4 @@ Tips for what you do in VS Code show in the status bar at the bottom left, for a
 
 ## Settings and tools
 
-In the Command Palette: **Flow Buddy: Settings…** (the basics, then everything else and each rule), **Check setup**, **Progress**, **Today**, **Recent tips** and **Skill map** (every skill as a coloured tile). They run the `flowbuddy` command, so it needs to be installed (`scripts/install.sh`).
+In the Command Palette: **Flow Buddy: Settings…** (the basics, then everything else and each rule), **Check setup**, **Progress**, **Today**, **Recent tips**, **Skill map** (every skill as a coloured tile) and **Practice** (a drill in Vim, in a terminal). They run the `flowbuddy` command, so it needs to be installed (`scripts/install.sh`).

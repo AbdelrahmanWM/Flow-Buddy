@@ -116,16 +116,24 @@ class MotionTracker {
         }
         const pos = cursorOf(editor, mode);
         const version = editor.document.version;
-        // A cursor moved by an edit isn't a motion, and neither are clicks.
+        // A cursor moved by an edit isn't a motion.
         if (version !== this._version) {
             this._abort();
             this._pos = pos;
             this._version = version;
             return;
         }
+        // A click is a move of its own: the daemon, which saw the click
+        // and no keys, names the keys for it.
         if (e.kind === vscode.TextEditorSelectionChangeKind.Mouse) {
             this._finish();
+            if (this._pos && !samePos(this._pos, pos)) {
+                const now = Date.now();
+                this._segment = {mode, start: this._pos, startMs: now, moves: 1, top: this._top, end: pos, endMs: now};
+                this._finish();
+            }
             this._pos = pos;
+            this._top = topLine(editor);
             return;
         }
         const from = this._pos;

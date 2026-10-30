@@ -2243,6 +2243,7 @@ static RULE_SKILLS: &[(&str, &[&str])] = &[
     ("motion.screen-line", &["screen-lines"]),
     ("motion.search-to", &["search"]),
     ("motion.scroll", &["center"]),
+    ("motion.mouse", &[]),
     ("motion.mark", &["marks"]),
     ("motion.text-object", &["ciw"]),
     ("motion.operator", &["word-end", "till", "d-to-end"]),

@@ -123,12 +123,15 @@ scripts/install.sh --dry-run      # see what it will do
 scripts/install.sh --with-udev    # install; --with-udev lets the active session read keyboards (sudo)
 ```
 
-Then log out and back in so GNOME loads the extension, and check:
+Then log out and back in so GNOME loads the extension, and take the tour:
 
 ```sh
+flowbuddy tour            # how it works in seven short parts: checks your setup, shows a sample tip, asks the settings that matter
 flowbuddy doctor          # every piece, and how to fix what's missing
 flowbuddy status          # what it sees now; --watch, then switch windows
 ```
+
+The tour is also **Tour** in the settings window's Tools, `:FlowBuddyTour` in Vim, and **Get started with Flow Buddy** in VS Code's Welcome page (or **Flow Buddy: Tour** in the command palette).
 
 To update, pull and run `scripts/install.sh` again: it restarts the daemon, and GNOME picks up the new extension at the next login. Restart VS Code and Vim too.
 
@@ -145,6 +148,7 @@ To update, pull and run `scripts/install.sh` again: it restarts the daemon, and 
 ## Use
 
 ```sh
+flowbuddy tour                    # new here? how it all works, in seven short parts
 flowbuddy setup                   # a few questions: how often, your level, AI, text features
 flowbuddy doctor                  # checks every piece and says how to fix what's missing
 flowbuddy mode balanced           # off | passive | balanced | active

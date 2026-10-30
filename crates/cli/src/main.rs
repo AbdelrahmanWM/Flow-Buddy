@@ -7,6 +7,7 @@ mod report;
 mod review;
 mod setup;
 mod tips;
+mod tour;
 
 use clap::{Parser, Subcommand};
 use flowbuddy_core::editor::EditorMode;
@@ -106,6 +107,9 @@ enum Cmd {
     /// A few questions about how you'd like to be coached, saved to the
     /// config file.
     Setup,
+    /// New here? How Flow Buddy works, in seven short parts: it checks your
+    /// setup, shows a sample tip and asks the setup questions.
+    Tour,
     /// Show tips here as they come, with what their commands do: keep it
     /// open in a terminal beside your work. Ctrl-C to stop.
     Watch,
@@ -412,6 +416,7 @@ fn main() {
         }
         Cmd::Watch => watch(),
         Cmd::Setup => run_setup(),
+        Cmd::Tour => run_tour(),
         Cmd::Doctor => {
             let status = Client::connect(ClientKind::Cli)
                 .and_then(|mut c| c.query(Command::Status))
@@ -1630,6 +1635,40 @@ fn run_setup() -> anyhow::Result<()> {
         );
     }
     println!("flowbuddy doctor checks the rest.");
+    Ok(())
+}
+
+fn run_tour() -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    let path = flowbuddy_core::paths::config_file();
+    let status = || {
+        Client::connect(ClientKind::Cli)
+            .and_then(|mut c| c.query(Command::Status))
+            .map_err(|e| format!("{e:#}"))
+            .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
+    };
+    let checks = || doctor::checks(&doctor::Env::gather(status()));
+    let sample = || {
+        Client::connect(ClientKind::Cli)
+            .and_then(|mut c| c.query(Command::SampleTip))
+            .map(|v| v["shown"].as_str().unwrap_or("card").to_string())
+            .map_err(|_| "the daemon isn't running".to_string())
+    };
+    let save = |text: &str| {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, text)
+    };
+    let stdout = std::io::stdout();
+    let env = tour::Env {
+        checks: &checks,
+        sample: &sample,
+        config: std::fs::read_to_string(&path).unwrap_or_default(),
+        save: &save,
+        color: stdout.is_terminal() && std::env::var_os("NO_COLOR").is_none(),
+    };
+    tour::run(&env, &mut std::io::stdin().lock(), &mut stdout.lock())?;
     Ok(())
 }
 

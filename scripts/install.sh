@@ -163,6 +163,10 @@ if command -v code >/dev/null || [[ -d $HOME/.vscode ]]; then
     for f in "$repo"/vscode-extension/*.js "$repo"/vscode-extension/*.json "$repo"/vscode-extension/README.md; do
         run install -m644 "$f" "$vscode_ext/${f##*/}"
     done
+    run mkdir -p "$vscode_ext/walkthrough"
+    for f in "$repo"/vscode-extension/walkthrough/*.md; do
+        run install -m644 "$f" "$vscode_ext/walkthrough/${f##*/}"
+    done
     # VS Code only loads extensions listed in extensions.json (and skips
     # ones in .obsolete), so register it there. Without the file, VS Code
     # scans the folder itself on its next start.
@@ -246,6 +250,7 @@ cat <<MSG
         back in.
       - Restart VS Code and Vim if they're open, so they load the update.
       - Check everything with: flowbuddy doctor
+      - New to Flow Buddy? Take the tour, a few minutes: flowbuddy tour
 MSG
 if ((!with_udev && !can_read_keys)); then
     cat <<MSG

@@ -145,6 +145,9 @@ pub enum Command {
         #[serde(default)]
         known: Option<bool>,
     },
+    /// Show a made-up tip where tips show, for `flowbuddy tour`. Not kept
+    /// or counted. Answers with `{"shown": "card" | "notification"}`.
+    SampleTip,
     /// The latest tips, newest first. Answers with `Vec<RecentTip>`.
     RecentTips {
         #[serde(default)]

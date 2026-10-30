@@ -253,6 +253,14 @@ function register(vscode, run, subscriptions, cli = () => null) {
                 shellArgs: ['practice', ...pick.args]});
             term.show();
         },
+        // The tour asks questions, so it runs in a terminal too.
+        'flowbuddy.tour': async () => {
+            const path = cli();
+            if (!path)
+                throw new Error('the flowbuddy command isn\'t installed: run scripts/install.sh from the Flow Buddy folder');
+            const term = vscode.window.createTerminal({name: 'Flow Buddy tour', shellPath: path, shellArgs: ['tour']});
+            term.show();
+        },
         'flowbuddy.skillMap': async () => {
             const r = await run(['learn', '--json']);
             if (!r.ok)

@@ -67,6 +67,7 @@ fn running_remapper() -> Option<&'static str> {
         .find(|r| names.iter().any(|n| n == r))
 }
 
+#[derive(Clone)]
 pub struct Check {
     pub ok: bool,
     pub what: String,

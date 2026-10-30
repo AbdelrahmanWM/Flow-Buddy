@@ -359,6 +359,22 @@ function! flowbuddy#practice#start(...) abort
   call delete(drill)
 endfunction
 
+" :FlowBuddyTour: `flowbuddy tour` in a terminal window; it asks questions.
+function! flowbuddy#practice#tour() abort
+  let cli = flowbuddy#practice#cli()
+  if empty(cli)
+    echohl ErrorMsg | echo 'Flow Buddy: the flowbuddy command isn''t installed (scripts/install.sh)' | echohl None
+    return
+  endif
+  if has('nvim')
+    new
+    call termopen([cli, 'tour'])
+    startinsert
+  else
+    call term_start([cli, 'tour'], {'term_name': 'Flow Buddy tour'})
+  endif
+endfunction
+
 " :FlowBuddyMap: the skill map in a scratch window.
 function! flowbuddy#practice#map() abort
   let cli = flowbuddy#practice#cli()

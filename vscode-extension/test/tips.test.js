@@ -30,6 +30,7 @@ function check(name, got, want) {
 const nudge = {nudge_id: 'n-1', title: 'Delete inside', text: 'That took 6 keys. `di(` does it from anywhere inside, in 3.',
     explain: ['`di(` delete inside the brackets'], ttl_ms: 6000};
 
+check('notification', t.notificationText(nudge), 'Flow Buddy · Delete inside: That took 6 keys. di( does it from anywhere inside, in 3.');
 check('plain', t.plain('`di(` and `` a`b ``'), 'di( and a`b');
 check('status', t.statusText(nudge), '$(lightbulb) Delete inside: That took 6 keys. di( does it from anywhere inside, in 3.');
 check('status cut', t.statusText(nudge, 30), '$(lightbulb) Delete inside: That took 6…');

@@ -33,7 +33,7 @@ Flow Buddy is a local companion that helps you get better at your tools continuo
 ```
 
 - **Coaching modes:** `off`, `passive` (summaries only), `balanced` (occasional batched tips) and `active` (real-time nudges).
-- **Tips where you look:** with the editor plugins, tips for what you do in Vim show in Vim (a small window at the top right) and in VS Code (the status bar); everywhere else, on the desktop. `coaching.show_in` changes it.
+- **Tips where you look:** with the editor plugins, tips for what you do in Vim show in Vim (a small window at the top right) and in VS Code (a notification, and the status bar); everywhere else, on the desktop. `coaching.show_in` changes it.
 - **Tips you can keep:** the top-bar menu lists recent tips and can keep one on screen while you practise it. `Super+Alt+T` keeps the current tip, `Super+Alt+D` dismisses it, `Super+Alt+N` marks it not helpful (change them with `gsettings` under `org.gnome.shell.extensions.flowbuddy`).
 - **Mistake memory:** remembers which patterns you repeat and how each habit is progressing (new → improving → mastered), so coaching adapts over time.
 

@@ -37,7 +37,12 @@ function activate(context) {
             mappings?.resend();
         },
         onNudge: nudge => shown?.show(nudge),
+        showsTips: () => tips.style(require('vscode')) !== 'desktop',
     });
+    context.subscriptions.push(require('vscode').workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('flowbuddy.tips'))
+            link.hello();
+    }));
     shown = tips.register(require('vscode'), link, context.subscriptions);
     focus = new FocusReporter(link);
     modes = new ModeTracker(link, (previous, mode) => {

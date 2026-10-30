@@ -81,14 +81,16 @@
         "flowbuddy.tips": {
           "type": "string",
           "enum": [
+            "desktop",
             "notification",
             "statusBar"
           ],
           "enumDescriptions": [
-            "A notification at the bottom right, with Got it and Not helpful, and the tip in the status bar",
-            "Only the status bar, highlighted, for a few seconds"
+            "Flow Buddy's card on the desktop, with the whole tip, what it does and the answers (from the top bar on GNOME, a notification elsewhere)",
+            "A VS Code notification at the bottom right, with Got it and Not helpful, and the tip in the status bar",
+            "Only VS Code's status bar, highlighted, for a few seconds"
           ],
-          "default": "notification",
+          "default": "desktop",
           "description": "How Flow Buddy's tips show in VS Code."
         }
       }

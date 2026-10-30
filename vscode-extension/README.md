@@ -80,7 +80,7 @@ The tests run `facts.js` on small hand-written buffers. No node needed.
 
 ## Tips
 
-Tips for what you do in VS Code show as a notification at the bottom right, with **Got it**, **Not helpful** and **What does it do?** (the explanation, and an example for lessons). The tip also stays highlighted in the status bar at the bottom left for a few seconds: hover for all of it, click to answer. To have only the status bar, set `flowbuddy.tips` to `statusBar` in VS Code's settings. To have them on the desktop instead: `flowbuddy config set coaching.show_in desktop`.
+Tips for what you do in VS Code show on Flow Buddy's desktop card, with the whole tip, what it does and the answers. The **Flow Buddy: Tips** setting (`flowbuddy.tips`) changes that: `notification` shows them in VS Code, as a notification at the bottom right with **Got it**, **Not helpful** and **What does it do?** (the explanation, and an example for lessons), and highlighted in the status bar for a few seconds (hover for all of it, click to answer); `statusBar` shows only the status bar. The change takes effect right away.
 
 ## Settings and tools
 

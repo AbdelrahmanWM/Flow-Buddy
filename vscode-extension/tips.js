@@ -75,11 +75,12 @@ class Tips {
     }
 }
 
-// How a tip shows: a notification at the bottom right with its answers
-// (the default), or only the status bar. Either way the status bar keeps
-// it, highlighted, for its time.
+// How a tip shows: the desktop card (the default: tips don't come here at
+// all), a notification at the bottom right with its answers, or only the
+// status bar. For the last two the status bar keeps it, highlighted, for
+// its time.
 function style(vscode) {
-    return vscode.workspace.getConfiguration('flowbuddy').get('tips', 'notification');
+    return vscode.workspace.getConfiguration('flowbuddy').get('tips', 'desktop');
 }
 
 // The notification's text: the title and the tip, without command marks.
@@ -147,4 +148,4 @@ function register(vscode, link, subscriptions) {
     return tips;
 }
 
-module.exports = {plain, statusText, tooltip, notificationText, Tips, register};
+module.exports = {plain, statusText, tooltip, notificationText, style, Tips, register};

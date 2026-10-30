@@ -346,6 +346,31 @@ function! Test_a_tip_is_answered_once() abort
   call assert_true(empty(popup_list()))
 endfunction
 
+function! Test_practice_counts_keys() abort
+  let drill = tempname()
+  let out = tempname()
+  call writefile([json_encode({'version': 1, 'family': 'vertical', 'title': 'T', 'about': 'a',
+        \ 'relative_numbers': v:true, 'rounds': [
+        \ {'lines': ['a b', 'c d', 'e f', 'g h', 'i j', 'k l'], 'cursor': [1, 1], 'ask': 'x',
+        \  'goal': {'line': 6}, 'mark': [6, 1, 0], 'par': 2, 'best': '5j'},
+        \ {'lines': ['alpha bright, cedar'], 'cursor': [1, 1], 'ask': 'x',
+        \  'goal': {'text': ['alpha , cedar']}, 'mark': [1, 7, 6], 'par': 3, 'best': 'dt,'}]})], drill)
+  call flowbuddy#practice#run(drill, out, 0)
+  sleep 20m
+  call feedkeys('jjj2j', 'xt')
+  call flowbuddy#practice#check()
+  call assert_equal([5, 1], [flowbuddy#practice#state().results[0].keys, flowbuddy#practice#state().round])
+  sleep 1200m
+  " t counts the character it takes.
+  call feedkeys('wdt,', 'xt')
+  call flowbuddy#practice#check()
+  let got = json_decode(readfile(out)[0])
+  call assert_equal([5, 4], map(copy(got.rounds), 'v:val.keys'))
+  call assert_equal('false', json_encode(got.stopped))
+  call popup_clear()
+  bwipe!
+endfunction
+
 " Runner
 let s:failed = 0
 for s:name in sort(filter(map(split(execute('function /^Test_'), "\n"), {_, l -> matchstr(l, 'Test_\w\+')}), '!empty(v:val)'))

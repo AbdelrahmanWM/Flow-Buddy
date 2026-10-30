@@ -13,7 +13,7 @@ mod export;
 use std::collections::HashMap;
 use std::path::Path;
 
-pub use export::{EXPORT_VERSION, Export};
+pub use export::{EXPORT_VERSION, Export, PatternExport};
 use flowbuddy_core::learning::{Stage, Window};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 

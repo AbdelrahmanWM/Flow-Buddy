@@ -694,7 +694,14 @@ impl App {
             self.memory.unhelpful_in_a_row(f.rule_id, now_ms),
         );
         let text = self.shapes_hint(f.rule_id, text);
-        self.show(f.rule_id, f.title, &text, f.mode == VimMode::Insert, now_ms);
+        self.show(
+            f.rule_id,
+            f.title,
+            &text,
+            f.mode == VimMode::Insert,
+            None,
+            now_ms,
+        );
         self.memory.nudged(f.rule_id, now_ms);
         self.memory
             .tip_shown(f.rule_id, self.mode.as_str(), hour, now_ms);
@@ -746,7 +753,16 @@ impl App {
     }
 
     /// Put a tip on screen: through the extension, or as a notification.
-    fn show(&mut self, rule_id: &'static str, title: &str, text: &str, insert: bool, now_ms: u64) {
+    /// `example`: a worked example, as the explanation's last line.
+    fn show(
+        &mut self,
+        rule_id: &'static str,
+        title: &str,
+        text: &str,
+        insert: bool,
+        example: Option<&str>,
+        now_ms: u64,
+    ) {
         self.nudge_seq += 1;
         let nudge = Nudge {
             nudge_id: format!("n-{now_ms}-{}", self.nudge_seq),
@@ -759,7 +775,11 @@ impl App {
                 CoachingMode::Active | CoachingMode::Balanced => NudgeStyle::Card,
                 _ => NudgeStyle::Bar,
             }),
-            explain: glossary::explain(text, insert),
+            explain: {
+                let mut lines = glossary::explain(text, insert);
+                lines.extend(example.map(|e| format!("Example: {e}")));
+                lines
+            },
             in_editor: false,
         };
         // In the editor you're typing in, where you're looking.
@@ -909,7 +929,8 @@ impl App {
         } else {
             "Something new"
         };
-        self.show(RULE, title, &text, item.while_typing(), now_ms);
+        let example = flowbuddy_core::curriculum::demo(item.id);
+        self.show(RULE, title, &text, item.while_typing(), example, now_ms);
         self.memory.learn_shown(item.id, now_ms);
         self.todays_lesson = Some(item.id);
     }
@@ -1008,7 +1029,7 @@ impl App {
                 .challenge_ended(&c.item, c.set_at, "done", now_ms);
             if let Some(item) = flowbuddy_core::curriculum::find(&c.item) {
                 let text = format!("You used {}: challenge done.", item.keys);
-                self.show(CHALLENGE_RULE, "Nice", &text, false, now_ms);
+                self.show(CHALLENGE_RULE, "Nice", &text, false, None, now_ms);
             }
         } else if now_ms / 1000 >= c.set_at + u64::from(self.config.learn.challenge_days) * 86_400 {
             self.state.challenge = None;
@@ -3745,6 +3766,17 @@ pub(crate) mod tests {
         app.show_lesson(pick, 1_000);
         let n = nudges(&mut ext);
         assert_eq!(n[0].title, "Remember this?");
+        assert_eq!(
+            n[0].explain.last().map(String::as_str),
+            Some(
+                format!(
+                    "Example: {}",
+                    flowbuddy_core::curriculum::demo("find").unwrap()
+                )
+                .as_str()
+            ),
+            "the worked example is the last explanation line"
+        );
         assert!(
             n[0].text
                 .starts_with(&format!("You haven't used {} in 21 days. ", item.keys)),
@@ -4023,6 +4055,7 @@ pub(crate) mod tests {
             "Undo further at once",
             "`7u` undoes that many.",
             false,
+            None,
             1_000_000,
         );
         app.show(
@@ -4030,6 +4063,7 @@ pub(crate) mod tests {
             "Try a count",
             "Try `7j`.",
             false,
+            None,
             2_000_000,
         );
         while cli.try_recv().is_ok() {}
@@ -4336,12 +4370,26 @@ pub(crate) mod tests {
         let mut watch = connect(&mut app, 2);
         send(&mut app, 2, hello(ClientKind::Watch), 0);
         // Without the extension: a notification, and the watcher too.
-        app.show("vim.repeat-jk", "Try a count", "Try `7j`.", false, 1_000);
+        app.show(
+            "vim.repeat-jk",
+            "Try a count",
+            "Try `7j`.",
+            false,
+            None,
+            1_000,
+        );
         assert_eq!(nudges(&mut watch).len(), 1);
         assert_eq!(notes.0.borrow().len(), 1);
         // With it: the extension and the watcher, no notification.
         let mut ext = ext_hello(&mut app, 1);
-        app.show("vim.repeat-jk", "Try a count", "Try `7j`.", false, 2_000);
+        app.show(
+            "vim.repeat-jk",
+            "Try a count",
+            "Try `7j`.",
+            false,
+            None,
+            2_000,
+        );
         assert_eq!(nudges(&mut ext).len(), 1);
         assert_eq!(nudges(&mut watch).len(), 1);
         assert_eq!(notes.0.borrow().len(), 1);
@@ -4372,7 +4420,14 @@ pub(crate) mod tests {
         let mut ext = ext_hello(&mut app, 1);
         app.tick(1_000);
         assert!(app.on_record(None, 1_000).unwrap().recording);
-        app.show("vim.repeat-jk", "Try a count", "Try `7j`.", false, 2_000);
+        app.show(
+            "vim.repeat-jk",
+            "Try a count",
+            "Try `7j`.",
+            false,
+            None,
+            2_000,
+        );
         let id = nudges(&mut ext)[0].nudge_id.clone();
         send(
             &mut app,

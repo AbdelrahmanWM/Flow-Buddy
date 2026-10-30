@@ -1,0 +1,181 @@
+# A worked example for each lesson in curriculum.rs: what's on the screen,
+# the keys, and what happens. One per id, tab-separated. Commands are in
+# backticks, as everywhere else. Checked by curriculum::tests.
+word	On `let total = price * count;` with the cursor on `let`: `w` lands on `total`, `w` again on `=`; `b` goes back to `total`.
+word-end	On `print(name)` with the cursor on `p`: `e` lands on the `t` of `print`; then `a` types right after it.
+line-ends	On `    return total + tax;` with the cursor at the start: `$` lands on the `;` at the very end.
+line-start	On `    return total;` with the cursor on `total`: `0` goes to column one, before the four spaces.
+first-nonblank	On `    return total;` with the cursor at the end: `^` lands on the `r` of `return`, after the spaces.
+file-ends	Anywhere in a 400-line file: `gg` goes to line 1, `G` to line 400.
+append	On `let x = 1` with the cursor on `let`: `A` puts you at the end to type `;`. `I` puts you before `let` instead.
+open-line	On line 10, cursor anywhere in it: `o` opens a new empty line 11 and you're typing on it. `O` opens one above, as line 10.
+undo-redo	You deleted a line by mistake: `u` brings it back. Changed your mind? `Ctrl-r` deletes it again.
+count	The line you want is 5 lines down (with `:set relativenumber` it shows a 5): `5j` goes there, instead of `jjjjj`.
+dd	On a line you don't want, cursor anywhere in it: `dd` removes the whole line. `3dd` removes it and the two below.
+change-word	On `getName` with the cursor on `N`: `cw` deletes `Name` and you type `Title`, giving `getTitle`.
+find	On `foo(a, b, c)` with the cursor on `f`: `f,` jumps to the first comma, `;` to the second.
+save-quit	`:w` Enter saves the file. `:q` Enter quits. `:wq` (or `:x`) does both.
+dot	You changed `red` to `blue` with `ciw` then `blue`. On the next `red`: `.` makes it `blue` too, in one key.
+operator	On the first line of a paragraph: `d}` deletes down to the blank line after it. On a word: `yw` copies it, ready for `p`.
+yank-put	On `import os`: `yy` copies the line, `p` puts a copy under it, so you have two.
+replace-char	On `cat` with the cursor on `c`: `rb` makes it `bat`, and you're still in Normal mode, ready to move on.
+search	The word `config` is somewhere below: `/conf` Enter jumps to the next `conf…`. `n` goes to the one after.
+history-search	Last week you ran `docker compose -f dev.yml up --build`. Press `Ctrl-r`, type `dev.yml`, and the whole command comes back; Enter runs it.
+quick-open	`Ctrl-P`, type `usrctl`, and `UserController.ts` is the first match: Enter opens it.
+completion	You type `calc` and press `Ctrl-n`: Vim finishes it as `calculateTotal`, a word already in your files. `Ctrl-n` again for the next match.
+screen-lines	In a long paragraph wrapped over 4 screen lines: `j` jumps past all 4, `gj` moves down one screen line at a time.
+paragraph	Cursor in the middle of a function, with a blank line after it: `}` jumps to that blank line, `{` to the one before the function.
+goto-line	The error says `main.rs:42`: `42G` (or `:42` Enter) puts you on line 42.
+half-page	Reading a long file: `Ctrl-d` moves half a screen down, `Ctrl-u` half a screen back up.
+star	Cursor on `total` in `let total = 0;`: `*` jumps to the next `total` in the file, `n` to the one after.
+star-back	Cursor on `total` where it's used: `#` jumps back to the previous `total`, often where it was set.
+search-next	After `/error` Enter: `n` jumps to the next `error`, and the next, round the file.
+search-back	After `/error` Enter and a few `n`: `N` goes back to the previous match.
+percent	Cursor on the `{` of `if (x) {`: `%` jumps to its closing `}`, however far down; `%` again comes back.
+screen	The line you want is the top one on screen: `H` goes there. The bottom one: `L`.
+screen-middle	`M` puts the cursor on the line in the middle of the window.
+ciw	On `oldName` with the cursor anywhere in it, even on the `N`: `ciw` deletes the whole word and you type `newName`.
+ci-quote	On `msg = "hello world"` with the cursor anywhere inside the quotes: `ci"` empties them; type `hi` to get `msg = "hi"`.
+ci-paren	On `save(user, true)` with the cursor on `user`: `ci(` empties the brackets; type `user, false`.
+d-to-end	On `let x = compute(a, b);` with the cursor on `compute`: `D` leaves `let x = `; `C` does the same and lets you type the rest.
+substitute	On `cat` with the cursor on `c`: `s` deletes the `c` and you type `b` for `bat`. `S` clears the whole line and you retype it.
+clipboard	`"+yy` copies the line to the system clipboard: paste it into a browser with Ctrl-V. Copied a link in the browser? `"+p` pastes it into Vim.
+goto-def	Cursor on `total` in `return total;`: `gd` jumps up to `let total = 0;`, where it was defined.
+last-nonblank	On `return x;   ` (with trailing spaces): `$` lands after the spaces, `g_` on the `;`.
+insert-delete	You're typing `the quick brwn` and spot the typo: `Ctrl-w` deletes `brwn` so you can type `brown`. `Ctrl-u` deletes everything typed on the line.
+cmdline-complete	Type `:e src/ma` then `Tab`: it becomes `:e src/main.rs`. Several matches? `Tab` again cycles, `Ctrl-d` lists them.
+cmdline-history	You ran `:%s/foo/bar/g` an hour ago. Type `:%s` then `Up`: that command comes back, ready to edit or run.
+edit-file	`:e README.md` opens it. Made a mess of this file? `:e!` reloads it as it was last saved.
+no-highlight	After `/the`, every `the` is highlighted: `:noh` Enter clears that until your next search.
+help	`:h ciw` Enter opens Vim's help on `ciw`. `:q` closes it.
+find-back	On `a, b, c, d` after `f,` and `;;` you're on the third comma: `,` goes back to the second.
+page	Reading a long log: `Ctrl-f` shows the next screenful, `Ctrl-b` the one before.
+delete-back	On `catt` with the cursor on the last `t`: `X` deletes the `t` before it, leaving `cat`.
+shift	On an under-indented line: `>>` indents it one level, `<<` takes one away. `>}` indents to the end of the paragraph.
+reindent	You pasted `x = 1;` at the wrong depth inside an `if`: `==` re-indents it to match. `=ap` fixes the whole paragraph.
+join	On `let total =` with `  price * count;` below: `J` makes it `let total = price * count;`.
+visual-line	`V` selects the line, `jj` grows it to three lines, then `>` indents them or `d` deletes them.
+jump-back	You jumped to the end with `G` to check something: `Ctrl-o` takes you back to where you were.
+jump-last	After `G`: ``` `` ``` goes back where you were, and ``` `` ``` again returns to the end. Two places, flipped back and forth.
+jump-forward	After a `Ctrl-o` too many: `Ctrl-i` goes forward to where you just were.
+center	You're on a line at the bottom of the screen: `zz` scrolls so it's in the middle. `zt` puts it at the top, `zb` at the bottom.
+dap	Cursor anywhere in a function with blank lines around it: `dap` deletes the whole function and one blank line. Go elsewhere and `p` puts it back there.
+cd-back	You're in `~/app`, run `cd /etc`: `cd -` takes you back to `~/app`, and `cd -` again to `/etc`.
+last-arg	`mkdir -p src/utils/helpers` then `cd ` and `Alt-.`: it fills in `src/utils/helpers`.
+tabs	With three files in tabs: `gt` goes to the next tab, `gT` to the previous one, `2gt` to the second.
+terminal-toggle	`` Ctrl-` `` opens the terminal panel; run the tests; `` Ctrl-` `` again and you're back in the code.
+marks	On the function you keep coming back to: `ma`. Read elsewhere, then `'a` takes you back to its line (`` `a `` to the exact spot).
+last-change	You edited line 80, then scrolled up to read line 10: `` `. `` jumps back to your edit on line 80.
+gv	You selected five lines with `V` and indented them with `>`: `gv` selects the same five again, to indent once more.
+gi	You were typing on line 50, pressed Esc and scrolled to read line 5: `gi` takes you back to line 50 typing where you stopped.
+till	On `call(first, second)` with the cursor on `f`: `t,` stops just before the comma; `dt,` deletes `first`, leaving `call(, second)`.
+format	A comment paragraph with ragged lines after an edit: `gqip` rewraps it to the text width. `gwip` does it and leaves the cursor where it was.
+join-raw	On `get` with `Name` on the next line: `J` gives `get Name`, `gJ` gives `getName`.
+change-marks	You pasted 20 lines with `p`: `` `] `` jumps to the end of what you pasted, `` `[ `` to its start.
+put-more	You copied a line: `gp` pastes it and puts the cursor after it, so `gp` again pastes the next copy below. `]p` pastes with this line's indentation.
+visual-put	You copied `newName`. On `oldName`: `viwP` replaces it, and `newName` is still copied, so `viwP` works on the next one too.
+black-hole	You copied a word with `yiw`, then need to delete a line: `"_dd` deletes it without replacing what you copied, so `p` still pastes the word.
+word-end-back	On `hello world` with the cursor on `w`: `ge` goes back to the `o` at the end of `hello`.
+insert-col1	On `    print(x)`: `I` starts typing before `print`; `gI` starts in column one, before the spaces, to put `# ` there.
+goto-file	Cursor on `src/config.rs` in an error message or import: `gf` opens that file. `Ctrl-o` comes back.
+star-partial	Cursor on `count`: `*` finds only `count` as a whole word; `g*` also finds it inside `countWords` and `recount`.
+file-info	`Ctrl-g` shows `"notes.md" 120 lines --45%--`. `g Ctrl-g` counts the words, for a draft with a word limit.
+spell	With `:set spell`: `]s` jumps to the next misspelled word, `z=` lists fixes (type its number and Enter), `zg` adds the word as correct.
+visual-swap	You selected lines 10 to 15 with `V` but meant to start at 8: `o` moves the cursor to line 10, the top end, then `kk` grows it up to 8.
+visual-linewise	You selected from the middle of one line to the middle of another with `v`: `D` deletes all of both lines, not just the selected part; `Y` copies them.
+insert-indent	Typing a line that should be one level deeper: `Ctrl-t` indents it, `Ctrl-d` takes an indent away, and you keep typing.
+cmdline-word	Cursor on `oldName`: type `:%s/` then `Ctrl-r Ctrl-w`, and the command reads `:%s/oldName`; add `/newName/g` and Enter.
+cmdline-edit	You typed `:%s/a/b/g` and want `:.,$s/a/b/g`: `Ctrl-b` goes to the start of the command line to fix it, `Ctrl-e` to the end; `Ctrl-w` deletes the word before the cursor.
+save-more	With three changed files open: `:wa` saves them all. `:up` saves this one only if it changed, so the file's time doesn't change for nothing.
+buffers	`:ls` lists `1 main.rs  2 config.toml  3 notes.md`: `:b 2` or `:b conf` switches to config.toml.
+set-option	A wide table wraps and is hard to read: `:set nowrap`. `:set wrap!` flips it back. `:set list` shows tabs and trailing spaces.
+dirs	`:pwd` shows `/home/you`. `:cd ~/code/app`, and now `:e src/main.rs` and `:grep` work from the project's root.
+shell-cmd	`:!make` runs the build and shows its output; Enter to come back. `:r !date` puts the date under the cursor line.
+scroll-line	The cursor is on the last line of the screen and you want to see the next one: `Ctrl-e` scrolls one line, the cursor stays on its text.
+line-first	On a line, `+` goes to the first word of the next line, past its indentation; `-` to the previous line's.
+column	`80|` puts the cursor on column 80 of the line, to see whether it's too long.
+bigword	On `foo.bar(baz) next` with the cursor on `f`: `w` stops at `.`, `bar`, `(`…; `W` jumps straight to `next`.
+indent-object	Cursor anywhere in a block: `>ip` indents the whole paragraph a level, `=ip` re-indents it properly.
+macro	Lines `a`, `b`, `c` should become `"a",`, `"b",`, `"c",`. On the first: `qq` `I"` Esc `A",` Esc `j` `q` records it; `@q` does the next line, `@@` the one after.
+replay-macro	You ran a macro with `@q`: `@@` runs it again, `5@@` five more times.
+cgn	Search `/color` Enter. `cgn` changes the match: type `colour`, Esc. Then `.` changes the next match too; `n` skips one you want to keep.
+registers	`yiw` copies `newName`. `diw` on `oldName` deletes it, which replaces the default register. `"0p` still pastes `newName`, the last thing you copied.
+windows	With a split: `Ctrl-w h` goes to the left window, `Ctrl-w l` back to the right. `Ctrl-^` switches to the file you had open before this one.
+insert-keys	You copied `userId` with `yiw`. Typing `fetch(` in Insert mode, `Ctrl-r"` pastes `userId` and you keep typing `)`.
+change-list	You edited line 300, then read lines 20 and 900: `g;` takes you back to line 300, `g;` again to the edit before that.
+undo-time	The last ten minutes of edits went wrong: `:earlier 10m` puts the file back as it was ten minutes ago; `:later 10m` undoes that.
+case	On `const`: `gUiw` makes it `CONST`, `~` flips the case of one letter, `guiw` makes it lower case.
+increment	On `version = 41`: `Ctrl-a` makes it `42`; `5Ctrl-x` makes it `37`. The cursor can be anywhere before the number on the line.
+replace-mode	On `id: 0000` with the cursor on the first `0`: `R1234` Esc types over it, giving `id: 1234`, without deleting first.
+visual-block	On the first of four lines: `Ctrl-v`, `3j`, `I// ` and Esc puts `// ` at the start of all four.
+block-append	On the first of ten lines of different lengths: `Ctrl-v`, `9j`, `$`, `A;` and Esc puts a `;` at the end of every one.
+sentence	In `First idea. Second idea here. Third.` with the cursor on `here`: `das` deletes `Second idea here. `; `cis` lets you rewrite it.
+gn-select	After `/todo` Enter: `gn` selects the next `todo`; `U` makes it `TODO`. Then `.` does the next one.
+section	In a C file where each function's `{` starts a line: `]]` goes to the next function's `{`, `[[` to the previous.
+unmatched	Deep inside `foo(a, bar(b), c)` with the cursor on `c`: `[(` jumps to the `(` after `foo`, `])` to its closing `)`.
+sentence-motion	In a paragraph of prose: `)` goes to the start of the next sentence, `(` back to the start of this one.
+fold	On a folded function showing as one line: `zo` opens it, `zc` closes it again, `za` toggles.
+tag-object	On `<p>Old text</p>` with the cursor on `Old`: `cit` empties the tag; type `New text` to get `<p>New text</p>`.
+visual-object	On `save(user, true)` with the cursor on `user`: `vi(` selects `user, true` so you can see it; then `d`, `c` or `y` acts on it.
+visual-indent	Select three lines with `V` and `jj`: `>` indents all three one level, `<` takes it back.
+quick-sub	You ran `pytest tests/test_user.py`. Type `^user^order` and Enter: it runs `pytest tests/test_order.py`, the same command with `user` swapped for `order`.
+split	`Ctrl-w v` splits the window: the same file side by side. `:e test.rs` in one half to read the test while writing the code in the other.
+window-close	With four splits open: `Ctrl-w o` closes all but the one you're in. `Ctrl-w q` closes just this one.
+window-cycle	With three splits: `Ctrl-w w` goes to the next one, round and round. `Ctrl-w p` jumps back to the one you were in last.
+tab-cmds	`:tabnew notes.md` opens it in a new tab. Done with all the others? `:tabonly`.
+substitute-cmd	On `let colour = "red";`: `:s/colour/color/` Enter gives `let color = "red";`. Add `g` at the end for every one on the line.
+substitute-all	`:%s/userId/accountId/g` Enter renames every `userId` in the file. Add `c` (`/gc`) to be asked about each one.
+quickfix	After `:make`, three errors: `:cn` goes to the first error's line, `:cn` to the next, `:cp` back.
+global	`:g/console.log/d` Enter deletes every line that has `console.log` in it. `:g!/x/d` deletes every line without `x`.
+normal-cmd	Select five lines with `V` and `4j`, then `:norm A;` Enter: each line gets a `;` at its end.
+range	`:.,+5d` Enter deletes this line and the five below it, wherever you look on screen.
+sort	Select your import lines with `V` and `j`s, then `:sort` Enter: they're in alphabetical order. `:sort u` drops duplicates too.
+filter	Cursor in a messy JSON line: `!!jq .` Enter replaces it with the formatted JSON. `!ipsort` Enter sorts the paragraph.
+retab	A file mixes tabs and spaces: `:set expandtab` then `:retab` turns every tab into spaces.
+align	On `Title`: `:center 40` puts it in the middle of 40 columns. `:right` and `:left` too.
+visual-marks	You selected lines 30 to 40 and worked elsewhere: `` `< `` goes to line 30, where the selection began; `` `> `` to its end.
+mark-lists	`:marks` lists every mark and where it is. `:jumps` lists the places you jumped from, for `Ctrl-o`.
+mark-hop	With marks on lines 10, 50 and 90 and the cursor on 20: `]'` goes to line 50, `['` back to 10.
+special-registers	`".p` pastes what you last typed in Insert mode, `":p` your last `:` command, `"%p` this file's name (`src/main.rs`).
+register-list	`:reg` shows what's in every register: `"0` your last copy, `"1` the last deleted lines, `"+` the clipboard.
+put-cmd	You copied the word `TODO` with `yiw`: `p` would put it inside this line; `:put` puts it on a line of its own below.
+repeat-sub	You ran `:s/foo/bar/` on one line. On another: `&` does the same there. `g&` does it on every line in the file.
+line-middle	On a 120-character line with the cursor at the start: `gM` jumps to about column 60, the middle of the line.
+screen-line-ends	A long line wraps over three screen lines and the cursor is on the second: `g0` goes to where that screen line starts, `g$` to where it ends.
+last-output	A command printed a long message and it's gone: `g<` shows it again.
+side-scroll	With `:set nowrap` and a 300-column log line: `zl` scrolls the view right a column, `zs` puts the cursor's column at the left edge.
+fold-move	In a file with every function folded: `zj` goes to the next fold, `zk` to the previous.
+fold-levels	`zm` folds one more level everywhere, to see the file's outline; `zr` opens one level again.
+fold-make	With `:set foldmethod=manual`, cursor in a long block: `zfap` folds the paragraph into one line. `zd` removes the fold.
+window-size	After resizing the terminal, splits are uneven: `Ctrl-w =` makes them equal. `Ctrl-w _` makes this one as tall as it goes.
+window-move	Two windows one above the other: `Ctrl-w H` moves this one to the far left, so they're side by side. `Ctrl-w T` moves it into a tab of its own.
+window-under	Cursor on `utils.py` in an import: `Ctrl-w f` opens it in a new split beside this file.
+last-tab	In tab 5 after coming from tab 2: `g<Tab>` goes back to tab 2, and again to tab 5.
+diff	`vimdiff ours.txt theirs.txt`: `]c` jumps to the next difference; `do` takes the other file's version, `dp` gives yours to it.
+method-jump	In a class: `]m` jumps to the start of the next method, `[m` to the previous one.
+comment-jump	Inside a long `/* … */` block: `]/` jumps to its end, `[/` to its start.
+word-in-files	Cursor on `MAX_RETRIES`: `[I` lists every line using it, in this file and the files it includes, with line numbers.
+tags	After `ctags -R` in the project, cursor on `parseConfig`: `Ctrl-]` jumps to its definition in another file, `Ctrl-t` back.
+keyword-help	In a shell script, cursor on `grep`: `K` opens grep's man page. `q` to come back.
+visual-increment	Five lines each saying `item 0`: select the zeros with `Ctrl-v` and `4j`, then `g Ctrl-a`: they become `item 1` to `item 5`.
+insert-again	You typed `console.log(` in Insert mode, then Esc. Later, in Insert mode again, `Ctrl-a` types `console.log(` once more.
+insert-copy	The line above reads `let first = 1;`. On a new line in Insert mode, `Ctrl-y` copies its characters one at a time: `l`, `e`, `t`… then type the rest yourself.
+completion-kinds	Typing a path `./src/co`: `Ctrl-x Ctrl-f` completes it to `./src/config.rs`. `Ctrl-x Ctrl-l` completes a whole line that's already elsewhere in the file.
+insert-literal	In a file that turns Tab into spaces, `Ctrl-v` then Tab types a real tab. `Ctrl-k e'` types `é`.
+insert-undo-break	Typing a long paragraph: `Ctrl-g u` before each sentence, so `u` later undoes one sentence, not the whole paragraph.
+insert-expr	In Insert mode, `Ctrl-r =` then `60*24` and Enter types `1440`.
+cmdline-window	`q:` opens a window with your recent `:` commands: move to one, edit it like text, Enter runs it.
+search-step	Type `/item` but don't press Enter: `Ctrl-g` moves the highlight to the next `item`, `Ctrl-t` back; Enter stops on the one you're at.
+line-cmds	On a function's first line: `:m 0` moves the line to the top of the file. `:t.` copies this line below itself.
+line-ex	`:10,20d` deletes lines 10 to 20. `:5,8j` joins lines 5 to 8 into one. `:1,3y` copies lines 1 to 3.
+batch	`:args src/*.js` then `:argdo %s/var /let /ge | update` replaces `var ` in every one of those files and saves them.
+arglist	`:args **/*_test.go` lists every test file; `:next` opens the next one, `:prev` the one before.
+grep	`:vimgrep /TODO/ **` finds every TODO in the project; `:cn` goes to each one in turn.
+make	`:make` runs your build; with errors, Vim goes to the first one. `:cn` for the next.
+session	`:mksession` saves your splits and open files as `Session.vim`. Tomorrow, `vim -S` opens everything as it was.
+abbreviations	`:iabbrev teh the`: now typing `teh` and a space gives `the`.
+ex-lists	`:oldfiles` lists files you opened before, numbered: `:e #<3` opens the third. `:messages` shows messages that went past.
+vertical	`:vert h motion` opens Vim's help on motions beside your file, not above it. `:vert split other.rs` the same for a file.
+vim-terminal	In a `:terminal` running your tests: `Ctrl-w N` stops it so you can scroll up and copy an error with `y`; `i` goes back to the running terminal.
+line-undo	You changed three words on one line and want the line back as it was: `U` undoes all three changes on it at once.
+write-quit	Done with a commit message: `ZZ` saves and quits, in two keys.

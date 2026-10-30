@@ -224,6 +224,8 @@ class FlowBuddyIndicator extends PanelMenu.Button {
             this._explain.menu.addMenuItem(item);
         }
         this._explain.visible = lines.length > 0;
+        this._explain.label.text = lines.some(l => l.startsWith('Example: '))
+            ? 'What does it do? With an example' : 'What does it do?';
     }
 
     _action(label, action) {

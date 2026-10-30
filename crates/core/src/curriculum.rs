@@ -2750,11 +2750,60 @@ pub fn tip_text(item: &Item) -> String {
     format!("{}: {}. {}", item.keys, item.what, item.example)
 }
 
+static DEMOS: &str = include_str!("../data/demos.tsv");
+
+/// A worked example of a lesson, from `data/demos.tsv`: what's on the
+/// screen, the keys, and what happens.
+pub fn demo(id: &str) -> Option<&'static str> {
+    DEMOS
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.split_once('\t'))
+        .find(|(i, _)| *i == id)
+        .map(|(_, d)| d)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::vim::notation::strokes;
     use crate::vim::{Flavor, Tracker};
+
+    #[test]
+    fn every_lesson_has_a_worked_example() {
+        let ids: Vec<&str> = DEMOS
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+            .map(|l| l.split_once('\t').expect("id, a tab, the example").0)
+            .collect();
+        for item in CURRICULUM {
+            let d = demo(item.id).unwrap_or_else(|| panic!("no example for {}", item.id));
+            assert!(d.len() > 20 && d.ends_with('.'), "{}: {d}", item.id);
+            // Single backticks pair up once fenced commands (`` `a ``) are out.
+            let mut rest = d.to_string();
+            for fence in ["```", "``"] {
+                while let Some(i) = rest.find(fence) {
+                    let Some(j) = rest[i + fence.len()..].find(fence) else {
+                        break;
+                    };
+                    rest.replace_range(i..i + fence.len() + j + fence.len(), "");
+                }
+            }
+            assert_eq!(
+                rest.matches('`').count() % 2,
+                0,
+                "{}: unbalanced backticks",
+                item.id
+            );
+        }
+        for id in &ids {
+            assert!(find(id).is_some(), "an example for no lesson: {id}");
+        }
+        let mut sorted = ids.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ids.len(), "an id twice");
+    }
 
     /// The ids recognised in `keys`, typed from Normal mode.
     fn used(keys: &str) -> Vec<&'static str> {

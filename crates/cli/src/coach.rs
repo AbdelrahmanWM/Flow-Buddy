@@ -624,9 +624,9 @@ mod tests {
 
     #[test]
     fn weekly_prompt_and_answer() {
-        let p = weekly_prompt(&sample(), "7 times the better way, 6 habits spotted.");
+        let p = weekly_prompt(&sample(), "The better way 7 times, 6 habits spotted.");
         assert!(
-            p.contains("This week's numbers: 7 times the better way"),
+            p.contains("This week's numbers: The better way 7 times"),
             "{p}"
         );
         assert!(p.ends_with("no lists, no headings, no markdown.\n"), "{p}");

@@ -152,6 +152,8 @@ flowbuddy pause 1h                # or 30m, until-tomorrow; `flowbuddy resume`
 flowbuddy summary [--week]        # how you're doing vs. before
 flowbuddy next                    # the one habit worth working on now
 flowbuddy learn                   # today's "something new" and your progress through Vim; `learn --know ciw,marks` / `--forget` / `--reset`, `--list` for the ids
+flowbuddy learn --map             # every skill as a coloured tile: you use it, slipping, learning, ready, later (also in Settings → Skills, and VS Code's "Flow Buddy: Skill map")
+flowbuddy practice                # a two-minute drill on your weakest habit; `--history` for how drills have gone
 flowbuddy watch                   # tips as they come, with what they mean, in a terminal you keep open
 flowbuddy tips [words] [-e]       # your recent tips, or those that match; -e says what each command does
 flowbuddy explain 'ci"'            # what keys do, piece by piece; `explain --last`: your last slow move, done better

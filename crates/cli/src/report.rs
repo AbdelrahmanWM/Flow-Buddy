@@ -622,9 +622,10 @@ pub fn learn_json(
         .iter()
         .map(|i| {
             let p = rec.progress(i.id);
-            let state = if tree.knows(i.id) {
+            let (known, ready) = (tree.knows(i.id), tree.ready(i.id));
+            let state = if known {
                 "known"
-            } else if tree.ready(i.id) {
+            } else if ready {
                 "ready"
             } else {
                 "later"
@@ -635,7 +636,9 @@ pub fn learn_json(
                 "keys": flowbuddy_core::glossary::plain(i.keys),
                 "what": i.what,
                 "state": state,
+                "tile": tile(&p, known, ready),
                 "uses": p.uses,
+                "days_idle": p.days_idle,
                 "mastery": p.mastery,
                 "recall": p.recall,
             })
@@ -648,6 +651,108 @@ pub fn learn_json(
         .and_then(|r| curriculum::find(&r.item_id).map(|i| (i, r.learned_at.is_some())))
         .map(|(i, learned)| serde_json::json!({"id": i.id, "text": flowbuddy_core::glossary::plain(&curriculum::tip_text(i)), "learned": learned}));
     Ok(serde_json::json!({ "version": 1, "latest": latest, "items": items }))
+}
+
+/// A skill on the map: `known`, `slipping` (known, but you may not recall
+/// it now), `learning` (used, not known yet), `ready` or `later`.
+pub fn tile(p: &flowbuddy_core::curriculum::Progress, known: bool, ready: bool) -> &'static str {
+    match (known, p.recall) {
+        (true, Some(r)) if r < 50 => "slipping",
+        (true, _) => "known",
+        _ if p.uses > 0 => "learning",
+        _ if ready => "ready",
+        _ => "later",
+    }
+}
+
+/// The level names, as everywhere else.
+pub fn level_name(level: u8) -> &'static str {
+    match level {
+        1 => "Basics",
+        2 => "Bigger moves",
+        3 => "Power tools",
+        _ => "Advanced",
+    }
+}
+
+/// `learn --map`: each skill as a tile, coloured by where you are with it,
+/// a row of tiles per level, wrapped at `width`. Without colour, a mark
+/// before the keys says the same.
+pub fn skill_map(json: &serde_json::Value, color: bool, width: usize) -> String {
+    let items = json["items"].as_array().cloned().unwrap_or_default();
+    let mut out = String::new();
+    let paint = |tile: &str, keys: &str| -> (String, usize) {
+        let shown = format!(" {keys} ");
+        let len = shown.chars().count();
+        if color {
+            let code = match tile {
+                "known" => "30;42",
+                "slipping" => "30;43",
+                "learning" => "30;46",
+                "ready" => "1;7",
+                _ => "2",
+            };
+            (format!("\x1b[{code}m{shown}\x1b[0m"), len)
+        } else {
+            let mark = match tile {
+                "known" => '+',
+                "slipping" => '!',
+                "learning" => '~',
+                "ready" => '>',
+                _ => '.',
+            };
+            (format!("{mark}{}", shown.trim_end()), len)
+        }
+    };
+    for level in 1..=4u64 {
+        let tiles: Vec<&serde_json::Value> = items
+            .iter()
+            .filter(|i| i["level"].as_u64() == Some(level))
+            .collect();
+        if tiles.is_empty() {
+            continue;
+        }
+        let known = tiles.iter().filter(|i| i["tile"] == "known").count();
+        let _ = writeln!(
+            out,
+            "{} ({known} of {})",
+            level_name(level as u8),
+            tiles.len()
+        );
+        // Colour sets tiles apart; marks need more room.
+        let gap = if color { " " } else { "   " };
+        let mut line = String::from("  ");
+        let mut used = 2;
+        for t in tiles {
+            let (s, len) = paint(
+                t["tile"].as_str().unwrap_or("later"),
+                t["keys"].as_str().unwrap_or("?"),
+            );
+            if used + len + gap.len() > width && used > 2 {
+                let _ = writeln!(out, "{}", line.trim_end());
+                line = String::from("  ");
+                used = 2;
+            }
+            line.push_str(&s);
+            line.push_str(gap);
+            used += len + gap.len();
+        }
+        let _ = writeln!(out, "{}\n", line.trim_end());
+    }
+    let legend = if color {
+        format!(
+            "{} you use it  {} slipping: not used lately  {} learning  {} ready to learn  {} later",
+            paint("known", "w").0,
+            paint("slipping", "w").0,
+            paint("learning", "w").0,
+            paint("ready", "w").0,
+            paint("later", "w").0
+        )
+    } else {
+        "+ you use it  ! slipping: not used lately  ~ learning  > ready to learn  . later".into()
+    };
+    let _ = writeln!(out, "{legend}");
+    out
 }
 
 pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<String> {
@@ -1000,5 +1105,32 @@ mod tests {
         assert_eq!(word["uses"], 5);
         assert!(items.iter().any(|i| i["state"] == "ready"));
         assert!(items.iter().any(|i| i["state"] == "later"));
+    }
+
+    #[test]
+    fn skill_map_tiles() {
+        use flowbuddy_core::curriculum::Progress;
+        let p = |uses, recall| Progress {
+            uses,
+            recall,
+            ..Default::default()
+        };
+        assert_eq!(tile(&p(9, Some(80)), true, true), "known");
+        assert_eq!(tile(&p(9, Some(20)), true, true), "slipping");
+        assert_eq!(tile(&p(2, None), false, true), "learning");
+        assert_eq!(tile(&p(0, None), false, true), "ready");
+        assert_eq!(tile(&p(0, None), false, false), "later");
+        let item = |keys: &str, level: u8, tile: &str| serde_json::json!({"keys": keys, "level": level, "tile": tile});
+        let json = serde_json::json!({"items": [
+            item("w", 1, "known"), item("b", 1, "slipping"), item("e", 1, "ready"),
+            item("}", 2, "later"), item("ciw", 2, "learning"),
+        ]});
+        assert_eq!(
+            skill_map(&json, false, 80),
+            "Basics (1 of 3)\n  + w   ! b   > e\n\nBigger moves (0 of 2)\n  . }   ~ ciw\n\n+ you use it  ! slipping: not used lately  ~ learning  > ready to learn  . later\n"
+        );
+        // Wrapped to the width.
+        assert!(skill_map(&json, false, 8).starts_with("Basics (1 of 3)\n  + w\n  ! b\n  > e\n"));
+        assert!(skill_map(&json, true, 80).contains("\x1b[30;42m w \x1b[0m"));
     }
 }

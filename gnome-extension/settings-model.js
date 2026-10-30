@@ -191,6 +191,44 @@ export function progressLines(json) {
     return lines;
 }
 
+export const LEVELS = {1: 'Basics', 2: 'Bigger moves', 3: 'Power tools', 4: 'Advanced'};
+
+// What each colour on the skill map means, in order.
+export const TILES = [
+    ['known', 'You use it'],
+    ['slipping', 'Slipping: not used lately'],
+    ['learning', 'Learning'],
+    ['ready', 'Ready to learn'],
+    ['later', 'Later'],
+];
+
+// The skill map from `learn --json`: per level, its tiles and how many
+// you use. An older `flowbuddy` without `tile` falls back on `state`.
+export function skillGroups(json) {
+    if (json.nothing_yet)
+        return [];
+    return [1, 2, 3, 4].map(level => {
+        const items = json.items.filter(i => i.level === level);
+        const tiles = items.map(i => ({
+            keys: i.keys,
+            tile: i.tile ?? (i.state === 'known' ? 'known' : i.state === 'ready' ? 'ready' : 'later'),
+            tooltip: tileTooltip(i),
+        }));
+        return {name: LEVELS[level], known: tiles.filter(t => t.tile === 'known').length, tiles};
+    }).filter(g => g.tiles.length);
+}
+
+export function tileTooltip(item) {
+    const lines = [`${item.keys}: ${item.what}`];
+    if (item.uses)
+        lines.push(`Used ${item.uses === 1 ? 'once' : `${item.uses} times`}${item.days_idle ? `, last ${item.days_idle === 1 ? 'yesterday' : `${item.days_idle} days ago`}` : ''}`);
+    else
+        lines.push('Not used yet');
+    if (item.recall !== null && item.recall !== undefined)
+        lines.push(`About ${item.recall}% likely you'd remember it today`);
+    return lines.join('\n');
+}
+
 export function coverageLines(json) {
     const lines = ['Vim\'s own command index, by mode:', ''];
     for (const [mode, t] of Object.entries(json.modes)) {

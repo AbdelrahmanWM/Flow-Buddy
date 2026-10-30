@@ -6,6 +6,7 @@
 // window holds no settings logic of its own.
 
 import Adw from 'gi://Adw';
+import Gdk from 'gi://Gdk';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk';
@@ -40,6 +41,15 @@ function findCli() {
     return model.cliPath(GLib.find_program_in_path('flowbuddy'),
         path => GLib.file_test(path, GLib.FileTest.IS_EXECUTABLE), GLib.get_home_dir());
 }
+
+const SKILL_CSS = `
+.flowbuddy-tile { padding: 4px 10px; border-radius: 6px; font-family: monospace; }
+.flowbuddy-known { background: #2ec27e; color: #000; }
+.flowbuddy-slipping { background: #f6d32d; color: #000; }
+.flowbuddy-learning { background: #99c1f1; color: #000; }
+.flowbuddy-ready { border: 1px solid alpha(currentColor, 0.6); }
+.flowbuddy-later { opacity: 0.45; border: 1px dashed alpha(currentColor, 0.4); }
+`;
 
 export default class FlowBuddyPrefs extends ExtensionPreferences {
     async fillPreferencesWindow(window) {
@@ -76,6 +86,7 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
         this._addPage(this._generalPage(basic, list.profiles ?? [], list.settings));
         this._addPage(this._advancedPage(groups));
         this._addPage(this._rulesPage(rules));
+        this._addPage(this._skillsPage());
         this._addPage(this._toolsPage());
     }
 
@@ -308,6 +319,46 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
             dialog.connect('response', (_d, id) => resolve(id === 'yes'));
             dialog.present(this._window);
         });
+    }
+
+    // Every skill as a tile, coloured by where you are with it.
+    _skillsPage() {
+        if (!this._skillCss) {
+            this._skillCss = new Gtk.CssProvider();
+            this._skillCss.load_from_string(SKILL_CSS);
+            Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), this._skillCss,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
+        }
+        const page = new Adw.PreferencesPage({title: 'Skills', icon_name: 'starred-symbolic'});
+        const legend = new Adw.PreferencesGroup({
+            title: 'Your skills',
+            description: 'Each Vim skill Flow Buddy teaches. Hover over one for what it does and when you last used it.',
+        });
+        legend.add(this._tiles(model.TILES.map(([tile, text]) => ({keys: text, tile, tooltip: ''}))));
+        page.add(legend);
+        run(this._cli, ['learn', '--json']).then(r => {
+            const groups = model.skillGroups(JSON.parse(r.out));
+            if (!groups.length) {
+                legend.set_description('Nothing recorded yet: is the daemon running?');
+                return;
+            }
+            for (const g of groups) {
+                const group = new Adw.PreferencesGroup({title: g.name, description: `You use ${g.known} of ${g.tiles.length}`});
+                group.add(this._tiles(g.tiles));
+                page.add(group);
+            }
+        }).catch(e => legend.set_description(`Couldn't read your skills: ${e.message ?? e}`));
+        return page;
+    }
+
+    _tiles(tiles) {
+        const box = new Gtk.FlowBox({selection_mode: Gtk.SelectionMode.NONE, max_children_per_line: 12,
+            column_spacing: 6, row_spacing: 6});
+        for (const t of tiles) {
+            box.append(new Gtk.Label({label: t.keys, tooltip_text: t.tooltip || null,
+                css_classes: ['flowbuddy-tile', `flowbuddy-${t.tile}`]}));
+        }
+        return box;
     }
 
     _toolsPage() {

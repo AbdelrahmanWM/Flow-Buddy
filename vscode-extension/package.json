@@ -55,6 +55,11 @@
         "category": "Flow Buddy"
       },
       {
+        "command": "flowbuddy.skillMap",
+        "title": "Skill map",
+        "category": "Flow Buddy"
+      },
+      {
         "command": "flowbuddy.gotIt",
         "title": "Got it (the tip on show)",
         "category": "Flow Buddy"

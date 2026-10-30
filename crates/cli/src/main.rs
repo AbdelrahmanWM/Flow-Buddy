@@ -74,6 +74,9 @@ enum Cmd {
         /// know and recall each skill.
         #[arg(long)]
         report: bool,
+        /// Every skill as a tile, coloured by where you are with it.
+        #[arg(long)]
+        map: bool,
     },
     /// A two-minute drill in Vim on your weakest habit, counting your keys.
     Practice {
@@ -354,8 +357,11 @@ fn main() {
             audit,
             coverage,
             report: learn_report,
+            map,
         } => {
-            if learn_report {
+            if map {
+                learn_map()
+            } else if learn_report {
                 learn_report_cmd(json)
             } else if coverage && json {
                 print_json(&coverage_json());
@@ -1075,8 +1081,9 @@ fn takes_json(cmd: &Cmd) -> bool {
             reset,
             list,
             audit,
+            map,
             ..
-        } => know.is_empty() && forget.is_empty() && reset.is_empty() && !list && !audit,
+        } => know.is_empty() && forget.is_empty() && reset.is_empty() && !list && !audit && !map,
         Cmd::Config { action } => matches!(action, None | Some(config_cmd::ConfigCmd::List { .. })),
         _ => false,
     }
@@ -1233,6 +1240,25 @@ fn practice_cmd(
     );
     sessions.push(session);
     practice::save(&path, &sessions)?;
+    Ok(())
+}
+
+fn learn_map() -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    let Some(store) = open_db()? else {
+        nothing_yet(false);
+        return Ok(());
+    };
+    let config = flowbuddy_core::config::Config::load(&flowbuddy_core::paths::config_file())
+        .unwrap_or_default();
+    let json = report::learn_json(&store, now_ms(), config.learn.level.known_levels())?;
+    let tty = std::io::stdout().is_terminal();
+    let color = tty && std::env::var_os("NO_COLOR").is_none();
+    let width = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(80);
+    print!("{}", report::skill_map(&json, color, width));
     Ok(())
 }
 

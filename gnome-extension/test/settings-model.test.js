@@ -84,6 +84,18 @@ check('progress', progress[0], 'Basics: you use 1 of 2; 1 ready to learn');
 check('progress next', progress[progress.length - 1], 'Ready next: e: word ends');
 check('nothing yet', m.textLines({nothing_yet: true}).length, 1);
 
+// The skill map.
+const groups = m.skillGroups({items: [
+    {level: 1, keys: 'w', what: 'words', tile: 'known', uses: 40, days_idle: 1, recall: 90},
+    {level: 1, keys: 'e', what: 'word ends', tile: 'ready', uses: 0, days_idle: null, recall: null},
+    {level: 2, keys: '}', what: 'paragraphs', state: 'later', uses: 0},
+]});
+check('map groups', groups.map(g => [g.name, g.known, g.tiles.map(t => t.tile)]),
+    [['Basics', 1, ['known', 'ready']], ['Bigger moves', 0, ['later']]]);
+check('tile tooltip', groups[0].tiles[0].tooltip, 'w: words\nUsed 40 times, last yesterday\nAbout 90% likely you\'d remember it today');
+check('unused tooltip', groups[0].tiles[1].tooltip, 'e: word ends\nNot used yet');
+check('map: nothing yet', m.skillGroups({nothing_yet: true}), []);
+
 print(failed ? `${failed} failed` : 'settings model ok');
 if (failed)
     System.exit(1);

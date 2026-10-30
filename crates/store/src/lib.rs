@@ -1107,19 +1107,45 @@ pub fn week_summary(
         .collect();
     mastered.sort();
     mastered.dedup();
-    let mut text = format!("{adoptions} times the better way, {hits} habits spotted.");
-    if !improved.is_empty() {
-        text.push_str(&format!(
-            " Less often than last week: {}.",
-            improved.join("; ")
+    // What got better leads: the habit done the better way most more
+    // often than last week.
+    let gain = now
+        .iter()
+        .map(|(id, (_, a))| (id, *a, then.get(id).map_or(0, |v| v.1)))
+        .filter(|(_, a, was)| *a >= 3 && a > was)
+        .max_by_key(|(id, a, was)| (a - was, std::cmp::Reverse((*id).clone())));
+    let mut parts = Vec::new();
+    if let Some((id, a, was)) = gain {
+        parts.push(format!(
+            "Better this week: {} the better way {a} times, up from {was}.",
+            describe(id)
         ));
     }
     if !mastered.is_empty() {
-        text.push_str(&format!(" Mastered: {}.", mastered.join("; ")));
+        parts.push(format!("Mastered: {}.", mastered.join("; ")));
     }
+    if !improved.is_empty() {
+        parts.push(format!(
+            "Less often than last week: {}.",
+            improved.join("; ")
+        ));
+    }
+    let times = |n: u64| {
+        if n == 1 {
+            "once".to_string()
+        } else {
+            format!("{n} times")
+        }
+    };
+    parts.push(format!(
+        "The better way {}, {hits} habit{} spotted.",
+        times(adoptions),
+        if hits == 1 { "" } else { "s" }
+    ));
     if let Some(focus) = focus {
-        text.push_str(&format!(" Work on next: {}.", describe(focus)));
+        parts.push(format!("Work on next: {}.", describe(focus)));
     }
+    let text = parts.join(" ");
     Some(text)
 }
 
@@ -1144,6 +1170,39 @@ mod tests {
         assert_eq!(mode(path.parent().unwrap()), 0o700);
         assert_eq!(mode(&path.with_extension("db-wal")), 0o600);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_week_leads_with_what_got_better() {
+        let s = Store::open_in_memory().unwrap();
+        let now = 1_800_000_000_000u64;
+        let today = days::day(now);
+        let last_week = days::day(now - 8 * 86_400_000);
+        for _ in 0..3 {
+            s.record(&last_week, "terminal-vim", "vim.repeat-jk", HIT, 0)
+                .unwrap();
+        }
+        s.record(
+            &last_week,
+            "terminal-vim",
+            "vim.repeat-jk",
+            Event::Adoption,
+            0,
+        )
+        .unwrap();
+        for _ in 0..5 {
+            s.record(&today, "terminal-vim", "vim.repeat-jk", Event::Adoption, 0)
+                .unwrap();
+        }
+        s.record(&today, "terminal-vim", "vim.repeat-x", HIT, 0)
+            .unwrap();
+        let text = week_summary(&s, now, &|id| format!("<{id}>"), Some("vim.repeat-x")).unwrap();
+        assert_eq!(
+            text,
+            "Better this week: <vim.repeat-jk> the better way 5 times, up from 1. \
+             Less often than last week: <vim.repeat-jk>. The better way 5 times, 1 habit spotted. \
+             Work on next: <vim.repeat-x>."
+        );
     }
 
     #[test]

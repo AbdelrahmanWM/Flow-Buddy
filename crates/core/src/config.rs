@@ -469,6 +469,8 @@ pub struct State {
     pub last_learn_day: Option<String>,
     /// The open challenge: use this item the next time it fits.
     pub challenge: Option<Challenge>,
+    /// The one-time hint that text shapes make tips exact was given.
+    pub shapes_hinted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]

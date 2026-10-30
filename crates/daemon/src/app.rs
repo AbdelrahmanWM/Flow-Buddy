@@ -693,10 +693,29 @@ impl App {
             self.memory.stage(f.rule_id, ctx),
             self.memory.unhelpful_in_a_row(f.rule_id, now_ms),
         );
+        let text = self.shapes_hint(f.rule_id, text);
         self.show(f.rule_id, f.title, &text, f.mode == VimMode::Insert, now_ms);
         self.memory.nudged(f.rule_id, now_ms);
         self.memory
             .tip_shown(f.rule_id, self.mode.as_str(), hour, now_ms);
+    }
+
+    /// Once ever, on a tip that counted keys where the editor plugin could
+    /// have named the exact command: how to have it do that.
+    fn shapes_hint(&mut self, rule_id: &str, text: String) -> String {
+        const VAGUE: [&str; 1] = ["vim.repeat-x"];
+        if self.config.text.shapes
+            || self.state.shapes_hinted
+            || self.resolved.editor.is_none()
+            || !VAGUE.contains(&rule_id)
+        {
+            return text;
+        }
+        self.state.shapes_hinted = true;
+        self.save_state();
+        format!(
+            "{text} With text shapes on, Flow Buddy can name the exact command: flowbuddy config set text.shapes true (the text stays in the editor)."
+        )
     }
 
     /// Today's sentences from `tips.json`, written by `flowbuddy coach
@@ -3269,6 +3288,62 @@ pub(crate) mod tests {
             range: None,
         };
         send(app, 3, ClientMsg::Operator(report), 700);
+    }
+
+    #[test]
+    fn a_vague_tip_says_once_how_to_get_exact_ones() {
+        let mut app = test_app(CoachingMode::Active);
+        app.config.coaching.cooldown_minutes = 0;
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        focus(&mut app, "org.gnome.Terminal", 100);
+        keys(&mut app, "xxxxxw");
+        let first = nudges(&mut ext);
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert!(
+            first[0].text.contains("text.shapes true"),
+            "{}",
+            first[0].text
+        );
+        assert!(app.state.shapes_hinted);
+        type_at(&mut app, "xxxxxw", 120_000);
+        let again = nudges(&mut ext);
+        assert!(
+            again.iter().all(|n| !n.text.contains("text.shapes")),
+            "{again:?}"
+        );
+    }
+
+    #[test]
+    fn no_shapes_hint_when_they_are_on_or_without_a_plugin() {
+        let mut app = test_app(CoachingMode::Active);
+        app.config.text.shapes = true;
+        let mut ext = ext_hello(&mut app, 1);
+        let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        focus(&mut app, "org.gnome.Terminal", 100);
+        keys(&mut app, "<Esc>xxxxxw");
+        assert!(
+            nudges(&mut ext)
+                .iter()
+                .all(|n| !n.text.contains("text.shapes"))
+        );
+
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        focus(&mut app, "code_code", 500);
+        keys(&mut app, "<Esc>xxxxxw");
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1);
+        assert!(!n[0].text.contains("text.shapes"));
+        assert!(!app.state.shapes_hinted);
     }
 
     #[test]

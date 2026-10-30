@@ -117,12 +117,12 @@ pub static SETTINGS: &[Setting] = &[
         COACHING,
         "How long a tip stays on screen, in seconds",
     )),
-    basic(s(
+    s(
         "coaching.show_in",
         Kind::Choice(&["editor", "desktop", "both"]),
         COACHING,
         "Where tips show: in the editor you're typing in, on the desktop, or both",
-    )),
+    ),
     s(
         "coaching.nudge_style",
         Kind::Choice(&["bar", "card"]),
@@ -253,12 +253,12 @@ pub static SETTINGS: &[Setting] = &[
         "Times a habit comes back in a week to count as slipping",
     ),
     notice(
-        s(
+        basic(s(
             "text.shapes",
             Kind::Bool,
             PRIVACY,
-            "Editor plugins look at the text around a move or edit to give exact tips; only numbers leave the editor",
-        ),
+            "Exact tips: editor plugins look at the text around a move or edit; only numbers leave the editor",
+        )),
         "The editor plugins will read the text around your edits (secret files never). Only counts and shapes are sent to Flow Buddy.",
     ),
     notice(

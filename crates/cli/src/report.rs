@@ -575,6 +575,7 @@ impl Recorded {
         let row = self.rows.get(id);
         let u = self.uses.get(id).copied().unwrap_or_default();
         let skill = self.skills.get(id).map(|s| s.percents(&self.model));
+        let half_life = self.skills.get(id).map(|s| s.half_life_days(&self.model));
         flowbuddy_core::curriculum::Progress {
             uses: u.total,
             recent_uses: u.recent,
@@ -584,6 +585,7 @@ impl Recorded {
             learned: row.is_some_and(|r| r.learned_at.is_some()),
             mastery: skill.map(|s| s.0),
             recall: skill.map(|s| s.1),
+            half_life,
         }
     }
 
@@ -639,6 +641,7 @@ pub fn learn_json(
                 "tile": tile(&p, known, ready),
                 "uses": p.uses,
                 "days_idle": p.days_idle,
+                "half_life_days": p.half_life,
                 "mastery": p.mastery,
                 "recall": p.recall,
             })

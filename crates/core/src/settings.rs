@@ -198,6 +198,12 @@ pub static SETTINGS: &[Setting] = &[
         TIMING,
         "Times a lesson is shown at most, if you don't take it up",
     ),
+    s(
+        "learn.review_at",
+        Kind::Int { min: 20, max: 95 },
+        TIMING,
+        "Bring back a skill you know when the chance you'd recall it drops under this percent",
+    ),
     basic(s(
         "learn.daily",
         Kind::Bool,
@@ -499,6 +505,10 @@ pub static MORE: &[(&str, &str)] = &[
     (
         "learn.max_showings",
         "How many times a lesson you don't take up is shown at all. After that it's left alone (\"I know this\" in the menu skips it at once).",
+    ),
+    (
+        "learn.review_at",
+        "70 by default. Flow Buddy works out from your own gaps between uses how fast each skill fades (its half-life), and brings a mastered one back as the day's lesson before you'd forget it: \"Remember this?\". Higher: sooner and more often; lower: only once it's nearly gone. Reviews never outnumber new lessons in a week by more than one.",
     ),
     (
         "learn.daily",

@@ -85,6 +85,9 @@ pub struct LearnConfig {
     pub again_after_days: u32,
     /// Times a lesson is shown at most, if you don't take it up.
     pub max_showings: u32,
+    /// A skill you've mastered comes back for review once the chance
+    /// you'd recall it drops under this, in percent.
+    pub review_at: u8,
 }
 
 impl Default for LearnConfig {
@@ -98,6 +101,7 @@ impl Default for LearnConfig {
             challenge_days: 2,
             again_after_days: 7,
             max_showings: 3,
+            review_at: crate::curriculum::REVIEW_AT,
         }
     }
 }
@@ -471,6 +475,9 @@ pub struct State {
     pub challenge: Option<Challenge>,
     /// The one-time hint that text shapes make tips exact was given.
     pub shapes_hinted: bool,
+    /// The last week's daily lessons: when (Unix seconds), and whether
+    /// each was a review. Reviews don't outnumber new lessons.
+    pub recent_lessons: Vec<(u64, bool)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]

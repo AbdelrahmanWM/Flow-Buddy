@@ -849,7 +849,11 @@ impl App {
         {
             return;
         }
-        let Some(pick) = self.memory.pick_something_new(self.resolved.kind, now_ms) else {
+        let Some(pick) = self.memory.pick_something_new(
+            self.resolved.kind,
+            self.reviews_allowed(now_ms),
+            now_ms,
+        ) else {
             return;
         };
         self.state.last_learn_day = Some(today);
@@ -857,11 +861,35 @@ impl App {
         self.show_lesson(pick, now_ms);
     }
 
+    /// Whether today's lesson may be a review: not more reviews than new
+    /// lessons in the last week.
+    fn reviews_allowed(&self, now_ms: u64) -> bool {
+        let week_ago = (now_ms / 1000).saturating_sub(7 * 86_400);
+        let recent = || {
+            self.state
+                .recent_lessons
+                .iter()
+                .filter(|(t, _)| *t >= week_ago)
+        };
+        let reviews = recent().filter(|(_, review)| *review).count();
+        reviews <= recent().count() - reviews
+    }
+
     /// Show a lesson (or a review), with its challenge.
     fn show_lesson(&mut self, pick: flowbuddy_core::curriculum::Pick, now_ms: u64) {
         const RULE: &str = "learn.daily";
         let item = pick.item;
         let mut text = flowbuddy_core::curriculum::tip_text(item);
+        // A review says why it's back.
+        if pick.review
+            && let Some(days) = pick.idle_days.filter(|d| *d >= 2)
+        {
+            text = format!("You haven't used {} in {days} days. {text}", item.keys);
+        }
+        let week_ago = (now_ms / 1000).saturating_sub(7 * 86_400);
+        self.state.recent_lessons.retain(|(t, _)| *t >= week_ago);
+        self.state.recent_lessons.push((now_ms / 1000, pick.review));
+        self.save_state();
         // Producing it beats reading about it: a challenge to use it.
         if self.config.learn.challenges {
             text.push_str(" Challenge: use it the next time it fits.");
@@ -944,7 +972,11 @@ impl App {
         }
         // Not this one again soon: it was shown, and isn't picked again
         // within `again_after_days`.
-        let Some(pick) = self.memory.pick_something_new(self.resolved.kind, now_ms) else {
+        let Some(pick) = self.memory.pick_something_new(
+            self.resolved.kind,
+            self.reviews_allowed(now_ms),
+            now_ms,
+        ) else {
             return;
         };
         if Some(pick.item.id) == self.todays_lesson {
@@ -3684,6 +3716,42 @@ pub(crate) mod tests {
                 .unwrap()
                 .ends_with("1 skipped today")
         );
+    }
+
+    #[test]
+    fn reviews_dont_outnumber_new_lessons() {
+        let mut app = test_app(CoachingMode::Active);
+        let now = 30 * 86_400_000;
+        let day = 86_400;
+        assert!(app.reviews_allowed(now), "nothing yet");
+        app.state.recent_lessons = vec![(29 * day, true), (28 * day, false)];
+        assert!(app.reviews_allowed(now));
+        app.state.recent_lessons.push((27 * day, true));
+        assert!(!app.reviews_allowed(now), "two reviews to one lesson");
+        // A week on, they don't count.
+        assert!(app.reviews_allowed(now + 8 * 86_400_000));
+    }
+
+    #[test]
+    fn a_review_says_how_long_its_been() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let item = flowbuddy_core::curriculum::find("find").unwrap();
+        let pick = flowbuddy_core::curriculum::Pick {
+            item,
+            review: true,
+            idle_days: Some(21),
+        };
+        app.show_lesson(pick, 1_000);
+        let n = nudges(&mut ext);
+        assert_eq!(n[0].title, "Remember this?");
+        assert!(
+            n[0].text
+                .starts_with(&format!("You haven't used {} in 21 days. ", item.keys)),
+            "{}",
+            n[0].text
+        );
+        assert_eq!(app.state.recent_lessons, vec![(1, true)]);
     }
 
     #[test]

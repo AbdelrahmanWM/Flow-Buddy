@@ -2532,6 +2532,11 @@ pub const AGAIN_AFTER_DAYS: u64 = 7;
 pub struct Pace {
     pub again_after_days: u64,
     pub max_showings: u32,
+    /// A mastered skill comes back for review once you'd recall it less
+    /// likely than this, in percent.
+    pub review_at: u8,
+    /// Reviews may come today: not more of them than new lessons lately.
+    pub reviews: bool,
 }
 
 impl Default for Pace {
@@ -2539,6 +2544,8 @@ impl Default for Pace {
         Pace {
             again_after_days: AGAIN_AFTER_DAYS,
             max_showings: MAX_SHOWINGS,
+            review_at: REVIEW_AT,
+            reviews: true,
         }
     }
 }
@@ -2560,6 +2567,9 @@ pub struct Progress {
     /// [`crate::mastery`]; `None` without evidence.
     pub mastery: Option<u8>,
     pub recall: Option<u8>,
+    /// Days for the chance of recalling it to halve; `None` without
+    /// evidence.
+    pub half_life: Option<u32>,
 }
 
 /// The day's "something new": the first item you're ready for but don't
@@ -2605,6 +2615,8 @@ pub fn pick_from_habits(
 pub struct Pick {
     pub item: &'static Item,
     pub review: bool,
+    /// For a review: days since you last used it.
+    pub idle_days: Option<u64>,
 }
 
 /// Each level past where you are, a lesson is this much less likely to
@@ -2614,7 +2626,7 @@ pub const LEVEL_STEP: f64 = 0.85;
 /// A skill you've mastered comes back for review once you'd recall it
 /// less likely than this: before it's forgotten (below
 /// [`crate::mastery::RECALLED`]), when reviewing does the most.
-pub const REVIEW_AT: f64 = 0.7;
+pub const REVIEW_AT: u8 = 70;
 
 /// The pick worth most: what it saves you, times the chance it sticks.
 ///
@@ -2675,6 +2687,7 @@ pub fn choose_paced(
             Pick {
                 item,
                 review: false,
+                idle_days: None,
             },
         )
     });
@@ -2684,14 +2697,19 @@ pub fn choose_paced(
         .filter_map(|item| {
             let p = progress(item.id);
             let (mastery, recall) = (pct(p.mastery)?, pct(p.recall)?);
-            let due = mastery >= crate::mastery::MASTERED
-                && recall < REVIEW_AT
+            let due = pace.reviews
+                && mastery >= crate::mastery::MASTERED
+                && recall < f64::from(pace.review_at) / 100.0
                 && p.last_shown
                     .is_none_or(|t| now_s.saturating_sub(t) >= pace.again_after_days * 86_400);
             due.then(|| {
                 (
                     saves(item.id) * mastery * (1.0 - recall),
-                    Pick { item, review: true },
+                    Pick {
+                        item,
+                        review: true,
+                        idle_days: p.days_idle,
+                    },
                 )
             })
         });
@@ -2970,6 +2988,7 @@ mod tests {
         let once = Pace {
             again_after_days: 2,
             max_showings: 1,
+            ..Pace::default()
         };
         assert_ne!(first(once), Some("word-end"));
     }
@@ -3232,6 +3251,26 @@ mod tests {
             ..slipping(i)
         };
         let pick = choose(&shown, &known, 2 * 86_400, TerminalVim, &habits).unwrap();
+        assert!(!pick.review, "{}", pick.item.id);
+        // It says how long since you used it.
+        let idle = |i: &str| Progress {
+            days_idle: (i == "find").then_some(20),
+            ..slipping(i)
+        };
+        let pick = choose(&idle, &known, 0, TerminalVim, &habits).unwrap();
+        assert_eq!(pick.idle_days, Some(20));
+        // Your threshold: at 30%, 40% isn't slipping enough yet.
+        let pace = |review_at, reviews| Pace {
+            review_at,
+            reviews,
+            ..Pace::default()
+        };
+        let pick =
+            choose_paced(&slipping, &known, 0, TerminalVim, &habits, pace(30, true)).unwrap();
+        assert!(!pick.review, "{}", pick.item.id);
+        // No reviews today: a new lesson instead.
+        let pick =
+            choose_paced(&slipping, &known, 0, TerminalVim, &habits, pace(70, false)).unwrap();
         assert!(!pick.review, "{}", pick.item.id);
     }
 

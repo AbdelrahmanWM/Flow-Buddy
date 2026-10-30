@@ -63,6 +63,10 @@ jobs:
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz | tar -xz gitleaks
           ./gitleaks git --redact --no-banner .
       - uses: EmbarkStudios/cargo-deny-action@v2
+      - name: The VS Code companion packages for the Marketplace
+        run: |
+          cp LICENSE vscode-extension/
+          cd vscode-extension && npx --yes @vscode/vsce@3 package --no-dependencies --allow-missing-repository
       - name: Every piece says the same version
         run: scripts/check-versions.sh
 

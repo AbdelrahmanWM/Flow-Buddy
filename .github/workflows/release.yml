@@ -37,13 +37,34 @@ jobs:
           install -m755 target/release/flowbuddyd target/release/flowbuddy "dist/$name/bin/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+      - name: The GNOME extension as extensions.gnome.org takes it
+        if: matrix.arch == 'x86_64'
+        run: |
+          cd gnome-extension
+          zip -r "../dist/flowbuddy@abdelrahmanwm.github.io.shell-extension.zip" \
+            metadata.json stylesheet.css schemas/*.xml $(ls *.js)
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.arch }}
-          path: dist/*.tar.gz*
+          path: |
+            dist/*.tar.gz*
+            dist/*.zip
+
+  vsix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The VS Code companion as a .vsix
+        run: |
+          cp LICENSE vscode-extension/
+          cd vscode-extension && npx --yes @vscode/vsce@3 package --no-dependencies --allow-missing-repository
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: vscode-extension/*.vsix
 
   publish:
-    needs: build
+    needs: [build, vsix]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

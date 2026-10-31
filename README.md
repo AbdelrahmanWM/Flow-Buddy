@@ -2,9 +2,23 @@
 
 **Improve all the time without stopping to study.**
 
-Flow Buddy is a local coach that helps you get better at your tools as you use them. It starts with Vim. It watches how you use Vim's keys and, now and then, shows a shorter way to do what you just did, in Vim and Neovim, VS Code with vscodevim, vi-mode shells, and Claude Code's Vim mode. It learns which commands you already use, so the tips move on as you do. Your keys never leave your machine.
+Flow Buddy is an adaptive tutor that lives inside your work. It watches how you actually use your tools, works out what you know and what you're ready for next, and teaches it at the moment it's useful. Then it checks whether the teaching worked. There are no courses to sit through and no time set aside: you get better at the tool while you use it.
+
+Vim is the first subject, in Vim and Neovim, VS Code with vscodevim, vi-mode shells and Claude Code's Vim mode. It runs on your machine, and your keys never leave it.
 
 <p align="center"><img src="docs/images/tip.gif" alt="In Vim, j pressed seven times to reach a blank line; Flow Buddy's tip says that took 7 keys and } gets there in 1" width="613"></p>
+
+## How it teaches
+
+Most tools that teach a skill tell everyone the same thing once and never find out if it stuck. Flow Buddy keeps a model of you, and runs a loop on it:
+
+1. **It notices what you do.** Your keys and the editor plugins' reports become habits: "`j` seven times to reach a blank line", "`x` four times then `i`". Counts only, never text.
+2. **It knows what you know.** Each of the 178 skills in its curriculum (covering every command in Vim's `:help index`) has a mastery estimate, updated each time you use the skill or fall back on the habit it replaces (knowledge tracing). `flowbuddy learn --map` shows them all.
+3. **It teaches one step up, at the right moment.** A tip comes right after the habit, naming the shorter way. It only suggests what you're ready for: never `ci(` before you use `ciw`, or `t` before `f`. Once a day there's a lesson, one new skill with a worked example, followed by a challenge to use it the next time it fits.
+4. **It keeps what you learned.** Each skill has a memory half-life, fitted to your own gaps between uses (half-life regression, as in Duolingo). When the chance you'd recall a skill drops, it comes back as a review. `flowbuddy practice` drills the habit you trip on most.
+5. **It checks that it works.** It records whether you start using the better way after a tip. A random 10% of tips are held back, so the effect of tips can be measured against not showing them. A learned filter drops the tips you find unhelpful. `flowbuddy learn --report` and the weekly summary show the results.
+
+Each of these choices rests on published research on memory and skill learning, listed in [docs/learning.md](docs/learning.md), and each is measured on you rather than assumed.
 
 > **Status:** 0.1, early. Built and used on GNOME 50. See [what's coached where](docs/coverage.md) and the [changelog](CHANGELOG.md).
 
@@ -27,7 +41,7 @@ flowbuddy tour                    # how it works, a sample tip, and the settings
 - The daemon that reads keys has no network code, and a test enforces that. The AI features are off unless you choose a provider, and `--prompt` shows exactly what would be sent.
 - `flowbuddy memory show` shows everything that's kept, and `flowbuddy memory forget --all` deletes it. The details are in [docs/privacy.md](docs/privacy.md).
 
-## What it coaches
+## Examples of what it coaches
 
 | You did | Try |
 |---|---|
@@ -61,20 +75,24 @@ flowbuddy tour                    # how it works, a sample tip, and the settings
 
 The pictures are made by `scripts/screenshots/shoot.sh`, in a throwaway GNOME session.
 
-## More than tips
+## Your progress
 
-- **A daily lesson:** one command you don't use yet, with a worked example, and reviews for ones you stop using.
-- **`flowbuddy practice`:** two-minute drills in Vim that count your keys against the fewest that would do.
-- **`flowbuddy learn --map`:** every skill as a tile: used, slipping, learning, or ready.
-- **`flowbuddy coach`:** ask an AI of your choice (your Claude subscription, an API, or a local model) about your habits.
+- **`flowbuddy learn --map`:** every skill as a tile: used, slipping, learning, ready, or later.
+- **`flowbuddy summary --week`:** what got better this week, against before.
+- **`flowbuddy learn --report`:** whether tips, lessons and drills are working, with the held-back tips for comparison.
+- **`flowbuddy coach`:** optionally, ask an AI of your choice (your Claude subscription, an API or a local model) about your habits. It's sent counts, never your text.
 
 [docs/usage.md](docs/usage.md) has every command and setting. On GNOME, **Settings…** in the top-bar menu has them all in a window.
 
 ## Why
 
-- Learning happens in big blocks (tutorials, courses) that rarely turn into habits. A tip about what you did a second ago does.
-- Tools like hardtime.nvim block or punish. Flow Buddy suggests, and never stops you.
-- A tool that reads your keys has to be open to inspection, and has to keep its data local.
+- **Courses don't become habits.** People learn tools in big blocks, then fall back on what they already do. A tip about what you did a second ago, repeated until you use the better way, does become a habit.
+- **Nothing else knows you.** Cheat sheets and tip-of-the-day show everyone the same things. Habit tools like hardtime.nvim only block keys. Flow Buddy keeps a model of what you know and teaches the next step from there, and it never stops you from typing.
+- **It has to be trustworthy.** A tool that reads your keys has to keep its data local and be open to inspection.
+
+## Beyond Vim
+
+The parts that teach (the habit rules, the skill model, the reviews, the measurement) don't depend on Vim. Vim comes first because its keys are a skill with a lot of room to grow. The shell is a second, smaller pack (`cd ..` again and again, `Ctrl-r` for history). Next are the browser with Vimium (#124) and JetBrains IDEs (#125). If there's a tool you'd like Flow Buddy to teach, open a discussion.
 
 ## Where it runs
 

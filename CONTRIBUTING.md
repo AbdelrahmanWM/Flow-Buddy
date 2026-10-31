@@ -31,6 +31,8 @@ for t in gnome-extension/test/*.test.js; do gjs -m "$t"; done
 gnome-extension/test/prefs-tour.sh     # the settings window's tour, drawn off screen (needs gtk4-broadwayd)
 ```
 
+After a change to how something looks, `scripts/screenshots/shoot.sh` remakes the README's pictures in `docs/images/`. It runs a throwaway headless GNOME session with a stand-in daemon, so it doesn't touch your own session or read your keyboard. It needs `gnome-shell`, `vim` and `python3-pil`.
+
 CI runs all of these, plus a secret scan of the history and a build with the oldest supported Rust.
 
 Run a development daemon next to an installed one, using a separate socket:

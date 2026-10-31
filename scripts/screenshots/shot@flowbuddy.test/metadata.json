@@ -1,0 +1,6 @@
+{
+  "uuid": "shot@flowbuddy.test",
+  "name": "Flow Buddy screenshots",
+  "description": "Test helper for scripts/screenshots: follows a script of screenshots, keys and clicks. Only ever loaded in the throwaway session that script starts.",
+  "shell-version": ["50"]
+}

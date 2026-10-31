@@ -473,6 +473,7 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
         const markup = t => model.tourMarkup(t, x => GLib.markup_escape_text(x, -1));
         const para = text => text.split('\n\n').filter(Boolean).map(p => new Gtk.Label({
             label: markup(p), use_markup: true, wrap: true, xalign: 0, selectable: false,
+            width_chars: 50, max_width_chars: 70,
         }));
         const carousel = new Adw.Carousel({hexpand: true, vexpand: true, allow_scroll_wheel: false});
         const parts = tour.parts ?? [];
@@ -517,7 +518,7 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
                 box.append(practise);
             }
             carousel.append(new Gtk.ScrolledWindow({
-                child: box, hscrollbar_policy: Gtk.PolicyType.NEVER, vexpand: true,
+                child: box, hscrollbar_policy: Gtk.PolicyType.NEVER, hexpand: true, vexpand: true,
             }));
         });
 

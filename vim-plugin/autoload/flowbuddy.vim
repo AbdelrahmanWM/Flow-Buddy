@@ -196,14 +196,48 @@ function! flowbuddy#shows_tips() abort
 endfunction
 
 " The tip's lines for a window `width` wide: the title, the text wrapped,
-" then what its commands do. Commands keep their backticks.
+" then what its commands do. The marks around commands are taken off;
+" flowbuddy#tip_keys() lists the commands, to colour them instead.
 function! flowbuddy#tip_lines(msg, width) abort
   let lines = [get(a:msg, 'title', 'Flow Buddy')]
-  let lines += flowbuddy#wrap(get(a:msg, 'text', ''), a:width)
+  let lines += flowbuddy#wrap(flowbuddy#plain(get(a:msg, 'text', '')), a:width)
   for e in get(a:msg, 'explain', [])
-    let lines += map(flowbuddy#wrap(e, a:width - 2), '"  " . v:val')
+    let lines += map(flowbuddy#wrap(flowbuddy#plain(e), a:width - 2), '"  " . v:val')
   endfor
   return lines
+endfunction
+
+let s:MARK = '``\s\=\(.\{-1,}\)\s\=``\|`\([^`]\+\)`'
+
+" Text without the marks around commands: "`di(`" and "`` `a ``".
+function! flowbuddy#plain(text) abort
+  return substitute(a:text, s:MARK, '\=submatch(1) . submatch(2)', 'g')
+endfunction
+
+" The commands marked in a tip's text, longest first.
+function! flowbuddy#tip_keys(msg) abort
+  let keys = []
+  call substitute(get(a:msg, 'text', ''), s:MARK, '\=add(keys, submatch(1) . submatch(2))', 'g')
+  return sort(uniq(sort(keys)), {a, b -> strlen(b) - strlen(a)})
+endfunction
+
+" The tip window's colours: the same in every colour scheme.
+function! s:tip_colours() abort
+  highlight FlowBuddyTip ctermfg=252 ctermbg=236 guifg=#deddda guibg=#303030
+  highlight FlowBuddyTipBorder ctermfg=33 ctermbg=236 guifg=#3584e4 guibg=#303030
+  highlight FlowBuddyTipTitle ctermfg=231 ctermbg=236 cterm=bold guifg=#ffffff guibg=#303030 gui=bold
+  highlight FlowBuddyTipKey ctermfg=221 ctermbg=236 cterm=bold guifg=#f6d32d guibg=#303030 gui=bold
+endfunction
+
+" Colour the title and the commands in the tip window `id`.
+function! s:colour_tip(id, msg) abort
+  call win_execute(a:id, 'call matchaddpos("FlowBuddyTipTitle", [1])')
+  " The tip's commands as whole words; each explanation's, at its start.
+  for k in flowbuddy#tip_keys(a:msg)
+    let pattern = '\V\(\^\|\s\)\zs' . escape(k, '\') . '\ze\(\s\|\[,.;)]\|\$\)'
+    call win_execute(a:id, 'call matchadd("FlowBuddyTipKey", ' . string(pattern) . ')')
+  endfor
+  call win_execute(a:id, 'call matchadd("FlowBuddyTipKey", ' . string('^  \zs\S.\{-}\ze: ') . ')')
 endfunction
 
 function! flowbuddy#wrap(text, width) abort
@@ -238,20 +272,24 @@ function! flowbuddy#show_tip(msg) abort
   let lines = flowbuddy#tip_lines(a:msg, width)
   let ttl = get(a:msg, 'ttl_ms', 6000)
   let s:tip = a:msg
+  call s:tip_colours()
   if has('nvim')
     let buf = nvim_create_buf(v:false, v:true)
     call nvim_buf_set_lines(buf, 0, -1, v:false, lines)
     let s:tip_win = nvim_open_win(buf, v:false, {'relative': 'editor', 'anchor': 'NE',
           \ 'row': 0, 'col': &columns, 'width': width, 'height': len(lines),
           \ 'style': 'minimal', 'border': 'rounded', 'focusable': v:false, 'zindex': 250})
-    call nvim_win_set_option(s:tip_win, 'winhighlight', 'Normal:Pmenu')
+    call nvim_win_set_option(s:tip_win, 'winhighlight', 'Normal:FlowBuddyTip,FloatBorder:FlowBuddyTipBorder')
     let s:tip_timer = timer_start(ttl, {-> s:close_tip('seen')})
   else
     let s:tip_win = popup_create(lines, {'line': 1, 'col': &columns, 'pos': 'topright',
-          \ 'minwidth': 20, 'maxwidth': width, 'time': ttl, 'highlight': 'Pmenu',
-          \ 'border': [], 'padding': [0, 1, 0, 1], 'zindex': 250, 'close': 'click',
+          \ 'minwidth': 20, 'maxwidth': width, 'time': ttl, 'highlight': 'FlowBuddyTip',
+          \ 'border': [], 'borderhighlight': ['FlowBuddyTipBorder'],
+          \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+          \ 'padding': [0, 1, 0, 1], 'zindex': 250, 'close': 'click',
           \ 'callback': {-> s:tip_closed()}})
   endif
+  call s:colour_tip(s:tip_win, a:msg)
 endfunction
 
 " The window went away on its own (timed out or clicked): seen.

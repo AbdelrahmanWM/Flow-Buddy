@@ -4,11 +4,7 @@
 
 Flow Buddy is a local coach that helps you get better at your tools as you use them. It starts with Vim. It watches how you use Vim's keys and, now and then, shows a shorter way to do what you just did, in Vim and Neovim, VS Code with vscodevim, vi-mode shells, and Claude Code's Vim mode. It learns which commands you already use, so the tips move on as you do. Your keys never leave your machine.
 
-```
- Jump by paragraph
- That took 7 keys. } gets there in 1, or 7j in 2.
-   }   down to the next blank line (end of the paragraph)
-```
+<p align="center"><img src="docs/images/tip.gif" alt="In Vim, j pressed seven times to reach a blank line; Flow Buddy's tip says that took 7 keys and } gets there in 1" width="613"></p>
 
 > **Status:** 0.1, early. Built and used on GNOME 50. See [what's coached where](docs/coverage.md) and the [changelog](CHANGELOG.md).
 
@@ -53,6 +49,17 @@ flowbuddy tour                    # how it works, a sample tip, and the settings
 | `↑↑↑↑` hunting shell history | `Ctrl-r` |
 
 `flowbuddy rules` lists every rule, and [docs/coverage.md](docs/coverage.md) shows what's coached in each place. Exact motion tips need the editor plugins, which report where a move ended as numbers and never send text: [vim-plugin](vim-plugin/README.md) and [vscode-extension](vscode-extension/README.md). The installer adds both when it finds the editors.
+
+## What it looks like
+
+| | |
+|---|---|
+| <img src="docs/images/card.png" alt="A tip card under the GNOME top bar" width="400"> | Everywhere else, a tip shows as a card under the top bar for a few seconds. |
+| <img src="docs/images/menu.png" alt="Flow Buddy's top-bar menu: the tip, what it does, Got it, Not helpful, the modes and the tour" width="300"> | The top-bar menu keeps the tip, what it does, and its answers, with keyboard shortcuts. |
+| <img src="docs/images/practice.png" alt="A practice drill in Vim: the goal, the fewest keys, your keys so far, and the marked line" width="460"> | `flowbuddy practice`: reach the marked line, delete the marked words, in as few keys as you can. |
+| <img src="docs/images/welcome.png" alt="The Welcome dialog in Flow Buddy's settings window" width="400"> | The tour, in the settings window or in a terminal (`flowbuddy tour`). |
+
+The pictures are made by `scripts/screenshots/shoot.sh`, in a throwaway GNOME session.
 
 ## More than tips
 

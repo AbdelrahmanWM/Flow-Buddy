@@ -1,0 +1,38 @@
+# The screenshots for the README, in order. See shoot.sh.
+wait 3000
+daemon card
+wait 1500
+shot card
+menu
+wait 1000
+shot menu
+menu
+wait 500
+# Vim: the paragraph habit, then its tip in Vim's popup.
+run gjs SHOT_HERE/term.js vim demo.txt
+wait 3500
+frames gif-a 4 250
+typeframes gif-b jjjjjjj
+frames gif-c 3 300
+daemon editor
+wait 200
+frames gif-d 12 250
+shot vim-tip
+key Escape
+type :qa!
+key Return
+wait 1000
+# A practice drill.
+run gjs SHOT_HERE/term.js flowbuddy practice vertical
+wait 4000
+type 5
+wait 400
+shot practice
+key Escape
+type :qa!
+key Return
+wait 1500
+# The tour in the settings window.
+prefs
+wait 4000
+shot welcome

@@ -325,8 +325,10 @@ endfunction
 function! Test_tip_lines() abort
   let msg = {'title': 'Delete inside', 'text': 'That took 6 keys. `di(` does it from anywhere inside, in 3.',
         \ 'explain': ['`di(` delete inside the brackets']}
-  call assert_equal(['Delete inside', 'That took 6 keys. `di(`', 'does it from anywhere', 'inside, in 3.',
-        \ '  `di(` delete inside', '  the brackets'], flowbuddy#tip_lines(msg, 23))
+  call assert_equal(['Delete inside', 'That took 6 keys. di(', 'does it from anywhere', 'inside, in 3.',
+        \ '  di( delete inside the', '  brackets'], flowbuddy#tip_lines(msg, 23))
+  call assert_equal('Use `a or Ctrl-d', flowbuddy#plain('Use `` `a `` or `Ctrl-d`'))
+  call assert_equal(['Ctrl-d', '`a'], flowbuddy#tip_keys({'text': 'Use `` `a `` or `Ctrl-d`', 'explain': ['`7`: a count']}))
   call assert_equal(['Flow Buddy'], flowbuddy#tip_lines({}, 40))
 endfunction
 

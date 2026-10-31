@@ -33,6 +33,11 @@ jobs:
           gjs vscode-extension/test/textguard.test.js && gjs vscode-extension/test/tools.test.js && gjs vscode-extension/test/tips.test.js
       - name: Test the GNOME extension's tip markup
         run: gjs -m gnome-extension/test/markup.test.js && gjs -m gnome-extension/test/settings-model.test.js && gjs -m gnome-extension/test/placement.test.js
+      - name: Test the settings window's tour in a real GTK window (off screen)
+        run: |
+          sudo apt-get install -yq gir1.2-adw-1 libgtk-4-bin
+          cargo build -p flowbuddy-cli
+          gnome-extension/test/prefs-tour.sh target/debug/flowbuddy
       - name: Test the Vim plugin's motion facts
         run: |
           command -v vim >/dev/null || sudo apt-get install -yq vim
@@ -45,3 +50,36 @@ jobs:
         run: |
           for f in shell/flowbuddy.bash shell/test/run.sh scripts/*.sh; do bash -n "$f"; done
           shellcheck shell/flowbuddy.bash shell/test/run.sh scripts/*.sh
+
+  # The checks that guard what's public: secrets, dependencies, versions.
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: No secrets anywhere in the history
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz | tar -xz gitleaks
+          ./gitleaks git --redact --no-banner .
+      - uses: EmbarkStudios/cargo-deny-action@v2
+      - name: The VS Code companion packages for the Marketplace
+        run: |
+          cp LICENSE vscode-extension/
+          cd vscode-extension && npx --yes @vscode/vsce@3 package --no-dependencies --allow-missing-repository
+      - name: Every piece says the same version
+        run: scripts/check-versions.sh
+
+  # The oldest Rust that builds it, from Cargo.toml's rust-version.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "msrv=$(sed -n 's/^rust-version = \"\(.*\)\"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+        id: v
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.v.outputs.msrv }}
+      - run: cargo build --locked --workspace
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.v.outputs.msrv }}

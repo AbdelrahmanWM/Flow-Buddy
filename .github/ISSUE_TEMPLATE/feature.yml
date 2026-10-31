@@ -1,0 +1,13 @@
+name: Feature
+description: Something Flow Buddy could do.
+labels: [enhancement]
+body:
+  - type: textarea
+    attributes:
+      label: What you'd like, and why
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Privacy
+      description: Would it need Flow Buddy to see or keep anything new (text, file names, more about keys)? Say what, if so.

@@ -519,3 +519,137 @@ mod tests {
         );
     }
 }
+
+/// Settings whose values could say something private (a server, a
+/// command, your folders): the report only says they're set.
+const PRIVATE_SETTINGS: &[&str] = &[
+    "ai.base_url",
+    "ai.api_key_env",
+    "ai.api_key_command",
+    "ai.command",
+    "text.projects",
+    "text.exclude",
+];
+
+/// What goes in a bug report.
+pub struct ReportFacts {
+    /// (what, version), e.g. ("flowbuddy", "0.1.0").
+    pub versions: Vec<(String, String)>,
+    /// (what, value): the OS, desktop, session type.
+    pub system: Vec<(String, String)>,
+    pub checks: Vec<Check>,
+    /// Settings that differ from the defaults: (key, value as JSON).
+    pub changed: Vec<(String, String)>,
+    pub log: Vec<String>,
+    /// Replaced wherever they appear: your home folder and user name.
+    pub home: String,
+    pub user: String,
+}
+
+/// `doctor --report`: Markdown to paste into a bug report, with your home
+/// folder, user name and anything private left out.
+pub fn bug_report(f: &ReportFacts) -> String {
+    let scrub = |text: &str| {
+        let mut t = text.to_string();
+        if !f.home.is_empty() {
+            t = t.replace(&f.home, "~");
+        }
+        if f.user.len() > 2 {
+            t = t.replace(&f.user, "<user>");
+        }
+        t
+    };
+    let mut out = String::from("### Flow Buddy report\n\n");
+    for (what, v) in f.versions.iter().chain(&f.system) {
+        out.push_str(&format!("- {what}: {}\n", scrub(v)));
+    }
+    out.push_str("\n**Checks**\n\n");
+    for c in &f.checks {
+        out.push_str(&format!(
+            "- {} {}\n",
+            if c.ok { "✓" } else { "✗" },
+            scrub(&c.what)
+        ));
+    }
+    out.push_str("\n**Settings changed from the defaults**\n\n");
+    if f.changed.is_empty() {
+        out.push_str("- none\n");
+    }
+    for (key, value) in &f.changed {
+        let value = if PRIVATE_SETTINGS.contains(&key.as_str()) {
+            "(set)".to_string()
+        } else {
+            scrub(value)
+        };
+        out.push_str(&format!("- `{key}` = {value}\n"));
+    }
+    if !f.log.is_empty() {
+        out.push_str("\n<details><summary>The daemon's log, last lines</summary>\n\n```\n");
+        for line in &f.log {
+            out.push_str(&scrub(&strip_ansi(line)));
+            out.push('\n');
+        }
+        out.push_str("```\n\n</details>\n");
+    }
+    out
+}
+
+/// Text without terminal colour codes (`\x1b[32m`).
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Up to the letter that ends the sequence.
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    #[test]
+    fn nothing_private_in_the_report() {
+        let f = ReportFacts {
+            versions: vec![("flowbuddy".into(), "0.1.0".into())],
+            system: vec![("desktop".into(), "GNOME, wayland".into())],
+            checks: vec![Check {
+                ok: false,
+                what: "the daemon isn't running (no socket at /home/sam/.run/fb.sock)".into(),
+                fix: Some("systemctl --user start flowbuddyd".into()),
+            }],
+            changed: vec![
+                ("coaching.default_mode".into(), "\"active\"".into()),
+                (
+                    "ai.api_key_command".into(),
+                    "[\"pass\", \"show\", \"anthropic\"]".into(),
+                ),
+                ("text.projects".into(), "[\"/home/sam/code/secret\"]".into()),
+                ("ai.base_url".into(), "\"https://llm.internal.corp\"".into()),
+            ],
+            log: vec![
+                "\x1b[33m WARN\x1b[0m can't read /home/sam/.config/flowbuddy/config.toml for sam"
+                    .into(),
+            ],
+            home: "/home/sam".into(),
+            user: "sam".into(),
+        };
+        let r = bug_report(&f);
+        for private in ["/home/sam", "pass", "secret", "llm.internal", " sam"] {
+            assert!(!r.contains(private), "{private} in:\n{r}");
+        }
+        assert!(r.contains("- `coaching.default_mode` = \"active\"\n"));
+        assert!(r.contains("- `ai.api_key_command` = (set)\n"));
+        assert!(r.contains("- ✗ the daemon isn't running (no socket at ~/.run/fb.sock)\n"));
+        assert!(r.contains("\n WARN can't read ~/.config/flowbuddy/config.toml for <user>\n"));
+    }
+}

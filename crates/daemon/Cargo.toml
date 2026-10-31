@@ -2,6 +2,7 @@
 name = "flowbuddy-daemon"
 description = "Flow Buddy background daemon: capture, context, rules, nudges"
 version.workspace = true
+publish = false
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

@@ -9,6 +9,22 @@ Tells the local `flowbuddyd` what Vim knows and keystrokes don't: the real mode,
 - Vim 9 (`+channel`): `~/.vim/pack/flowbuddy/start/flowbuddy`
 - Neovim 0.9+: `~/.local/share/nvim/site/pack/flowbuddy/start/flowbuddy`
 
+With a plugin manager instead (the plugin is in the `vim-plugin` folder of the repository):
+
+```vim
+" vim-plug
+Plug 'AbdelrahmanWM/Flow-Buddy', {'rtp': 'vim-plugin'}
+```
+
+```lua
+-- lazy.nvim
+{ 'AbdelrahmanWM/Flow-Buddy', config = function(plugin) vim.opt.rtp:append(plugin.dir .. '/vim-plugin') end }
+-- packer.nvim
+use { 'AbdelrahmanWM/Flow-Buddy', rtp = 'vim-plugin' }
+```
+
+The plugin only reports to Flow Buddy's daemon, so the rest of Flow Buddy has to be installed too ([docs/install.md](../docs/install.md)).
+
 It does nothing when the daemon isn't running, and retries every few seconds. To turn it off: `let g:flowbuddy_enabled = 0`.
 
 The facts are worked out by trying motions on the buffer, which stops after 15 ms per movement so long files and slow folding stay responsive (`let g:flowbuddy_facts_budget_ms = 30` to allow more). `:echo flowbuddy#stats()` shows how many movements were looked at, how many ran out of time, and the slowest in milliseconds.

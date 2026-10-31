@@ -35,7 +35,7 @@ const MODES = [
 
 export const Indicator = GObject.registerClass(
 class FlowBuddyIndicator extends PanelMenu.Button {
-    _init(link, openSettings, settings = null) {
+    _init(link, openSettings, settings = null, openTour = null) {
         super._init(0.0, 'Flow Buddy');
         this._link = link;
         this._nudge = null;
@@ -138,6 +138,11 @@ class FlowBuddyIndicator extends PanelMenu.Button {
                 this._command('pause', {seconds: 3600});
         });
         this.menu.addMenuItem(this._pause);
+
+        // How it all works, step by step, in the settings window.
+        const tourItem = new PopupMenu.PopupMenuItem('Take the tour…');
+        tourItem.connect('activate', () => openTour?.());
+        this.menu.addMenuItem(tourItem);
 
         // Every setting, and the terminal's tools, in a window.
         const settingsItem = new PopupMenu.PopupMenuItem('Settings…');

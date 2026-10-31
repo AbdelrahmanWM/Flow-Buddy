@@ -17,5 +17,13 @@
       <default>(-1, -1)</default>
       <summary>Where the kept tip was dragged to (-1, -1: the top-right corner)</summary>
     </key>
+    <key name="welcomed" type="b">
+      <default>false</default>
+      <summary>The first-run welcome was shown (or the tour taken)</summary>
+    </key>
+    <key name="open-tour" type="b">
+      <default>false</default>
+      <summary>Open the tour when the settings window next opens</summary>
+    </key>
   </schema>
 </schemalist>

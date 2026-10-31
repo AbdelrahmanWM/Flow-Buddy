@@ -79,6 +79,94 @@ pub struct Motion {
     pub facts: MotionFacts,
 }
 
+/// Counts past these are nonsense from a broken or hostile client; the
+/// daemon clamps what it's sent, so the arithmetic on them can't overflow.
+const MAX_COUNT: u32 = 100_000;
+const MAX_DELTA: i64 = 10_000_000;
+/// Ten thousand years from 1970, in milliseconds.
+const MAX_MS: u64 = 315_360_000_000_000;
+
+fn count(n: &mut Option<u32>) {
+    if let Some(n) = n {
+        *n = (*n).min(MAX_COUNT);
+    }
+}
+
+fn delta(n: &mut i64) {
+    *n = (*n).clamp(-MAX_DELTA, MAX_DELTA);
+}
+
+impl Motion {
+    /// Every number in a sensible range, and the end not before the start.
+    pub fn clamp(&mut self) {
+        self.start_ms = self.start_ms.min(MAX_MS);
+        self.end_ms = self.end_ms.clamp(self.start_ms, MAX_MS);
+        self.moves = self.moves.min(MAX_COUNT);
+        delta(&mut self.lines);
+        delta(&mut self.cols);
+        self.facts.clamp();
+    }
+}
+
+impl MotionFacts {
+    pub fn clamp(&mut self) {
+        let f = self;
+        for n in [
+            &mut f.paragraph_hops,
+            &mut f.window_lines,
+            &mut f.word_hops,
+            &mut f.word_end_hops,
+            &mut f.bigword_hops,
+            &mut f.find_hops,
+            &mut f.till_hops,
+            &mut f.star_hops,
+            &mut f.search_hops,
+            &mut f.line_number_digits,
+            &mut f.section_hops,
+            &mut f.sentence_hops,
+            &mut f.screen_line_hops,
+            &mut f.search_chars,
+            &mut f.revisits,
+        ] {
+            count(n);
+        }
+        if let Some(lines) = &mut f.paragraph_lines {
+            lines.truncate(16);
+            for l in lines {
+                *l = (*l).min(MAX_COUNT);
+            }
+        }
+        if let Some(v) = &mut f.view_scrolled {
+            delta(v);
+        }
+    }
+}
+
+impl OperatorReport {
+    pub fn clamp(&mut self) {
+        self.at_ms = self.at_ms.min(MAX_MS);
+        self.objects.truncate(16);
+        if let Some(r) = &mut self.range {
+            delta(&mut r.lines);
+            delta(&mut r.cols);
+            r.facts.clamp();
+            for n in [&mut r.words, &mut r.bigwords, &mut r.bigword_ends] {
+                count(n);
+            }
+            if let Some(b) = &mut r.back {
+                for n in [
+                    &mut b.words,
+                    &mut b.bigwords,
+                    &mut b.find_hops,
+                    &mut b.till_hops,
+                ] {
+                    count(n);
+                }
+            }
+        }
+    }
+}
+
 /// Facts about where a movement ended, computed by the editor from the
 /// text it has and sent as numbers only.
 ///

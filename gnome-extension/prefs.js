@@ -64,6 +64,12 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
             return;
         }
         await this._load();
+        // "Take the tour" in the top-bar menu opened this window for it.
+        const gs = this.getSettings();
+        if (gs.get_boolean('open-tour')) {
+            gs.set_boolean('open-tour', false);
+            this._tour();
+        }
     }
 
     // Read the settings and build the pages; again after a profile.
@@ -82,6 +88,7 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
             this._addPage(this._missingPage('Couldn\'t read the settings', String(e.message ?? e)));
             return;
         }
+        this._list = list;
         const {basic, groups, rules} = model.arrange(list.settings);
         this._addPage(this._generalPage(basic, list.profiles ?? [], list.settings));
         this._addPage(this._advancedPage(groups));
@@ -184,7 +191,10 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
             description: 'Each rule spots one habit. Turn one off, or make it wait for more repeats before a tip.',
         });
         for (const r of rules) {
-            const expander = new Adw.ExpanderRow({title: r.title, subtitle: r.description ?? r.id});
+            const expander = new Adw.ExpanderRow({
+                title: GLib.markup_escape_text(r.title, -1),
+                subtitle: GLib.markup_escape_text(r.description ?? r.id, -1),
+            });
             if (r.enabled)
                 expander.add_row(this._row(r.enabled, 'Gives tips'));
             if (r.threshold && r.default_threshold !== null)
@@ -368,7 +378,7 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
             description: 'How Flow Buddy works, in seven short parts, in a terminal.',
         });
         start.add(this._toolRow('Tour', 'What it watches and keeps, a sample tip and how to answer it, the settings that matter, and the learning tools',
-            'Start', () => this._inTerminal('tour')));
+            'Start', () => this._tour()));
         page.add(start);
 
         const look = new Adw.PreferencesGroup({
@@ -443,6 +453,152 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
         const dialog = new Adw.AlertDialog({heading: title, extra_child: scroll});
         dialog.add_response('close', 'Close');
         dialog.present(this._window);
+    }
+
+    // The tour, one part a page, from `flowbuddy tour --json`: the same
+    // text as in the terminal, with the checks, the sample tip and the
+    // settings live on their pages.
+    async _tour() {
+        this.getSettings().set_boolean('welcomed', true);
+        let tour;
+        try {
+            const r = await run(this._cli, ['tour', '--json']);
+            if (!r.ok)
+                throw new Error(r.err.trim() || 'flowbuddy tour --json failed');
+            tour = JSON.parse(r.out);
+        } catch (e) {
+            this._toast(`Couldn't start the tour: ${e.message ?? e}`);
+            return;
+        }
+        const markup = t => model.tourMarkup(t, x => GLib.markup_escape_text(x, -1));
+        const para = text => text.split('\n\n').filter(Boolean).map(p => new Gtk.Label({
+            label: markup(p), use_markup: true, wrap: true, xalign: 0, selectable: false,
+            width_chars: 50, max_width_chars: 70,
+        }));
+        const carousel = new Adw.Carousel({hexpand: true, vexpand: true, allow_scroll_wheel: false});
+        const parts = tour.parts ?? [];
+        parts.forEach((part, i) => {
+            const box = new Gtk.Box({
+                orientation: Gtk.Orientation.VERTICAL, spacing: 14,
+                margin_top: 18, margin_bottom: 18, margin_start: 24, margin_end: 24,
+            });
+            box.append(new Gtk.Label({
+                label: `${i + 1} of ${parts.length}`, xalign: 0, css_classes: ['dim-label', 'caption'],
+            }));
+            box.append(new Gtk.Label({label: part.title, xalign: 0, wrap: true, css_classes: ['title-2']}));
+            const extra = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL, spacing: 10});
+            if (part.action === 'sample')
+                box.append(this._tourSample());
+            for (const l of para(part.text ?? ''))
+                box.append(l);
+            if (part.action === 'checks')
+                box.append(this._tourChecks());
+            if (part.action === 'settings') {
+                const group = new Adw.PreferencesGroup();
+                for (const s of model.tourSettings(tour.settings ?? [], this._list?.settings ?? []))
+                    group.add(this._row(s));
+                box.append(group);
+            }
+            if (part.rows?.length) {
+                const group = new Adw.PreferencesGroup();
+                for (const [what, about] of part.rows) {
+                    group.add(new Adw.ActionRow({
+                        title: GLib.markup_escape_text(what, -1), subtitle: GLib.markup_escape_text(about, -1),
+                        css_classes: ['property'],
+                    }));
+                }
+                box.append(group);
+            }
+            for (const l of para(part.after ?? ''))
+                extra.append(l);
+            box.append(extra);
+            if (i === parts.length - 1) {
+                const practise = new Gtk.Button({label: 'Try a drill now', halign: Gtk.Align.START, css_classes: ['suggested-action', 'pill']});
+                practise.connect('clicked', () => this._inTerminal('practice'));
+                box.append(practise);
+            }
+            carousel.append(new Gtk.ScrolledWindow({
+                child: box, hscrollbar_policy: Gtk.PolicyType.NEVER, hexpand: true, vexpand: true,
+            }));
+        });
+
+        const back = new Gtk.Button({label: 'Back', sensitive: false});
+        const next = new Gtk.Button({label: 'Next', css_classes: ['suggested-action']});
+        const dialog = new Adw.Dialog({title: 'Welcome to Flow Buddy', content_width: 620, content_height: 640});
+        // The page it's on, or heading for: quick clicks mid-slide count.
+        let page = 0;
+        const go = i => {
+            page = Math.max(0, Math.min(parts.length - 1, i));
+            carousel.scroll_to(carousel.get_nth_page(page), true);
+            update();
+        };
+        const update = () => {
+            back.sensitive = page > 0;
+            next.label = page === parts.length - 1 ? 'Done' : 'Next';
+        };
+        carousel.connect('page-changed', (_c, i) => {
+            page = i;
+            update();
+        });
+        back.connect('clicked', () => go(page - 1));
+        next.connect('clicked', () => {
+            if (page >= parts.length - 1)
+                dialog.close();
+            else
+                go(page + 1);
+        });
+        const bottom = new Gtk.CenterBox({margin_top: 6, margin_bottom: 12, margin_start: 12, margin_end: 12});
+        bottom.set_start_widget(back);
+        bottom.set_center_widget(new Adw.CarouselIndicatorDots({carousel}));
+        bottom.set_end_widget(next);
+        const view = new Adw.ToolbarView({content: carousel});
+        view.add_top_bar(new Adw.HeaderBar());
+        view.add_bottom_bar(bottom);
+        dialog.set_child(view);
+        dialog.present(this._window);
+    }
+
+    // The doctor's checks, with how to fix what's missing.
+    _tourChecks() {
+        const group = new Adw.PreferencesGroup({description: 'Checking…'});
+        run(this._cli, ['doctor', '--json']).then(r => {
+            const j = JSON.parse(r.out);
+            const bad = j.checks.filter(c => !c.ok);
+            group.description = bad.length
+                ? `${j.checks.length - bad.length} of ${j.checks.length} checks pass. To fix:`
+                : `Yes: all ${j.checks.length} checks pass. Flow Buddy is watching.`;
+            for (const c of j.checks) {
+                const row = new Adw.ActionRow({
+                    title: GLib.markup_escape_text(c.what, -1),
+                    subtitle: c.ok ? '' : GLib.markup_escape_text(c.fix ?? '', -1),
+                });
+                row.add_prefix(new Gtk.Image({icon_name: c.ok ? 'emblem-ok-symbolic' : 'dialog-warning-symbolic'}));
+                group.add(row);
+            }
+        }).catch(e => {
+            group.description = `Couldn't run the checks: ${e.message ?? e}`;
+        });
+        return group;
+    }
+
+    // A button that shows the sample tip where tips show.
+    _tourSample() {
+        const box = new Gtk.Box({spacing: 12});
+        const button = new Gtk.Button({label: 'Show a sample tip', css_classes: ['pill']});
+        const said = new Gtk.Label({wrap: true, xalign: 0, hexpand: true, css_classes: ['dim-label']});
+        button.connect('clicked', async () => {
+            const r = await run(this._cli, ['tour', '--sample']).catch(e => ({ok: false, err: String(e)}));
+            if (!r.ok) {
+                said.label = 'The daemon isn\'t running, so there\'s nothing to show it: see the checks.';
+                return;
+            }
+            said.label = JSON.parse(r.out).shown === 'card'
+                ? 'It\'s on your screen now, under the top bar. Real tips look the same.'
+                : 'It\'s in your notifications now. Real tips look the same.';
+        });
+        box.append(button);
+        box.append(said);
+        return box;
     }
 
     // `flowbuddy practice` (or another command) in a terminal: the drill

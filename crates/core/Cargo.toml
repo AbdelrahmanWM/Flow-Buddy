@@ -2,6 +2,7 @@
 name = "flowbuddy-core"
 description = "Shared types and policy for Flow Buddy"
 version.workspace = true
+publish = false
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

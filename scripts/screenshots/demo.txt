@@ -1,0 +1,19 @@
+fn main() {
+    let config = Config::load("flow.toml");
+    let tips = config.tips();
+    let today = Local::now().date();
+    let limit = config.daily_limit();
+    let mut shown = 0;
+    let mut seen = Vec::new();
+
+    for tip in tips.iter().filter(|t| t.is_due(today)) {
+        if shown == limit {
+            break;
+        }
+        show(tip);
+        seen.push(tip.id());
+        shown += 1;
+    }
+
+    println!("{shown} tips today");
+}

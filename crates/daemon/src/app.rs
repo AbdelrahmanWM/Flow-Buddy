@@ -226,6 +226,8 @@ const MOTION_LEAD_MS: u64 = 1500;
 const MOTION_LAG_MS: u64 = 200;
 /// A click this long before the cursor moved made the move.
 const CLICK_LEAD_MS: u64 = 500;
+/// The longest pause: a year. Longer is a mistake (use mode off).
+const MAX_PAUSE_S: u64 = 366 * 86_400;
 /// A click this close to an editor taking focus was to bring it up.
 const FOCUS_CLICK_MS: u64 = 1000;
 
@@ -1174,10 +1176,10 @@ impl App {
     fn save_state(&mut self) {
         self.state.mode = Some(self.mode);
         self.state.paused_until = self.paused_until;
-        if let Some(path) = &self.state_path {
-            if let Err(e) = self.state.save(path) {
-                tracing::warn!(error = %e, "could not save state");
-            }
+        if let Some(path) = &self.state_path
+            && let Err(e) = self.state.save(path)
+        {
+            tracing::warn!(error = %e, "could not save state");
         }
     }
 
@@ -1376,7 +1378,7 @@ impl App {
     /// Code's count is checked.
     fn keys_for(&self, m: &Motion, conn: ConnId) -> u32 {
         let from = m.start_ms.saturating_sub(MOTION_LEAD_MS);
-        let to = m.end_ms + MOTION_LAG_MS;
+        let to = m.end_ms.saturating_add(MOTION_LAG_MS);
         let (keys, commands) = self
             .commands
             .iter()
@@ -1412,7 +1414,9 @@ impl App {
             return false;
         }
         !self.commands.iter().any(|c| {
-            c.kind == CmdKind::Motion && c.at_ms >= from && c.at_ms <= m.end_ms + MOTION_LAG_MS
+            c.kind == CmdKind::Motion
+                && c.at_ms >= from
+                && c.at_ms <= m.end_ms.saturating_add(MOTION_LAG_MS)
         })
     }
 
@@ -1427,7 +1431,7 @@ impl App {
             .commands
             .iter()
             .rev()
-            .skip_while(|c| c.at_ms > at_ms + MOTION_LAG_MS);
+            .skip_while(|c| c.at_ms > at_ms.saturating_add(MOTION_LAG_MS));
         let Some(op) = recent.next().filter(|c| {
             matches!(c.kind, CmdKind::Operator | CmdKind::VisualOp)
                 && at_ms.saturating_sub(c.at_ms) <= MOTION_LEAD_MS
@@ -2064,7 +2068,8 @@ impl App {
                     self.update_context(None, now_ms);
                 }
             }
-            ClientMsg::Motion(m) if self.resolved.editor == Some(conn) => {
+            ClientMsg::Motion(mut m) if self.resolved.editor == Some(conn) => {
+                m.clamp();
                 let ev = MotionEvent {
                     keys_used: self.keys_for(&m, conn),
                     clicked: self.clicked_move(&m),
@@ -2085,7 +2090,8 @@ impl App {
             }
             // From an editor that isn't the current context.
             ClientMsg::Motion(_) => {}
-            ClientMsg::Operator(report) if self.resolved.editor == Some(conn) => {
+            ClientMsg::Operator(mut report) if self.resolved.editor == Some(conn) => {
+                report.clamp();
                 let (keys_used, op_keys, backward) = self.keys_for_operator(report.at_ms);
                 let ev = OperatorEvent {
                     keys_used,
@@ -2143,7 +2149,7 @@ impl App {
                 ServerMsg::Ack { id }
             }
             Command::Pause { seconds } => {
-                self.paused_until = Some(now_s + seconds);
+                self.paused_until = Some(now_s + seconds.min(MAX_PAUSE_S));
                 self.buffer.clear(ClearReason::Paused);
                 self.tracker.invalidate();
                 self.engine.reset();
@@ -3387,6 +3393,78 @@ pub(crate) mod tests {
         app.on_nudge_response(&id, NudgeAction::MuteRule, 2_000);
         assert!(app.state.muted().is_empty());
         assert!(app.memory.history(10).is_empty());
+    }
+
+    /// Every kind of message, with each number in it at its extremes: the
+    /// daemon answers or ignores them, and never panics.
+    #[test]
+    fn extreme_numbers_dont_panic() {
+        let samples = [
+            r#"{"v":0,"type":"hello","client":"editor","client_version":"0","editor":"vim","pid":61234,"shows_tips":true}"#,
+            r#"{"v":0,"type":"focus","app_id":"org.gnome.Terminal","title":"","pid":41230}"#,
+            r#"{"v":0,"type":"ctx","event":"fg","command":"vim","shell_pid":51002,"tty":"/dev/pts/3"}"#,
+            r#"{"v":0,"type":"editor_focus","focused":true}"#,
+            r#"{"v":0,"type":"editor_mode","mode":"normal"}"#,
+            r#"{"v":0,"type":"motion","start_ms":1000,"end_ms":1900,"moves":12,"mode":"normal","lines":12,"cols":3,"facts":{"paragraph_hops":2,"window_lines":40,"word_hops":3,"view_scrolled":5,"revisits":2}}"#,
+            r#"{"v":0,"type":"operator","op":"delete","at_ms":1500,"objects":["i("]}"#,
+            r#"{"v":0,"type":"nudge_response","nudge_id":"n-1-1","action":"dismiss"}"#,
+            r#"{"v":0,"type":"command","id":9,"name":"pause","args":{"seconds":3600}}"#,
+            r#"{"v":0,"type":"command","id":10,"name":"recent_tips","args":{"limit":5}}"#,
+            r#"{"v":0,"type":"command","id":11,"name":"rule_threshold","args":{"rule_id":"vim.repeat-jk","threshold":8}}"#,
+            r#"{"v":0,"type":"command","id":12,"name":"sample_tip"}"#,
+        ];
+        let extremes = [
+            json!(0),
+            json!(-1),
+            json!(i64::MIN),
+            json!(i64::MAX),
+            json!(u64::MAX),
+            json!(u32::MAX),
+        ];
+        fn numbers(v: &serde_json::Value, path: Vec<String>, out: &mut Vec<Vec<String>>) {
+            match v {
+                serde_json::Value::Number(_) => out.push(path),
+                serde_json::Value::Object(m) => {
+                    for (k, v) in m {
+                        let mut p = path.clone();
+                        p.push(k.clone());
+                        numbers(v, p, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut tried = 0;
+        for sample in samples {
+            let base: serde_json::Value = serde_json::from_str(sample).unwrap();
+            let mut paths = Vec::new();
+            numbers(&base, Vec::new(), &mut paths);
+            for path in paths.iter().filter(|p| p[0] != "v") {
+                for x in &extremes {
+                    let mut v = base.clone();
+                    let mut at = &mut v;
+                    for k in path {
+                        at = &mut at[k.as_str()];
+                    }
+                    *at = x.clone();
+                    let Ok(msg) = flowbuddy_core::ipc::decode_client(&v.to_string()) else {
+                        continue;
+                    };
+                    let mut app = test_app(CoachingMode::Active);
+                    let _ext = ext_hello(&mut app, 1);
+                    let _vim = editor(&mut app, 3, EditorKind::Vim, 210);
+                    focus(&mut app, "org.gnome.Terminal", 100);
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        send(&mut app, 3, msg, 2_000);
+                        app.tick(10_000);
+                        app.tick(u64::MAX / 2);
+                    }));
+                    assert!(result.is_ok(), "{v}");
+                    tried += 1;
+                }
+            }
+        }
+        assert!(tried > 40, "{tried}");
     }
 
     #[test]

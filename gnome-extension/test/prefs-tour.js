@@ -35,6 +35,12 @@ const wait = ms => new Promise(r => GLib.timeout_add(0, ms, () => {
     r();
     return GLib.SOURCE_REMOVE;
 }));
+// Until the carousel has slid to page `n`, or 5 s: slow machines animate
+// slowly.
+const settle = async (carousel, n) => {
+    for (let t = 0; t < 50 && Math.abs(carousel.get_position() - n) > 0.01; t++)
+        await wait(100);
+};
 
 const app = new Adw.Application({application_id: 'test.flowbuddy.prefs'});
 app.connect('activate', () => {
@@ -61,13 +67,13 @@ app.connect('activate', () => {
                 button(dialog, 'Next').emit('clicked');
                 await wait(150);
             }
-            await wait(800);
+            await settle(carousel, 6);
             check('Done at the end', !!button(dialog, 'Done'), true);
             button(dialog, 'Back').emit('clicked');
-            await wait(800);
+            await settle(carousel, 5);
             check('Back', Math.round(carousel.get_position()), 5);
             button(dialog, 'Next').emit('clicked');
-            await wait(800);
+            await settle(carousel, 6);
             button(dialog, 'Done').emit('clicked');
             await wait(800);
             check('Done closes it', win.get_visible_dialog(), null);

@@ -2,7 +2,7 @@
 # Remove Flow Buddy for the current user.
 #
 #   scripts/uninstall.sh            remove programs, keep your data
-#   scripts/uninstall.sh --purge    also delete stats, memory, config and state
+#   scripts/uninstall.sh --purge    also delete stats, memory, config, state and the extension's settings
 #   scripts/uninstall.sh --dry-run  print what would be done
 
 set -euo pipefail
@@ -103,6 +103,11 @@ fi
 if ((purge)); then
     say "Deleting all Flow Buddy data"
     run rm -rf "$share_dir" "$config_dir" "$state_dir"
+    # The extension's own settings: shortcuts, where a kept tip was, and
+    # whether the first-run welcome was shown.
+    if command -v dconf >/dev/null; then
+        run dconf reset -f /org/gnome/shell/extensions/flowbuddy/
+    fi
 else
     echo "    kept your data in $share_dir, $config_dir and $state_dir (use --purge to delete)"
 fi

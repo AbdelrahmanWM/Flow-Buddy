@@ -444,6 +444,42 @@ impl Resolver {
         self.in_terminal(window_pid)
     }
 
+    /// Why nothing is watched, in a few words, when [`Self::resolve`]
+    /// says unsupported: for `flowbuddy status`.
+    pub fn why_unsupported(&self) -> String {
+        let Some(app_id) = self.focus.app_id.as_deref() else {
+            return "nothing has focus".into();
+        };
+        if contains(&self.ids.vscode, app_id) {
+            if let Some((_, e)) = self.editor_in(self.focus.pid, &[EditorKind::Vscode])
+                && e.focused == Some(false)
+                && e.panel != Some(Panel::Terminal)
+            {
+                return "a VS Code panel has focus, not the editor".into();
+            }
+        } else if !contains(&self.ids.terminals, app_id) {
+            return format!("{app_id} isn't coached");
+        }
+        let Some(window) = self.focus.pid else {
+            return "the focused window's process isn't known".into();
+        };
+        let shell = self
+            .shells
+            .iter()
+            .filter(|(pid, _)| self.descends_from(**pid, window))
+            .max_by_key(|(_, s)| s.updated_ms)
+            .map(|(_, s)| &s.state);
+        match shell {
+            None => "no shell here has reported; is its hook loaded? (flowbuddy doctor)".into(),
+            Some(ShellState::Fg(cmd)) => format!("a command is running: {cmd}"),
+            Some(ShellState::Prompt { vi: false }) => {
+                "the shell isn't in vi mode (set -o vi; zsh: bindkey -v; fish: fish_vi_key_bindings)"
+                    .into()
+            }
+            Some(ShellState::Prompt { vi: true }) => "nothing here is coached".into(),
+        }
+    }
+
     /// What has focus in a terminal window whose process is `window_pid`.
     fn in_terminal(&self, window_pid: u32) -> Resolved {
         // Terminals like GNOME Terminal serve every window from one process,
@@ -550,6 +586,27 @@ pub(crate) mod tests {
 
     fn kind(r: &Resolver) -> ContextKind {
         r.resolve().kind
+    }
+
+    #[test]
+    fn why_nothing_is_watched() {
+        let mut r = resolver();
+        assert_eq!(r.why_unsupported(), "nothing has focus");
+        r.set_focus(Some("org.gnome.Nautilus".into()), Some(900));
+        assert_eq!(r.why_unsupported(), "org.gnome.Nautilus isn't coached");
+        r.set_focus(Some("org.gnome.Terminal".into()), Some(100));
+        assert!(
+            r.why_unsupported()
+                .starts_with("no shell here has reported")
+        );
+        r.shell_report_t(200, ShellState::Fg("flowbuddy".into()), 1);
+        assert_eq!(kind(&r), ContextKind::Unsupported);
+        assert_eq!(r.why_unsupported(), "a command is running: flowbuddy");
+        r.shell_report_t(200, ShellState::Prompt { vi: false }, 2);
+        assert!(
+            r.why_unsupported()
+                .starts_with("the shell isn't in vi mode")
+        );
     }
 
     #[test]

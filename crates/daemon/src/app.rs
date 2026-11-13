@@ -104,6 +104,9 @@ pub struct App {
     /// For the VS Code pack: when the last click came, and the last VS Code
     /// shortcut (Ctrl-P, Ctrl-`) as its letter and time.
     last_click_ms: Option<u64>,
+    /// When another window last took focus: a click then was to get there,
+    /// not to do something inside it.
+    window_switch_ms: Option<u64>,
     /// When an editor last took focus: a click then was to bring it up.
     editor_focus_ms: Option<u64>,
     last_shortcut: Option<(char, u64)>,
@@ -209,6 +212,8 @@ const MAX_RAISE: u32 = 3;
 const UI_SHORTCUT_MS: u64 = 15_000;
 /// A click this recent did.
 const UI_CLICK_MS: u64 = 1500;
+/// A click this soon after another window took focus was the switch.
+const WINDOW_SWITCH_MS: u64 = 2500;
 
 /// A VS Code finding waits this long for editor activity after its keys;
 /// in the editor a heartbeat follows within about half a second.
@@ -342,6 +347,7 @@ impl App {
             claude_checked_ms: None,
             claude_probe: crate::claude::vim_mode_on,
             last_click_ms: None,
+            window_switch_ms: None,
             editor_focus_ms: None,
             last_shortcut: None,
             mode_guess: ModeGuess::default(),
@@ -1348,7 +1354,12 @@ impl App {
             .is_some_and(|(k, t)| k == key && recent(t, UI_SHORTCUT_MS))
         {
             How::Shortcut
-        } else if self.last_click_ms.is_some_and(|t| recent(t, UI_CLICK_MS)) {
+        } else if self.last_click_ms.is_some_and(|t| recent(t, UI_CLICK_MS))
+            // Coming back from another window, the click was the way in.
+            && !self
+                .window_switch_ms
+                .is_some_and(|t| recent(t, WINDOW_SWITCH_MS))
+        {
             How::Click
         } else {
             How::Other
@@ -1798,7 +1809,11 @@ impl App {
 
     /// The focused window changed (from the GNOME extension, or X11).
     pub fn set_focus(&mut self, app_id: Option<String>, pid: Option<u32>, now_ms: u64) {
-        self.resolver.set_focus(app_id.map(|a| window_id(&a)), pid);
+        let app_id = app_id.map(|a| window_id(&a));
+        if app_id.as_deref() != self.resolver.focused_app() {
+            self.window_switch_ms = Some(now_ms);
+        }
+        self.resolver.set_focus(app_id, pid);
         self.resolver.prune();
         self.update_context(None, now_ms);
     }
@@ -3839,6 +3854,40 @@ pub(crate) mod tests {
             opened(&mut app, at);
         }
         assert!(nudges(&mut ext).is_empty());
+    }
+
+    #[test]
+    fn a_click_back_into_vscode_isnt_a_click_into_its_terminal() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
+        let terminal = |app: &mut App, at| {
+            send(
+                app,
+                2,
+                ClientMsg::EditorFocus {
+                    focused: false,
+                    panel: Some(Panel::Terminal),
+                },
+                at,
+            )
+        };
+        // Three times: from the browser, a click on VS Code's terminal.
+        for at in [10_000, 20_000, 30_000] {
+            app.set_focus(Some("google-chrome".into()), Some(600), at - 5_000);
+            app.on_pointer_click(at - 300);
+            app.set_focus(Some("code_code".into()), Some(500), at - 250);
+            terminal(&mut app, at);
+        }
+        assert!(nudges(&mut ext).is_empty());
+        // Staying in VS Code and clicking into the terminal is the habit.
+        for at in [50_000, 60_000, 70_000] {
+            app.on_pointer_click(at - 300);
+            terminal(&mut app, at);
+        }
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].rule_id, "vscode.terminal-toggle");
     }
 
     #[test]

@@ -17,6 +17,24 @@ function cliPath(pathVar, home, exists) {
     return null;
 }
 
+// The daemon to start when none is running: `flowbuddyd`, on the PATH or
+// where the installer puts it. None when starting is turned off, when a
+// socket is there (something's listening, or about to), or when the full
+// install's service exists: if that's stopped, you stopped it.
+function daemonToStart({enabled, socketExists, serviceExists, pathVar, home, exists}) {
+    if (!enabled || socketExists || serviceExists)
+        return null;
+    for (const dir of (pathVar || '').split(':').filter(Boolean)) {
+        if (exists(`${dir}/flowbuddyd`))
+            return `${dir}/flowbuddyd`;
+    }
+    for (const place of PLACES) {
+        if (exists(`${home}/${place}d`))
+            return `${home}/${place}d`;
+    }
+    return null;
+}
+
 // A value as you'd type it.
 function shown(v) {
     if (v === null || v === undefined)
@@ -274,4 +292,4 @@ function register(vscode, run, subscriptions, cli = () => null) {
         subscriptions.push(vscode.commands.registerCommand(id, () => fn().catch(failed)));
 }
 
-module.exports = {cliPath, settingItems, choices, typed, needsConfirm, doctorText, progressText, mapHtml, DRILLS, register};
+module.exports = {cliPath, daemonToStart, settingItems, choices, typed, needsConfirm, doctorText, progressText, mapHtml, DRILLS, register};

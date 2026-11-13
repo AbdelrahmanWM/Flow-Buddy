@@ -121,7 +121,9 @@ function register(vscode, link, subscriptions) {
             md.isTrusted = {enabledCommands: ['flowbuddy.gotIt', 'flowbuddy.notHelpful']};
             item.tooltip = md;
             item.show();
-            if (style(vscode) === 'notification')
+            // "desktop" with a daemon that has no desktop: here instead.
+            const how = style(vscode);
+            if (how === 'notification' || (how === 'desktop' && link.editorOnly))
                 ask(nudge, notificationText(nudge));
         },
         hide() {

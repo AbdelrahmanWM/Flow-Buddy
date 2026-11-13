@@ -772,8 +772,29 @@ function rangeFacts(text, first, last) {
     return out;
 }
 
+// A cursor move of one step, as the key that makes it: a line down or up
+// (j, k), a character right or left on the same line (l, h). Anything
+// else is null. With vscodevim an extension can't see keys, so when the
+// daemon reads no keyboard, runs of these stand in for jjjj and llll.
+function stepKey(from, to) {
+    if (!from || !to)
+        return null;
+    if (to.line === from.line + 1)
+        return 'j';
+    if (to.line === from.line - 1)
+        return 'k';
+    if (to.line !== from.line || from.col === null || to.col === null)
+        return null;
+    if (to.col === from.col + 1)
+        return 'l';
+    if (to.col === from.col - 1)
+        return 'h';
+    return null;
+}
+
 if (typeof module !== 'undefined') {
     module.exports = {
+        stepKey,
         computeFacts,
         rangeFacts,
         lineRange,

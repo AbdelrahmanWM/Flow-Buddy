@@ -17,7 +17,7 @@ The binaries use `libxkbcommon` to read keys in your keyboard layout; every GNOM
 
 ## From source
 
-With Rust (via [rustup](https://rustup.rs), 1.88 or newer):
+With Rust (via [rustup](https://rustup.rs), 1.89 or newer):
 
 ```sh
 git clone https://github.com/AbdelrahmanWM/Flow-Buddy && cd Flow-Buddy

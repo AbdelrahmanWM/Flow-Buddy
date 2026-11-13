@@ -19,7 +19,8 @@ if set -q FLOWBUDDY_SOCKET
 else if set -q XDG_RUNTIME_DIR
     set -g __flowbuddy_sock $XDG_RUNTIME_DIR/flowbuddy.sock
 else
-    set -g __flowbuddy_sock /tmp/flowbuddy.sock
+    # A folder that's yours alone, never /tmp.
+    set -g __flowbuddy_sock /run/user/(id -u)/flowbuddy.sock
 end
 set -g __flowbuddy_tty ""
 if tty -s

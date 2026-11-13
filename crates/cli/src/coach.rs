@@ -447,14 +447,22 @@ pub fn ask(ai: &AiConfig, prompt: &str, out: &mut dyn Write) -> Option<Result<()
             if let Some(model) = &ai.model {
                 command.extend(["--model".into(), model.clone()]);
             }
-            let dir = std::env::temp_dir().join("flowbuddy-coach");
-            let _ = std::fs::create_dir_all(&dir);
-            run_in(&command, prompt, timeout, out, Some(&dir)).map_err(|e| match (e, &ai.model) {
-                (RunError::Failed(why), Some(model)) => RunError::Failed(format!(
-                    "{why}. If Claude Code said the model is wrong, [ai] model is \"{model}\": try `flowbuddy config set ai.model opus`"
-                )),
-                (e, _) => e,
-            })
+            // Ours alone: Claude Code reads settings (and hooks) from the
+            // folder it runs in, so it mustn't be one another user can
+            // write to, like /tmp.
+            flowbuddy_core::paths::scratch_dir("coach")
+                .map_err(|e| RunError::Failed(format!("no private folder to run in: {e}")))
+                .and_then(|dir| {
+                    let result = run_in(&command, prompt, timeout, out, Some(&dir));
+                    let _ = std::fs::remove_dir_all(&dir);
+                    result
+                })
+                .map_err(|e| match (e, &ai.model) {
+                    (RunError::Failed(why), Some(model)) => RunError::Failed(format!(
+                        "{why}. If Claude Code said the model is wrong, [ai] model is \"{model}\": try `flowbuddy config set ai.model opus`"
+                    )),
+                    (e, _) => e,
+                })
         }
         AiProvider::Anthropic => api_key(ai, "ANTHROPIC_API_KEY").and_then(|key| {
             let url = ai

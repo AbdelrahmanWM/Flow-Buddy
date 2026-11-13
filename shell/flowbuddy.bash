@@ -23,7 +23,8 @@
 [[ $- == *i* ]] || return 0
 command -v flowbuddy >/dev/null 2>&1 || return 0
 
-__flowbuddy_sock="${FLOWBUDDY_SOCKET:-${XDG_RUNTIME_DIR:-/tmp}/flowbuddy.sock}"
+# Where the daemon listens: a folder that's yours alone, never /tmp.
+__flowbuddy_sock="${FLOWBUDDY_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$UID}/flowbuddy.sock}"
 __flowbuddy_tty="$(tty 2>/dev/null)" || __flowbuddy_tty=""
 __flowbuddy_at_prompt=0
 __flowbuddy_prev=""

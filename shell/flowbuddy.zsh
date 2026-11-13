@@ -14,7 +14,8 @@
 [[ -o interactive ]] || return 0
 (( $+commands[flowbuddy] )) || return 0
 
-typeset -g __flowbuddy_sock="${FLOWBUDDY_SOCKET:-${XDG_RUNTIME_DIR:-/tmp}/flowbuddy.sock}"
+# Where the daemon listens: a folder that's yours alone, never /tmp.
+typeset -g __flowbuddy_sock="${FLOWBUDDY_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$UID}/flowbuddy.sock}"
 typeset -g __flowbuddy_tty=""
 __flowbuddy_tty=$(tty 2>/dev/null) || __flowbuddy_tty=""
 typeset -g __flowbuddy_prev=""

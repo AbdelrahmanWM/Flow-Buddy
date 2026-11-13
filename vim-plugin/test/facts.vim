@@ -322,6 +322,21 @@ function! Test_unknown_ex_command() abort
   call assert_false(flowbuddy#is_unknown_ex(''))
 endfunction
 
+function! Test_socket_owner() abort
+  " A file of yours passes; one of root's doesn't; a missing one doesn't.
+  let mine = tempname()
+  call writefile([], mine)
+  call assert_equal(flowbuddy#uid(), flowbuddy#owner(mine))
+  call assert_true(flowbuddy#socket_is_mine(mine))
+  if flowbuddy#uid() != 0
+    call assert_equal(0, flowbuddy#owner('/etc/passwd'))
+    call assert_false(flowbuddy#socket_is_mine('/etc/passwd'))
+  endif
+  call assert_equal(-1, flowbuddy#owner(mine . '.missing'))
+  call assert_false(flowbuddy#socket_is_mine(mine . '.missing'))
+  call delete(mine)
+endfunction
+
 function! Test_tip_lines() abort
   let msg = {'title': 'Delete inside', 'text': 'That took 6 keys. `di(` does it from anywhere inside, in 3.',
         \ 'explain': ['`di(` delete inside the brackets']}

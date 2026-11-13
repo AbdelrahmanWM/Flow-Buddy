@@ -977,10 +977,7 @@ fn write_tips() -> anyhow::Result<()> {
         eprintln!("flowbuddy: left out a tip ({why})");
     }
     let path = tips_file();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, serde_json::to_string_pretty(&cache)?)?;
+    flowbuddy_core::paths::write_private(&path, serde_json::to_string_pretty(&cache)?.as_bytes())?;
     println!("{} personal tips written", cache.tips.len());
     Ok(())
 }
@@ -1066,10 +1063,10 @@ fn run_review(
     }
     let parsed = review::parse(&String::from_utf8_lossy(&answer)).map_err(anyhow::Error::msg)?;
     let path = review_file();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, serde_json::to_string_pretty(&parsed.proposals)?)?;
+    flowbuddy_core::paths::write_private(
+        &path,
+        serde_json::to_string_pretty(&parsed.proposals)?.as_bytes(),
+    )?;
     Ok(Some(parsed))
 }
 
@@ -1245,7 +1242,8 @@ fn practice_cmd(
         None => {}
     }
     let d = flowbuddy_core::practice::drill(family, rounds, practice::seed());
-    let dir = std::env::temp_dir().join(format!("flowbuddy-practice-{}", std::process::id()));
+    // Private: Vim reads the drill from here.
+    let dir = flowbuddy_core::paths::scratch_dir("practice")?;
     let drill_path = practice::write_drill(&dir, &d)?;
     let out = dir.join("result.json");
     let cmd = practice::editor_command(editor, &drill_path, &out);

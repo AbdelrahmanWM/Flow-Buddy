@@ -69,12 +69,9 @@ pub fn load(path: &Path) -> Vec<Session> {
 }
 
 pub fn save(path: &Path, sessions: &[Session]) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
     let from = sessions.len().saturating_sub(KEEP);
     let text = serde_json::to_string_pretty(&sessions[from..]).map_err(std::io::Error::other)?;
-    std::fs::write(path, text)
+    flowbuddy_core::paths::write_private(path, text.as_bytes())
 }
 
 /// What the plugin writes when the drill ends.
@@ -208,11 +205,12 @@ pub fn seed() -> u64 {
 }
 
 pub fn write_drill(dir: &Path, drill: &Drill) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
     let path = dir.join("drill.json");
-    std::fs::write(
+    flowbuddy_core::paths::write_private(
         &path,
-        serde_json::to_string(drill).map_err(std::io::Error::other)?,
+        serde_json::to_string(drill)
+            .map_err(std::io::Error::other)?
+            .as_bytes(),
     )?;
     Ok(path)
 }

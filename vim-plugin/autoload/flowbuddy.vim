@@ -56,9 +56,47 @@ function! s:now_ms() abort
   return s:epoch_base_ms + float2nr(reltimefloat(reltime(s:started)) * 1000)
 endfunction
 
+" Whether the socket at `path` belongs to you. Your runtime folder is
+" yours alone, so anything in it does. Anywhere else (over ssh the socket
+" is in /tmp) another user could have put a socket of their own there, to
+" pose as the daemon: the file's owner is checked, once per file.
+let s:owner_checked = {}
+function! flowbuddy#socket_is_mine(path) abort
+  let runtime = empty($XDG_RUNTIME_DIR) ? '' : fnamemodify($XDG_RUNTIME_DIR, ':p:h')
+  if !empty(runtime) && fnamemodify(a:path, ':p:h') ==# runtime
+    return 1
+  endif
+  let key = a:path . ' ' . getftime(a:path)
+  if !has_key(s:owner_checked, key)
+    let s:owner_checked = {}
+    let s:owner_checked[key] = flowbuddy#owner(a:path) == flowbuddy#uid()
+  endif
+  return s:owner_checked[key]
+endfunction
+
+" The user id that owns `path`, or -1.
+function! flowbuddy#owner(path) abort
+  if has('nvim')
+    let st = luaeval('(vim.uv or vim.loop).fs_stat(_A)', a:path)
+    return type(st) == v:t_dict ? get(st, 'uid', -1) : -1
+  endif
+  let out = trim(system('stat -c %u -- ' . shellescape(a:path)))
+  return v:shell_error || out !~# '^\d\+$' ? -1 : str2nr(out)
+endfunction
+
+function! flowbuddy#uid() abort
+  if !exists('s:uid')
+    let s:uid = has('nvim') ? luaeval('(vim.uv or vim.loop).getuid()') : str2nr(trim(system('id -u')))
+  endif
+  return s:uid
+endfunction
+
 function! s:open() abort
   let path = s:socket_path()
   if !filereadable(path) && getftype(path) !=# 'socket'
+    return 0
+  endif
+  if !flowbuddy#socket_is_mine(path)
     return 0
   endif
   try

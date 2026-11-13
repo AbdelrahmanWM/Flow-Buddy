@@ -24,7 +24,7 @@ Flow Buddy reads your keyboard. That is a lot of trust to ask for, so this docum
 | On X11 desktops: the focused window's class and pid (not its title), read from the X server | Daemon | Memory only | Replaced on every focus change |
 | Whether Claude Code's Vim mode is on: only `editorMode` is read from `~/.claude/settings.json` | Daemon | Memory only | Checked every few seconds |
 | The command's **shape** from a fixed list: exactly `cd ..`, `cd ../..`, the previous command's long last argument again, the previous command with one word changed. The hook compares the lines inside the shell; neither line is sent | Shell hooks | Counts in the stats, like any habit | Like any habit |
-| That a click happened (no position, no target) | The daemon, from the mouse's input device | Not kept: it marks the Vim mode as unknown, and a cursor move that came with it gets the keys that would have done it | Immediately |
+| That a click happened (no position, no target) | GNOME Shell extension (or the mouse's input device, if the daemon can read it) | Not kept: it marks the Vim mode as unknown, and a cursor move that came with it gets the keys that would have done it | Immediately |
 | Whether a VS Code editor has focus, vscodevim's mode, and cursor movements as deltas, counts and flags (never text, characters, file names or positions) | VS Code companion (`vscode-extension/`) | Memory only | Replaced on every report |
 | Which text objects (`iw`, `i(`, `ap`…) a delete, change or yank covered, by name only | Vim plugin, VS Code companion | Memory only | Used for one nudge, then dropped |
 | That Vim said a `:` command doesn't exist (E492), not which command. The daemon pairs it with the command's name, which it already has from your keys, to suggest the right one | Vim plugin | Memory only | Used for one tip, then dropped |
@@ -57,7 +57,8 @@ All of this lives in `~/.local/share/flowbuddy/`.
 | Buffer cleared on context change, pause and shutdown | Unit tests | #8 |
 | Devices are only read, never grabbed | The daemon never calls `EVIOCGRAB`, so it can never block your input | #6 |
 | Stored data contains no typed text | `database_never_contains_typed_text` types a session with a password, a file name, a search and shell commands, then checks every text value in the database | #27, #30 |
-| Socket is private | `$XDG_RUNTIME_DIR/flowbuddy.sock`, permissions `0600`, checked in tests | #10 |
+| Socket is private | `$XDG_RUNTIME_DIR/flowbuddy.sock` (never `/tmp`), permissions `0600`, checked in tests. Over ssh, where the forwarded socket is in `/tmp`, the Vim plugin only connects to one your user owns | #10 |
+| Files are private | The database, state, recordings and practice scores are written owner-only (`0600`, in `0700` folders). `flowbuddy coach` runs Claude Code in a private, empty folder | #266 |
 | Messages can't crash the daemon | Lines over 16 KB are refused; every number from an editor is clamped to a sane range; `extreme_numbers_dont_panic` sends every kind of message with each number at its extremes | #266 |
 | No network in the daemon | `crates/daemon/tests/no_network.rs` fails if network code or an HTTP client gets into the daemon or the crates it's built from; the systemd unit allows only Unix sockets (`RestrictAddressFamilies=AF_UNIX`); on X11, only a display on this machine is watched, never one forwarded over ssh | #9, #266 |
 
@@ -65,8 +66,10 @@ All of this lives in `~/.local/share/flowbuddy/`.
 
 To read keys, the daemon needs access to `/dev/input/event*`. There are two ways to get it:
 
-- **Recommended:** `scripts/install.sh --with-udev` installs a udev rule that tags keyboards and mice with `uaccess`. systemd-logind then grants access only to the user sitting at the machine, and only while their session is active.
+- **Recommended:** `scripts/install.sh --with-udev` installs a udev rule that tags keyboards with `uaccess`. systemd-logind then grants access only to the user sitting at the machine, and only while their session is active.
 - **Not recommended:** joining the `input` group. It lets **any** program you run read all keystrokes, at any time, including over ssh.
+
+**What this changes on your machine.** Either way, the access goes to your user, not to Flow Buddy alone: with the udev rule, any program you run can read the keyboard while your session is active. On X11 that was already so. On Wayland it wasn't: programs normally only see the keys typed into their own windows, and the rule removes that protection for programs running as you. Linux has no way to grant keyboard access to a single program without running it as root. If that trade isn't right for your machine, the coming editor-only level (#257) coaches from the editor plugins alone, with no keyboard access. `scripts/uninstall.sh` removes the rule.
 
 The comparison, and what was found on a real machine, is in [spikes/evdev.md](spikes/evdev.md).
 

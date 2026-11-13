@@ -39,6 +39,15 @@ augroup flowbuddy
   autocmd VimResume * call flowbuddy#on_focus(1)
   autocmd VimLeavePre * call flowbuddy#stop()
   autocmd CmdlineLeave : call flowbuddy#on_cmdline_leave()
+  " The keys typed in moving modes, when the daemon reads no keyboard
+  " (see "Keys" in autoload/flowbuddy.vim for what is never sent).
+  if exists('##KeyInputPre')
+    autocmd KeyInputPre * call flowbuddy#on_key(v:char, mode(1), v:event.typed)
+  elseif has('nvim')
+    " Neovim: `typed` is what you pressed, before mappings; empty for
+    " keys a mapping or a script produced.
+    execute "lua vim.on_key(function(key, typed) if typed and typed ~= '' then pcall(vim.fn['flowbuddy#on_key'], typed, vim.api.nvim_get_mode().mode, true) end end, vim.api.nvim_create_namespace('flowbuddy'))"
+  endif
 augroup END
 
 " Started from a session or late: VimEnter has already happened.

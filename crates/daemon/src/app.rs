@@ -1205,20 +1205,27 @@ impl App {
         let text_changed = config.text != self.config.text;
         self.config = config;
         if text_changed {
-            let msg = self.editor_config();
-            for c in self.clients.values() {
-                if c.kind == Some(ClientKind::Editor) {
-                    let _ = c.tx.send(msg.clone());
-                }
-            }
+            self.send_editor_config();
         }
         tracing::info!("config reloaded");
     }
 
     fn editor_config(&self) -> ServerMsg {
-        ServerMsg::EditorConfig(flowbuddy_core::ipc::EditorConfig::from_config(
-            &self.config.text,
-        ))
+        ServerMsg::EditorConfig(flowbuddy_core::ipc::EditorConfig {
+            // Without a keyboard, the editors say what's typed.
+            keys: self.keyboards == 0,
+            ..flowbuddy_core::ipc::EditorConfig::from_config(&self.config.text)
+        })
+    }
+
+    /// Tell every editor plugin what it may do and send.
+    fn send_editor_config(&self) {
+        let msg = self.editor_config();
+        for c in self.clients.values() {
+            if c.kind == Some(ClientKind::Editor) {
+                let _ = c.tx.send(msg.clone());
+            }
+        }
     }
 
     /// Findings and adoptions go here: coaching policy and storage hook in
@@ -1822,7 +1829,12 @@ impl App {
     }
 
     pub fn set_keyboards(&mut self, n: usize) {
+        let changed = (self.keyboards == 0) != (n == 0);
         self.keyboards = n;
+        // The editors' keys are wanted only while no keyboard is read.
+        if changed {
+            self.send_editor_config();
+        }
     }
 
     /// No keyboard is read: the editors say where you are and what you
@@ -3591,6 +3603,24 @@ pub(crate) mod tests {
         let before = app.commands.len();
         send(&mut app, 4, typed(20_000), 20_650);
         assert_eq!(app.commands.len(), before);
+
+        // The plugin is told to send keys while there's no keyboard, and
+        // to stop when one appears.
+        let wants = |rx: &mut UnboundedReceiver<ServerMsg>| {
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|m| match m {
+                    ServerMsg::EditorConfig(c) => Some(c.keys),
+                    _ => None,
+                })
+                .last()
+        };
+        let mut app = test_app(CoachingMode::Active);
+        let mut vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        assert_eq!(wants(&mut vim), Some(true));
+        app.set_keyboards(1);
+        assert_eq!(wants(&mut vim), Some(false));
+        app.set_keyboards(2);
+        assert_eq!(wants(&mut vim), None, "nothing changed");
 
         // With a keyboard, the same keys from the plugin are ignored.
         let mut app = test_app(CoachingMode::Active);

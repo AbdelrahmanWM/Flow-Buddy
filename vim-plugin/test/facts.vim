@@ -322,6 +322,76 @@ function! Test_unknown_ex_command() abort
   call assert_false(flowbuddy#is_unknown_ex(''))
 endfunction
 
+function! Test_keys_to_send() abort
+  " [key, mode, typed] -> what's sent. As Vim reports them: the character
+  " after f arrives in Normal mode, the one after r in Replace mode.
+  call flowbuddy#drop_keys()
+  let cases = [
+        \ ['j', 'n', 1, 'j'], ['5', 'n', 1, '5'], ['<C-D>', 'n', 1, '<C-D>'],
+        \ ['f', 'n', 1, 'f'], ['b', 'n', 1, 'x'],
+        \ ['r', 'n', 1, 'r'], ['S', 'R', 1, 'x'],
+        \ ['d', 'n', 1, 'd'], ['t', 'no', 1, 't'], [',', 'no', 1, 'x'],
+        \ ['c', 'n', 1, 'c'], ['i', 'no', 1, 'i'], ['w', 'no', 1, 'w'],
+        \ ['h', 'i', 1, ''], ['<Esc>', 'i', 1, ''], ['<BS>', 'i', 1, ''],
+        \ [':', 'n', 1, ':'], ['w', 'c', 1, ''], ['<CR>', 'c', 1, ''],
+        \ ['/', 'n', 1, '/'], ['p', 'c', 1, ''],
+        \ ['R', 'n', 1, 'R'], ['z', 'R', 1, ''],
+        \ ['v', 'n', 1, 'v'], ['j', 'v', 1, 'j'], ['r', 'v', 1, 'r'], ['q', 'v', 1, 'x'],
+        \ ['"', 'n', 1, '"'], ['r', 'n', 1, 'r'], ['p', 'n', 1, 'p'],
+        \ ['g', 'n', 1, 'g'], ['f', 'n', 1, 'f'], ['j', 'n', 1, 'j'],
+        \ ['m', 'n', 1, 'm'], ['t', 'n', 1, 't'], ['k', 'n', 1, 'k'],
+        \ ['^', 'n', 0, ''], ['j', 'n', 0, ''],
+        \ ['a', 't', 1, ''], ['y', 'r', 1, ''], ['y', 'rm', 1, ''], ['x', 's', 1, ''],
+        \ ['<LeftMouse>', 'n', 1, '<LeftMouse>'],
+        \ ]
+  for [key, mode, typed, want] in cases
+    call assert_equal(want, flowbuddy#key_to_send(key, mode, typed), key . ' in ' . mode)
+  endfor
+endfunction
+
+function! Test_typed_text_is_never_kept() abort
+  if !exists('##KeyInputPre')
+    return
+  endif
+  new
+  call setline(1, ['alpha beta gamma', 'delta (epsilon) zeta', '', 'eta'])
+  " As plugin/flowbuddy.vim sets it up.
+  augroup flowbuddy_test_keys
+    autocmd!
+    autocmd KeyInputPre * call flowbuddy#on_key(v:char, mode(1), v:event.typed)
+  augroup END
+  call flowbuddy#drop_keys()
+  call flowbuddy#want_keys(1)
+  " Moving keys; then text in Insert mode, on the command line, in a
+  " search, after r, and in Replace mode.
+  call feedkeys("jjk", 'tx')
+  call feedkeys("iSECRETtext\<Esc>", 'tx')
+  call feedkeys(":let g:typed_pw = 'HUNTER'\<CR>", 'tx')
+  call feedkeys("/zeta\<CR>", 'tx')
+  call feedkeys("rZ", 'tx')
+  call feedkeys("RQUIET\<Esc>", 'tx')
+  call feedkeys("fadw", 'tx')
+  let sent = flowbuddy#pending_keys()
+  call assert_equal('jjki:/rxRfxdw', sent)
+  for text in ['SECRET', 'HUNTER', 'zeta', 'Z', 'QUIET', 'text']
+    call assert_true(stridx(sent, text) < 0, text . ' in ' . sent)
+  endfor
+  " Not wanted (the daemon reads a keyboard): nothing is kept at all.
+  call flowbuddy#want_keys(0)
+  call flowbuddy#drop_keys()
+  call feedkeys("jjdd", 'tx')
+  call assert_equal('', flowbuddy#pending_keys())
+  " Nor during a practice drill, nor with g:flowbuddy_keys off.
+  call flowbuddy#want_keys(1)
+  let g:flowbuddy_keys = 0
+  call feedkeys("jj", 'tx')
+  call assert_equal('', flowbuddy#pending_keys())
+  unlet g:flowbuddy_keys
+  call flowbuddy#want_keys(0)
+  autocmd! flowbuddy_test_keys
+  bwipe!
+endfunction
+
 function! Test_socket_owner() abort
   " A file of yours passes; one of root's doesn't; a missing one doesn't.
   let mine = tempname()

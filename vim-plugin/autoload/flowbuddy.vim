@@ -115,6 +115,9 @@ function! s:open() abort
     let s:ch = v:null
     return 0
   endif
+  " A new daemon says again whether it wants keys.
+  let s:send_keys = 0
+  call flowbuddy#drop_keys()
   " Over ssh this pid is on another machine: it would only confuse.
   call s:send({'type': 'hello', 'client': 'editor', 'client_version': s:VERSION,
         \ 'editor': has('nvim') ? 'nvim' : 'vim',
@@ -160,6 +163,10 @@ function! s:send(msg) abort
   if !s:connected()
     return
   endif
+  " Keys typed before this go first, so the daemon sees things in order.
+  if !empty(s:keys) && get(a:msg, 'type', '') !=# 'editor_keys'
+    call flowbuddy#flush_keys()
+  endif
   let line = json_encode(extend({'v': 0}, a:msg)) . "\n"
   try
     if has('nvim')
@@ -203,6 +210,10 @@ function! flowbuddy#on_daemon(line) abort
   endif
   let type = get(msg, 'type', '')
   if type ==# 'editor_config'
+    let s:send_keys = get(msg, 'keys', v:false) is v:true
+    if !s:send_keys
+      call flowbuddy#drop_keys()
+    endif
     let s:text = {'shapes': get(msg, 'shapes', v:false) is v:true,
           \ 'snippets': get(msg, 'snippets', v:false) is v:true,
           \ 'exclude': get(msg, 'exclude', []), 'projects': get(msg, 'projects', [])}
@@ -215,6 +226,102 @@ function! flowbuddy#on_daemon(line) abort
     let found = s:text.snippets ? flowbuddy#snippets_for(get(msg, 'times', [])) : []
     call s:send({'type': 'snippets', 'id': get(msg, 'id', 0), 'snippets': found})
   endif
+endfunction
+
+" Keys ------------------------------------------------------------------------
+
+" When the daemon reads no keyboard (an editor-only install), it asks for
+" the keys you type in Normal, Visual and Operator-pending mode: those are
+" commands. Keys typed in Insert, Replace, Command-line or Terminal mode,
+" or at a prompt, are your text, and are never sent or even kept here. The
+" character after f, F, t, T or r is sent as "x": after r it's text too.
+" Only keys you typed count: not what a mapping or a script ran.
+" Off altogether with `let g:flowbuddy_keys = 0`.
+let s:send_keys = 0
+let s:keys = ''
+let s:keys_start = 0
+let s:keys_end = 0
+let s:keys_timer = -1
+let s:mask_next = 0
+let s:arg_next = 0
+
+" What to send for `key` (in Vim's notation, as keytrans() gives it) typed
+" in `mode`: the key, "x" for a masked one, or '' for nothing.
+function! flowbuddy#key_to_send(key, mode, typed) abort
+  if !a:typed
+    return ''
+  endif
+  if s:mask_next
+    let s:mask_next = 0
+    return 'x'
+  endif
+  if a:mode !~# "^n" && a:mode !~# "^[vV\<C-v>]"
+    let s:arg_next = 0
+    return ''
+  endif
+  if s:arg_next
+    " A register, a mark, or the second key of g, z, [ and the like.
+    let s:arg_next = 0
+    return a:key
+  endif
+  if a:key =~# '^[fFtTr]$'
+    let s:mask_next = 1
+  elseif a:key =~# '^["m''`@gzZ\[\]]$' || a:key ==? '<C-W>'
+        \ || (a:key ==# 'q' && reg_recording() ==# '')
+    let s:arg_next = 1
+  endif
+  return a:key
+endfunction
+
+" KeyInputPre (Vim) and vim.on_key (Neovim) come here with each key.
+function! flowbuddy#on_key(char, mode, typed) abort
+  if !s:send_keys || s:simulating || !get(g:, 'flowbuddy_keys', 1) || get(g:, 'flowbuddy_practising', 0)
+    let s:mask_next = 0
+    let s:arg_next = 0
+    return
+  endif
+  let k = flowbuddy#key_to_send(keytrans(a:char), a:mode, a:typed)
+  if k ==# ''
+    return
+  endif
+  let now = s:now_ms()
+  if empty(s:keys)
+    let s:keys_start = now
+  endif
+  let s:keys .= k
+  let s:keys_end = now
+  call timer_stop(s:keys_timer)
+  if strchars(s:keys) >= 120
+    call flowbuddy#flush_keys()
+  else
+    let s:keys_timer = timer_start(150, {-> flowbuddy#flush_keys()})
+  endif
+endfunction
+
+function! flowbuddy#flush_keys() abort
+  call timer_stop(s:keys_timer)
+  if empty(s:keys)
+    return
+  endif
+  let msg = {'type': 'editor_keys', 'keys': s:keys, 'start_ms': s:keys_start, 'end_ms': s:keys_end}
+  let s:keys = ''
+  call s:send(msg)
+endfunction
+
+function! flowbuddy#drop_keys() abort
+  call timer_stop(s:keys_timer)
+  let s:keys = ''
+  let s:mask_next = 0
+  let s:arg_next = 0
+endfunction
+
+" For the tests: the keys waiting to be sent, and switching sending on.
+function! flowbuddy#pending_keys() abort
+  return s:keys
+endfunction
+
+function! flowbuddy#want_keys(on) abort
+  let s:send_keys = a:on
 endfunction
 
 " Tips ------------------------------------------------------------------------

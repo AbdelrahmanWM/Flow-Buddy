@@ -428,6 +428,10 @@ pub struct EditorConfig {
     pub exclude: Vec<String>,
     /// Folders snippets may come from, expanded.
     pub projects: Vec<String>,
+    /// The daemon reads no keyboard: send the keys typed in Normal, Visual
+    /// and Operator-pending mode (`editor_keys`). Off, none are sent.
+    #[serde(default)]
+    pub keys: bool,
 }
 
 impl EditorConfig {
@@ -441,6 +445,7 @@ impl EditorConfig {
                 .iter()
                 .map(|p| crate::text::expand(p))
                 .collect(),
+            keys: false,
         }
     }
 }

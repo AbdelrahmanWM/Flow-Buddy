@@ -440,7 +440,7 @@ fn main() {
             let status: Result<flowbuddy_core::ipc::Status, String> =
                 Client::connect(ClientKind::Cli)
                     .and_then(|mut c| c.query(Command::Status))
-                    .map_err(|e| format!("{e:#}"))
+                    .map_err(|e| client::why(&e))
                     .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()));
             let daemon = status.as_ref().ok().map(|s| s.daemon_version.clone());
             let checks = doctor::checks(&doctor::Env::gather(status));
@@ -635,9 +635,9 @@ fn status(watch: bool) -> anyhow::Result<()> {
     let mut client = match Client::connect(ClientKind::Cli) {
         Ok(c) => c,
         Err(e) => {
-            println!("flowbuddyd: not running");
-            println!("  {e:#}");
+            println!("flowbuddyd: not running ({})", client::why(&e));
             println!("  start it with: systemctl --user start flowbuddyd");
+            println!("  flowbuddy doctor checks everything else");
             std::process::exit(3);
         }
     };
@@ -1769,7 +1769,7 @@ fn run_tour() -> anyhow::Result<()> {
     let status = || {
         Client::connect(ClientKind::Cli)
             .and_then(|mut c| c.query(Command::Status))
-            .map_err(|e| format!("{e:#}"))
+            .map_err(|e| client::why(&e))
             .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
     };
     let checks = || doctor::checks(&doctor::Env::gather(status()));

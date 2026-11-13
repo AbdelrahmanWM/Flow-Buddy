@@ -441,6 +441,10 @@ pub struct Status {
     pub paused_until: Option<u64>,
     /// Context *kind* only, never keys or titles.
     pub context: String,
+    /// When the context is unsupported, why, in a few words: "a command is
+    /// running: git", "the shell isn't in vi mode".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// The focused app's id, e.g. `code_code`. Never its title.
     #[serde(default)]
     pub app: Option<String>,

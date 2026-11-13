@@ -388,6 +388,7 @@ mod tests {
             mode: CoachingMode::Balanced,
             paused_until: None,
             context: "unsupported".into(),
+            why: None,
             app: None,
             confident: false,
             mode_from_editor: false,

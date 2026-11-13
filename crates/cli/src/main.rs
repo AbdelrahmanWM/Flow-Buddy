@@ -708,7 +708,10 @@ fn print_status(s: &Status) {
 
 fn context_line(s: &Status) -> String {
     if s.context == "unsupported" {
-        "unsupported (not watching)".into()
+        match &s.why {
+            Some(why) => format!("unsupported (not watching: {why})"),
+            None => "unsupported (not watching)".into(),
+        }
     } else if s.mode_from_editor {
         format!("{} (mode from the editor)", s.context)
     } else if s.confident {
@@ -1975,6 +1978,7 @@ mod status_tests {
             mode: CoachingMode::Active,
             paused_until: None,
             context: context.into(),
+            why: None,
             app: Some("code_code".into()),
             confident,
             mode_from_editor: false,
@@ -1986,6 +1990,18 @@ mod status_tests {
             keyboards: 1,
             clients: vec![],
         }
+    }
+
+    #[test]
+    fn unsupported_says_why() {
+        let s = Status {
+            why: Some("a command is running: git".into()),
+            ..status("unsupported", false)
+        };
+        assert_eq!(
+            context_line(&s),
+            "unsupported (not watching: a command is running: git)"
+        );
     }
 
     #[test]

@@ -2321,6 +2321,8 @@ impl App {
             mode: self.mode,
             paused_until: self.paused_until.filter(|&t| t > now_s),
             context: self.resolved.kind.as_str().into(),
+            why: (self.resolved.kind == ContextKind::Unsupported)
+                .then(|| self.resolver.why_unsupported()),
             app: self.resolver.focused_app().map(Into::into),
             layout: Some(self.keymap_layout.0.clone()),
             layout_note: self.keymap_layout.1.clone(),

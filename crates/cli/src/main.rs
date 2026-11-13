@@ -671,19 +671,24 @@ fn print_status(s: &Status) {
     if let Some(timing) = &s.timing {
         println!("  handling:  {timing}");
     }
-    println!("  keyboards: {}", s.keyboards);
+    if s.editor_only {
+        println!("  keyboards: none (editor only: the editor plugins say what you type)");
+    } else {
+        println!("  keyboards: {}", s.keyboards);
+        if s.keyboards == 0 {
+            println!("             no readable keyboard: run scripts/install.sh --with-udev,");
+            println!("             or see docs/privacy.md#keyboard-access. Until then, keys");
+            println!("             come from the Vim plugin, in its moving modes");
+        }
+    }
     if let Some(filter) = &s.tip_filter {
         println!("  filter:    {filter}");
     }
-    if let Some(layout) = &s.layout {
+    if let Some(layout) = s.layout.as_ref().filter(|_| !s.editor_only) {
         match &s.layout_note {
             Some(note) => println!("  layout:    {layout} ({note})"),
             None => println!("  layout:    {layout}"),
         }
-    }
-    if s.keyboards == 0 {
-        println!("             no readable keyboard: run scripts/install.sh --with-udev,");
-        println!("             or see docs/privacy.md#keyboard-access");
     }
     let clients: Vec<String> = s
         .clients
@@ -1977,6 +1982,7 @@ mod status_tests {
             paused_until: None,
             context: context.into(),
             why: None,
+            editor_only: false,
             app: Some("code_code".into()),
             confident,
             mode_from_editor: false,

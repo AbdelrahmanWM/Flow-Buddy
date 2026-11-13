@@ -189,6 +189,11 @@ pub struct Resolver {
     /// Claude Code's Vim mode is on (its settings say so).
     claude_vim: bool,
     tmux: Box<dyn Tmux>,
+    /// Started with `--editor-only`: the editors say where you are.
+    editor_only: bool,
+    /// Something has said which window has focus (the GNOME extension, or
+    /// X11). Until then, the editors' own focus is all there is.
+    focus_seen: bool,
 }
 
 const VIMS: [EditorKind; 2] = [EditorKind::Vim, EditorKind::Nvim];
@@ -206,7 +211,38 @@ impl Resolver {
             editors: HashMap::new(),
             claude_vim: false,
             tmux: Box::new(NoTmux),
+            editor_only: false,
+            focus_seen: false,
         }
+    }
+
+    pub fn set_editor_only(&mut self, on: bool) {
+        self.editor_only = on;
+    }
+
+    /// Whether the context comes from the editors alone: `--editor-only`,
+    /// or nothing reports window focus (KDE on Wayland, say).
+    pub fn editors_decide(&self) -> bool {
+        self.editor_only || !self.focus_seen
+    }
+
+    /// The context when only the editors say where you are: the one that
+    /// has focus, the latest if several say so. One that never said (a
+    /// terminal without focus events) counts while it's the last active.
+    fn editor_context(&self) -> Resolved {
+        self.editors
+            .iter()
+            .filter(|(_, e)| e.focused != Some(false))
+            .max_by_key(|(_, e)| (e.focused == Some(true), e.focused_ms.max(e.active_ms)))
+            .map_or(Resolved::UNSUPPORTED, |(id, e)| Resolved {
+                kind: if e.kind == EditorKind::Vscode {
+                    ContextKind::VsCodeVim
+                } else {
+                    ContextKind::TerminalVim
+                },
+                shell_pid: None,
+                editor: Some(*id),
+            })
     }
 
     pub fn set_ids(&mut self, ids: AppIds) {
@@ -215,6 +251,7 @@ impl Resolver {
 
     pub fn set_focus(&mut self, app_id: Option<String>, pid: Option<u32>) {
         self.focus = Focus { app_id, pid };
+        self.focus_seen = true;
     }
 
     pub fn set_claude_vim(&mut self, on: bool) {
@@ -393,6 +430,9 @@ impl Resolver {
     }
 
     pub fn resolve(&self) -> Resolved {
+        if self.editors_decide() {
+            return self.editor_context();
+        }
         let Some(app_id) = self.focus.app_id.as_deref() else {
             return Resolved::UNSUPPORTED;
         };
@@ -447,6 +487,13 @@ impl Resolver {
     /// Why nothing is watched, in a few words, when [`Self::resolve`]
     /// says unsupported: for `flowbuddy status`.
     pub fn why_unsupported(&self) -> String {
+        if self.editors_decide() {
+            return if self.editors.is_empty() {
+                "no editor with the Flow Buddy plugin is open".into()
+            } else {
+                "no editor has focus".into()
+            };
+        }
         let Some(app_id) = self.focus.app_id.as_deref() else {
             return "nothing has focus".into();
         };
@@ -589,8 +636,43 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn with_no_focus_source_the_editors_say_where_you_are() {
+        let mut r = resolver();
+        assert_eq!(kind(&r), ContextKind::Unsupported);
+        assert_eq!(
+            r.why_unsupported(),
+            "no editor with the Flow Buddy plugin is open"
+        );
+        // A Vim that says it has focus is the context; one that lost it isn't.
+        r.editor_hello(7, EditorKind::Vim, Some(300), 1);
+        r.editor_focus(7, true, None, 2);
+        assert_eq!(r.resolve().kind, ContextKind::TerminalVim);
+        assert_eq!(r.resolve().editor, Some(7));
+        r.editor_focus(7, false, None, 3);
+        assert_eq!(kind(&r), ContextKind::Unsupported);
+        assert_eq!(r.why_unsupported(), "no editor has focus");
+        // VS Code, focused later, wins over a Vim that never said.
+        r.editor_hello(8, EditorKind::Nvim, None, 4);
+        assert_eq!(
+            r.resolve().editor,
+            Some(8),
+            "the only one that may have focus"
+        );
+        r.editor_hello(9, EditorKind::Vscode, Some(500), 5);
+        r.editor_focus(9, true, None, 6);
+        assert_eq!(r.resolve().kind, ContextKind::VsCodeVim);
+        // Once something reports window focus, it decides, as before.
+        r.set_focus(Some("org.gnome.Nautilus".into()), Some(900));
+        assert_eq!(kind(&r), ContextKind::Unsupported);
+        // Unless the daemon was started for the editors only.
+        r.set_editor_only(true);
+        assert_eq!(r.resolve().kind, ContextKind::VsCodeVim);
+    }
+
+    #[test]
     fn why_nothing_is_watched() {
         let mut r = resolver();
+        r.set_focus(None, None);
         assert_eq!(r.why_unsupported(), "nothing has focus");
         r.set_focus(Some("org.gnome.Nautilus".into()), Some(900));
         assert_eq!(r.why_unsupported(), "org.gnome.Nautilus isn't coached");

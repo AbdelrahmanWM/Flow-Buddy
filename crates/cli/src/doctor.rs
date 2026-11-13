@@ -389,6 +389,7 @@ mod tests {
             paused_until: None,
             context: "unsupported".into(),
             why: None,
+            editor_only: false,
             app: None,
             confident: false,
             mode_from_editor: false,

@@ -261,6 +261,16 @@ pub enum ClientMsg {
     EditorMode { mode: EditorMode },
     /// Editor clients: a finished movement and facts about where it ended.
     Motion(Motion),
+    /// Editor clients: keys typed in Normal, Visual or Operator-pending
+    /// mode, in Vim's notation (`jjj5w<C-D>`), typed between `start_ms`
+    /// and `end_ms`. Never keys from Insert or Command-line mode, and the
+    /// character after `f`, `t` or `r` is sent as `x`. Used only while the
+    /// daemon reads no keyboard itself.
+    EditorKeys {
+        keys: String,
+        start_ms: u64,
+        end_ms: u64,
+    },
     /// Editor clients: an operator's range matched these text objects.
     Operator(OperatorReport),
     /// Editor clients: something happened in the editor's UI, by name.
@@ -304,7 +314,7 @@ pub struct TipSnippet {
 }
 
 impl ClientMsg {
-    pub const TYPES: [&'static str; 14] = [
+    pub const TYPES: [&'static str; 15] = [
         "hello",
         "focus",
         "ctx",
@@ -314,6 +324,7 @@ impl ClientMsg {
         "editor_focus",
         "editor_mode",
         "motion",
+        "editor_keys",
         "operator",
         "editor_event",
         "editor_mappings",
@@ -370,6 +381,11 @@ pub enum ServerMsg {
     Welcome {
         daemon_version: String,
         mode: CoachingMode,
+        /// The daemon reads no keyboard and shows tips only through the
+        /// editors: an editor that would leave tips to the desktop shows
+        /// them itself.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        editor_only: bool,
     },
     Ack {
         id: Option<u64>,
@@ -441,6 +457,9 @@ pub struct Status {
     pub paused_until: Option<u64>,
     /// Context *kind* only, never keys or titles.
     pub context: String,
+    /// The daemon was started to read no keyboard (`--editor-only`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub editor_only: bool,
     /// When the context is unsupported, why, in a few words: "a command is
     /// running: git", "the shell isn't in vi mode".
     #[serde(default, skip_serializing_if = "Option::is_none")]

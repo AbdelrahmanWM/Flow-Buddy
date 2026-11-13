@@ -79,6 +79,8 @@ pub struct App {
     /// Unix seconds.
     paused_until: Option<u64>,
     keyboards: usize,
+    /// Started with `--editor-only`: no keyboard is read.
+    editor_only: bool,
     resolver: Resolver,
     resolved: Resolved,
     tracker: Tracker,
@@ -329,6 +331,7 @@ impl App {
             mode: state.mode.unwrap_or(config.coaching.default_mode),
             paused_until: state.paused_until,
             keyboards: 0,
+            editor_only: false,
             resolver,
             resolved,
             tracker: Tracker::new(Flavor::Vim),
@@ -1822,6 +1825,21 @@ impl App {
         self.keyboards = n;
     }
 
+    /// No keyboard is read: the editors say where you are and what you
+    /// type in their moving modes.
+    pub fn set_editor_only(&mut self, on: bool) {
+        self.editor_only = on;
+        self.resolver.set_editor_only(on);
+    }
+
+    /// How many editor plugins are connected, for exiting when idle.
+    pub fn editors_connected(&self) -> usize {
+        self.clients
+            .values()
+            .filter(|c| c.kind == Some(ClientKind::Editor))
+            .count()
+    }
+
     pub fn on_conn(&mut self, ev: ConnEvent, now_ms: u64) {
         match ev {
             ConnEvent::Opened { id, tx } => {
@@ -1883,6 +1901,7 @@ impl App {
                     ServerMsg::Welcome {
                         daemon_version: flowbuddy_core::VERSION.into(),
                         mode: self.mode,
+                        editor_only: self.editor_only,
                     },
                 );
                 // The welcome has no pause in it: a top bar that connects
@@ -2105,6 +2124,31 @@ impl App {
             }
             // From an editor that isn't the current context.
             ClientMsg::Motion(_) => {}
+            ClientMsg::EditorKeys {
+                keys,
+                start_ms,
+                end_ms,
+            } if self.resolved.editor == Some(conn) && self.keyboards == 0 => {
+                let (keys, clicks) = flowbuddy_core::editor::typed_keys(&keys);
+                // Times from another program: not in the future, in order.
+                let end = end_ms.min(now_ms);
+                let start = start_ms.min(end);
+                if clicks > 0 {
+                    self.on_pointer_click(start);
+                }
+                let gaps = keys.len().saturating_sub(1).max(1) as u64;
+                for (i, key) in keys.into_iter().enumerate() {
+                    let stroke = KeyStroke {
+                        key,
+                        repeat: false,
+                        at_ms: start + (end - start) * i as u64 / gaps,
+                    };
+                    self.on_key(stroke, now_ms);
+                }
+            }
+            // The keyboard says it better, and only once; or it's from an
+            // editor that isn't where you are.
+            ClientMsg::EditorKeys { .. } => {}
             ClientMsg::Operator(mut report) if self.resolved.editor == Some(conn) => {
                 report.clamp();
                 let (keys_used, op_keys, backward) = self.keys_for_operator(report.at_ms);
@@ -2336,6 +2380,7 @@ impl App {
             mode: self.mode,
             paused_until: self.paused_until.filter(|&t| t > now_s),
             context: self.resolved.kind.as_str().into(),
+            editor_only: self.editor_only,
             why: (self.resolved.kind == ContextKind::Unsupported)
                 .then(|| self.resolver.why_unsupported()),
             app: self.resolver.focused_app().map(Into::into),
@@ -2455,7 +2500,8 @@ pub(crate) mod tests {
             rx.try_recv().unwrap(),
             ServerMsg::Welcome {
                 daemon_version: flowbuddy_core::VERSION.into(),
-                mode: CoachingMode::Passive
+                mode: CoachingMode::Passive,
+                editor_only: false,
             }
         );
     }
@@ -3482,6 +3528,86 @@ pub(crate) mod tests {
             }
         }
         assert!(tried > 40, "{tried}");
+    }
+
+    /// With no keyboard read, the Vim plugin's keys feed the rules; with
+    /// one, they're ignored, so nothing is counted twice.
+    #[test]
+    fn editor_keys_stand_in_for_the_keyboard() {
+        let paragraph = |at: u64| Motion {
+            start_ms: at,
+            end_ms: at + 600,
+            moves: 7,
+            mode: EditorMode::Normal,
+            lines: 7,
+            cols: 0,
+            facts: flowbuddy_core::editor::MotionFacts {
+                paragraph_hops: Some(1),
+                ..Default::default()
+            },
+        };
+        let typed = |at: u64| ClientMsg::EditorKeys {
+            keys: "jjjjjjj".into(),
+            start_ms: at,
+            end_ms: at + 600,
+        };
+        // Editor only: nothing reports window focus, no keyboard.
+        let mut app = test_app(CoachingMode::Active);
+        app.set_editor_only(true);
+        let mut vim = tipping_editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            100,
+        );
+        assert_eq!(app.context().kind, ContextKind::TerminalVim);
+        send(&mut app, 3, typed(10_000), 10_650);
+        send(&mut app, 3, ClientMsg::Motion(paragraph(10_000)), 10_700);
+        let tips: Vec<Nudge> = std::iter::from_fn(|| vim.try_recv().ok())
+            .filter_map(|m| match m {
+                ServerMsg::Nudge(n) => Some(n),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tips.len(), 1, "{tips:?}");
+        assert_eq!(
+            glossary::plain(&tips[0].text),
+            "That took 7 keys. } gets there in 1, or 7j in 2."
+        );
+        // From an editor that isn't where you are: nothing.
+        let _other = editor(&mut app, 4, EditorKind::Vim, 220);
+        let before = app.commands.len();
+        send(&mut app, 4, typed(20_000), 20_650);
+        assert_eq!(app.commands.len(), before);
+
+        // With a keyboard, the same keys from the plugin are ignored.
+        let mut app = test_app(CoachingMode::Active);
+        app.set_editor_only(true);
+        app.set_keyboards(1);
+        let _vim = tipping_editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            100,
+        );
+        send(&mut app, 3, typed(10_000), 10_650);
+        assert!(app.commands.is_empty());
     }
 
     #[test]

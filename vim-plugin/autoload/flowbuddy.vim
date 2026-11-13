@@ -618,8 +618,64 @@ function! flowbuddy#start() abort
   endif
   let s:last = getpos('.')[1:2]
   let s:last_top = line('w0')
-  call s:open()
+  if !s:open() && flowbuddy#start_daemon()
+    " It needs a moment to listen.
+    call timer_start(400, {-> s:connected() || s:open()})
+  endif
   let s:reconnect_timer = timer_start(s:RECONNECT_MS, function('s:retry'), {'repeat': -1})
+endfunction
+
+" With no daemon running and no service to run one (an editor-only
+" install), start one that reads no keyboard: `flowbuddyd --editor-only
+" --exit-when-idle`, on its own, so it outlives this Vim and serves the
+" next; it exits by itself ten minutes after the last editor closes.
+" Never over ssh, and never when the full install's service exists: if
+" that's stopped, you stopped it. Off with `let g:flowbuddy_start_daemon = 0`.
+" Returns the program to start, or '' for none.
+function! flowbuddy#daemon_to_start() abort
+  if !get(g:, 'flowbuddy_start_daemon', 1) || !empty($SSH_CONNECTION)
+    return ''
+  endif
+  if getftype(s:socket_path()) ==# 'socket'
+    return ''
+  endif
+  let config = empty($XDG_CONFIG_HOME) ? expand('~/.config') : $XDG_CONFIG_HOME
+  if filereadable(config . '/systemd/user/flowbuddyd.service')
+    return ''
+  endif
+  for bin in [get(g:, 'flowbuddy_daemon', ''), exepath('flowbuddyd'), expand('~/.local/bin/flowbuddyd')]
+    if !empty(bin) && executable(bin)
+      return bin
+    endif
+  endfor
+  return ''
+endfunction
+
+let s:daemon_started = 0
+function! flowbuddy#start_daemon() abort
+  if s:daemon_started
+    return 0
+  endif
+  let bin = flowbuddy#daemon_to_start()
+  if empty(bin)
+    return 0
+  endif
+  let s:daemon_started = 1
+  let cmd = [bin, '--editor-only', '--exit-when-idle']
+  " In a session of its own, so closing this terminal doesn't end it.
+  if executable('setsid')
+    let cmd = ['setsid', '-f'] + cmd
+  endif
+  try
+    if has('nvim')
+      call jobstart(cmd, {'detach': v:true})
+    else
+      call job_start(cmd, {'in_io': 'null', 'out_io': 'null', 'err_io': 'null', 'stoponexit': ''})
+    endif
+  catch
+    return 0
+  endtry
+  return 1
 endfunction
 
 function! flowbuddy#stop() abort

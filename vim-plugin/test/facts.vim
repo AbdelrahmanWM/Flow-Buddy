@@ -392,6 +392,44 @@ function! Test_typed_text_is_never_kept() abort
   bwipe!
 endfunction
 
+function! Test_starting_the_daemon() abort
+  let dir = tempname()
+  call mkdir(dir . '/config/systemd/user', 'p')
+  let fake = dir . '/flowbuddyd'
+  call writefile(['#!/bin/sh', 'echo "$@" >> ' . shellescape(dir . '/started')], fake)
+  call setfperm(fake, 'rwx------')
+  let [old_socket, old_config, old_ssh] = [$FLOWBUDDY_SOCKET, $XDG_CONFIG_HOME, $SSH_CONNECTION]
+  let $FLOWBUDDY_SOCKET = dir . '/none.sock'
+  let $XDG_CONFIG_HOME = dir . '/config'
+  let $SSH_CONNECTION = ''
+  let g:flowbuddy_daemon = fake
+  " Turned off: nothing.
+  let g:flowbuddy_start_daemon = 0
+  call assert_equal('', flowbuddy#daemon_to_start())
+  unlet g:flowbuddy_start_daemon
+  " Over ssh: nothing.
+  let $SSH_CONNECTION = '10.0.0.1 1 10.0.0.2 22'
+  call assert_equal('', flowbuddy#daemon_to_start())
+  let $SSH_CONNECTION = ''
+  " The full install's service exists: it's the one to run it.
+  call writefile([], dir . '/config/systemd/user/flowbuddyd.service')
+  call assert_equal('', flowbuddy#daemon_to_start())
+  call delete(dir . '/config/systemd/user/flowbuddyd.service')
+  " Otherwise it's started, for the editors only, and only once.
+  call assert_equal(fake, flowbuddy#daemon_to_start())
+  call assert_equal(1, flowbuddy#start_daemon())
+  call assert_equal(0, flowbuddy#start_daemon())
+  let waited = 0
+  while !filereadable(dir . '/started') && waited < 40
+    sleep 50m
+    let waited += 1
+  endwhile
+  call assert_equal(['--editor-only --exit-when-idle'], readfile(dir . '/started'))
+  let [$FLOWBUDDY_SOCKET, $XDG_CONFIG_HOME, $SSH_CONNECTION] = [old_socket, old_config, old_ssh]
+  unlet g:flowbuddy_daemon
+  call delete(dir, 'rf')
+endfunction
+
 function! Test_socket_owner() abort
   " A file of yours passes; one of root's doesn't; a missing one doesn't.
   let mine = tempname()

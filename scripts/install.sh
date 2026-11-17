@@ -181,7 +181,7 @@ if command -v code >/dev/null || [[ -d $HOME/.vscode ]]; then
         fi
     done
     run mkdir -p "$vscode_ext"
-    for f in "$repo"/vscode-extension/*.js "$repo"/vscode-extension/*.json "$repo"/vscode-extension/README.md; do
+    for f in "$repo"/vscode-extension/*.js "$repo"/vscode-extension/*.json "$repo"/vscode-extension/README.md "$repo"/vscode-extension/icon.png; do
         run install -m644 "$f" "$vscode_ext/${f##*/}"
     done
     run mkdir -p "$vscode_ext/walkthrough"

@@ -5,6 +5,24 @@ let &runtimepath = expand('<sfile>:p:h:h') . ',' . &runtimepath
 runtime autoload/flowbuddy.vim
 set lines=30 columns=80
 
+" Floating tip windows: Vim's popups, Neovim's floats.
+function! s:floats() abort
+  if has('nvim')
+    return filter(nvim_list_wins(), 'nvim_win_get_config(v:val).relative !=# ""')
+  endif
+  return popup_list()
+endfunction
+
+function! s:close_floats() abort
+  if has('nvim')
+    for w in s:floats()
+      call nvim_win_close(w, v:true)
+    endfor
+  else
+    call popup_clear()
+  endif
+endfunction
+
 function! s:buf(lines) abort
   %delete _
   call setline(1, a:lines)
@@ -350,16 +368,20 @@ function! Test_keys_to_send() abort
 endfunction
 
 function! Test_typed_text_is_never_kept() abort
-  if !exists('##KeyInputPre')
+  if !exists('##KeyInputPre') && !has('nvim')
     return
   endif
   new
   call setline(1, ['alpha beta gamma', 'delta (epsilon) zeta', '', 'eta'])
   " As plugin/flowbuddy.vim sets it up.
-  augroup flowbuddy_test_keys
-    autocmd!
-    autocmd KeyInputPre * call flowbuddy#on_key(v:char, mode(1), v:event.typed)
-  augroup END
+  if has('nvim')
+    lua vim.on_key(function(key, typed) if typed and typed ~= '' then pcall(vim.fn['flowbuddy#on_key'], typed, vim.api.nvim_get_mode().mode, true) end end, vim.api.nvim_create_namespace('flowbuddy_test'))
+  else
+    augroup flowbuddy_test_keys
+      autocmd!
+      autocmd KeyInputPre * call flowbuddy#on_key(v:char, mode(1), v:event.typed)
+    augroup END
+  endif
   call flowbuddy#drop_keys()
   call flowbuddy#want_keys(1)
   " Moving keys; then text in Insert mode, on the command line, in a
@@ -388,7 +410,11 @@ function! Test_typed_text_is_never_kept() abort
   call assert_equal('', flowbuddy#pending_keys())
   unlet g:flowbuddy_keys
   call flowbuddy#want_keys(0)
-  autocmd! flowbuddy_test_keys
+  if has('nvim')
+    lua vim.on_key(nil, vim.api.nvim_create_namespace('flowbuddy_test'))
+  else
+    autocmd! flowbuddy_test_keys
+  endif
   bwipe!
 endfunction
 
@@ -468,7 +494,7 @@ function! Test_a_tip_is_answered_once() abort
   call flowbuddy#respond('dismiss')
   call assert_equal([{'type': 'nudge_response', 'nudge_id': 'n-1', 'action': 'dismiss'}], flowbuddy#answers())
   call assert_equal('Flow Buddy: no tip to answer', trim(execute('call flowbuddy#respond("dismiss")')))
-  call assert_true(empty(popup_list()))
+  call assert_true(empty(s:floats()))
 endfunction
 
 function! Test_practice_shows_start_and_goal() abort
@@ -499,7 +525,7 @@ function! Test_practice_counts_keys() abort
   call assert_equal([[1, 'FlowBuddyStart'], [6, 'FlowBuddyGoal']], sort(map(sign_getplaced(bufnr(), {'group': 'flowbuddy_practice'})[0].signs, '[v:val.lnum, v:val.name]')))
   " A tip arriving now isn't shown over the drill.
   call flowbuddy#on_daemon('{"type":"nudge","nudge_id":"n-p","rule_id":"r","title":"T","text":"x","ttl_ms":5000}')
-  call assert_true(empty(popup_list()))
+  call assert_true(empty(s:floats()))
   sleep 20m
   call feedkeys('jj', 'xt')
   sleep 300m
@@ -515,7 +541,7 @@ function! Test_practice_counts_keys() abort
   call assert_equal([5, 4], map(copy(got.rounds), 'v:val.keys'))
   call assert_equal(['All done.'], flowbuddy#practice#panel())
   call assert_equal('false', json_encode(got.stopped))
-  call popup_clear()
+  call s:close_floats()
   bwipe!
 endfunction
 

@@ -611,7 +611,7 @@ function! flowbuddy#start() abort
   endif
   let s:started = reltime()
   if has('nvim')
-    let [sec, usec] = luaeval('{vim.uv.gettimeofday()}')
+    let [sec, usec] = luaeval('{(vim.uv or vim.loop).gettimeofday()}')
     let s:epoch_base_ms = sec * 1000 + usec / 1000
   else
     let s:epoch_base_ms = str2nr(trim(system('date +%s%3N')))

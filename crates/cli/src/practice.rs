@@ -149,19 +149,16 @@ pub fn report(session: &Session, before: Option<&Session>, stopped: bool, now: u
 
 /// "Tue 14:02", or "today 14:02".
 fn ago(at: u64, now: u64) -> String {
-    use chrono::{Local, TimeZone};
-    let (Some(t), Some(n)) = (
-        Local.timestamp_opt(at as i64, 0).single(),
-        Local.timestamp_opt(now as i64, 0).single(),
-    ) else {
+    use flowbuddy_core::time;
+    let (Some(t), Some(n)) = (time::at_s(at), time::at_s(now)) else {
         return String::new();
     };
-    if t.date_naive() == n.date_naive() {
-        t.format("today %H:%M").to_string()
-    } else if n - t < chrono::Duration::days(6) {
-        t.format("%a %H:%M").to_string()
+    if t.date() == n.date() {
+        time::format(&t, "today %H:%M")
+    } else if time::seconds_between(&t, &n) < 6 * 86_400 {
+        time::format(&t, "%a %H:%M")
     } else {
-        t.format("%-d %b").to_string()
+        time::format(&t, "%-d %b")
     }
 }
 

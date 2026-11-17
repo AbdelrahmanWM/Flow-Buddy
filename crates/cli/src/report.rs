@@ -77,7 +77,7 @@ pub fn summary(store: &Store, now_ms: u64, period: Period) -> anyhow::Result<Str
     let previous = days::range(now_ms, n, n);
     let (label, versus) = match period {
         Period::Today => (
-            format!("today ({})", days::local_date(now_ms).format("%a %-d %b")),
+            format!("today ({})", days::local_date(now_ms).strftime("%a %-d %b")),
             "yesterday",
         ),
         Period::Week => ("the last 7 days".to_string(), "the 7 days before"),
@@ -206,7 +206,7 @@ fn typing_line(
 
 fn date(unix_s: u64) -> String {
     days::local_date(unix_s * 1000)
-        .format("%-d %b %Y")
+        .strftime("%-d %b %Y")
         .to_string()
 }
 
@@ -877,14 +877,10 @@ pub fn learn(store: &Store, now_ms: u64, known_levels: u8) -> anyhow::Result<Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
     use flowbuddy_store::Event;
 
-    fn at(d: u32, h: u32) -> u64 {
-        chrono::Local
-            .with_ymd_and_hms(2026, 10, d, h, 0, 0)
-            .unwrap()
-            .timestamp_millis() as u64
+    fn at(d: i8, h: i8) -> u64 {
+        flowbuddy_core::time::local_ms(2026, 10, d, h, 0)
     }
 
     fn sample() -> Store {

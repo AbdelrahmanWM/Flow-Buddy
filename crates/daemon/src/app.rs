@@ -276,11 +276,7 @@ fn window_id(app_id: &str) -> String {
 }
 
 fn local_hour(now_ms: u64) -> u32 {
-    use chrono::{TimeZone, Timelike};
-    chrono::Local
-        .timestamp_millis_opt(now_ms as i64)
-        .single()
-        .map_or(12, |t| t.hour())
+    flowbuddy_core::time::at_ms(now_ms).map_or(12, |t| t.hour() as u32)
 }
 
 fn flavor(kind: ContextKind) -> Flavor {
@@ -568,12 +564,10 @@ impl App {
     }
 
     fn gate(&self, now_ms: u64) -> Gate {
-        use chrono::Timelike;
-        let local = chrono::Local::now();
         Gate {
             mode: self.mode,
             paused: !self.capturing(now_ms) && self.mode != CoachingMode::Off,
-            local_minute: local.hour() * 60 + local.minute(),
+            local_minute: flowbuddy_core::time::minute_of_day(&flowbuddy_core::time::now()),
         }
     }
 
@@ -586,18 +580,17 @@ impl App {
 
     /// Passive mode: one notification about the day, at `summary_time`.
     fn end_of_day(&mut self, now_ms: u64) {
-        use chrono::{TimeZone, Timelike};
         if self.mode != CoachingMode::Passive {
             return;
         }
         let Some(target) = config::parse_hm(&self.config.coaching.summary_time) else {
             return;
         };
-        let Some(local) = chrono::Local.timestamp_millis_opt(now_ms as i64).single() else {
+        let Some(local) = flowbuddy_core::time::at_ms(now_ms) else {
             return;
         };
         let today = memory::day(now_ms);
-        if local.hour() * 60 + local.minute() < target
+        if flowbuddy_core::time::minute_of_day(&local) < target
             || self.state.last_summary_day.as_deref() == Some(today.as_str())
         {
             return;
@@ -613,7 +606,6 @@ impl App {
 
     /// Every mode but off: one note a week about progress, at `summary_time`.
     fn weekly_note(&mut self, now_ms: u64) {
-        use chrono::{TimeZone, Timelike};
         if self.mode == CoachingMode::Off || !self.capturing(now_ms) {
             return;
         }
@@ -628,10 +620,10 @@ impl App {
         let Some(target) = config::parse_hm(&self.config.coaching.summary_time) else {
             return;
         };
-        let Some(local) = chrono::Local.timestamp_millis_opt(now_ms as i64).single() else {
+        let Some(local) = flowbuddy_core::time::at_ms(now_ms) else {
             return;
         };
-        let minute = local.hour() * 60 + local.minute();
+        let minute = flowbuddy_core::time::minute_of_day(&local);
         let quiet = self
             .config
             .coaching
@@ -3041,17 +3033,11 @@ pub(crate) mod tests {
 
     #[test]
     fn passive_mode_sends_one_end_of_day_summary() {
-        use chrono::TimeZone;
         let (mut app, recorder) = app_with_store(CoachingMode::Passive);
         app.config.coaching.summary_time = "18:00".into();
         // Only the summary here; the daily tip has its own test.
         app.config.learn.daily = false;
-        let at = |h, m| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, 24, h, m, 0)
-                .unwrap()
-                .timestamp_millis() as u64
-        };
+        let at = |h, m| flowbuddy_core::time::local_ms(2026, 10, 24, h, m);
         focus(&mut app, "code_code", 500);
         type_at(&mut app, "<Esc>xxxxxw", at(10, 0));
         app.tick(at(17, 59));
@@ -3166,16 +3152,10 @@ pub(crate) mod tests {
 
     #[test]
     fn weekly_note_by_the_model_when_opted_in() {
-        use chrono::TimeZone;
         let (mut app, recorder) = app_with_store(CoachingMode::Balanced);
         app.config.ai.weekly = true;
         app.config.ai.command = Some(vec!["ollama".into(), "run".into(), "m".into()]);
-        let at = |d| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, d, 19, 0, 0)
-                .unwrap()
-                .timestamp_millis() as u64
-        };
+        let at = |d| flowbuddy_core::time::local_ms(2026, 10, d, 19, 0);
         app.tick(at(15));
         app.tick(at(22));
         let sent = recorder.0.borrow();
@@ -3185,14 +3165,8 @@ pub(crate) mod tests {
 
     #[test]
     fn weekly_note_once_a_week() {
-        use chrono::TimeZone;
         let (mut app, recorder) = app_with_store(CoachingMode::Balanced);
-        let at = |d, h| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, d, h, 0, 0)
-                .unwrap()
-                .timestamp_millis() as u64
-        };
+        let at = |d, h| flowbuddy_core::time::local_ms(2026, 10, d, h, 0);
         let x = |app: &mut App, t| {
             let store = app.memory.store().unwrap();
             let hit = flowbuddy_store::Event::Hit {
@@ -4216,15 +4190,9 @@ pub(crate) mod tests {
 
     #[test]
     fn something_new_once_a_day() {
-        use chrono::TimeZone;
         let (mut app, _) = app_with_store(CoachingMode::Balanced);
         let mut ext = ext_hello(&mut app, 1);
-        let at = |d, h| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, d, h, 0, 0)
-                .unwrap()
-                .timestamp_millis() as u64
-        };
+        let at = |d, h| flowbuddy_core::time::local_ms(2026, 10, d, h, 0);
         // Not while you're elsewhere.
         focus(&mut app, "firefox", 900);
         app.tick(at(20, 10));
@@ -4898,15 +4866,9 @@ pub(crate) mod tests {
 
     #[test]
     fn a_lesson_you_know_or_want_swapped() {
-        use chrono::TimeZone;
         let (mut app, _) = app_with_store(CoachingMode::Balanced);
         let mut ext = ext_hello(&mut app, 1);
-        let at = |h, m| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, 20, h, m, 0)
-                .unwrap()
-                .timestamp_millis() as u64
-        };
+        let at = |h, m| flowbuddy_core::time::local_ms(2026, 10, 20, h, m);
         focus(&mut app, "code_code", 500);
         type_at(&mut app, "<Esc>wwwbbb", at(10, 0));
         app.tick(at(10, 0) + 61_000);

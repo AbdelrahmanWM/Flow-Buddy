@@ -9,7 +9,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-chrono = "0.4.45"
 flowbuddy-core.workspace = true
 rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
 serde.workspace = true

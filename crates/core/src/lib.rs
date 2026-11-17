@@ -22,6 +22,7 @@ pub mod session;
 pub mod settings;
 pub mod support;
 pub mod text;
+pub mod time;
 pub mod tipfilter;
 pub mod vim;
 

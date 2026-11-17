@@ -6,11 +6,6 @@ targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 [advisories]
 version = 2
 yanked = "deny"
-ignore = [
-    # chrono is marked unmaintained: no known vulnerability. Only local
-    # time formatting and dates use it. Moving to jiff is #286.
-    { id = "RUSTSEC-2026-0543", reason = "unmaintained, no vulnerability; replacing it is tracked" },
-]
 
 [licenses]
 version = 2

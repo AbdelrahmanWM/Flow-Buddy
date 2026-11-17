@@ -1514,21 +1514,21 @@ fn set_mode(mode: Option<CoachingMode>) -> anyhow::Result<()> {
 }
 
 fn pause(duration: &str) -> anyhow::Result<()> {
-    let seconds = parse_duration(duration, chrono::Local::now()).ok_or_else(|| {
+    use flowbuddy_core::time;
+    let seconds = parse_duration(duration, &time::now()).ok_or_else(|| {
         anyhow::anyhow!("can't read {duration:?}; try 30m, 1h, 2h30m or until-tomorrow")
     })?;
     Client::connect(ClientKind::Cli)?.command(Command::Pause { seconds })?;
-    let until = chrono::Local::now() + chrono::Duration::seconds(seconds as i64);
-    println!("paused until {}", when(until, chrono::Local::now()));
+    let now = time::now();
+    let until = time::at_s(now.timestamp().as_second() as u64 + seconds).unwrap_or(now.clone());
+    println!("paused until {}", when(&until, &now));
     Ok(())
 }
 
 /// `30m`, `1h`, `2h30m`, `90s`, or `until-tomorrow` (next local midnight).
-fn parse_duration(s: &str, now: chrono::DateTime<chrono::Local>) -> Option<u64> {
+fn parse_duration(s: &str, now: &flowbuddy_core::time::LocalTime) -> Option<u64> {
     if s == "until-tomorrow" {
-        let midnight = (now.date_naive() + chrono::Days::new(1)).and_hms_opt(0, 0, 0)?;
-        let midnight = midnight.and_local_timezone(chrono::Local).earliest()?;
-        return u64::try_from((midnight - now).num_seconds()).ok();
+        return flowbuddy_core::time::until_tomorrow(now);
     }
     let (mut total, mut num) = (0u64, String::new());
     for c in s.chars() {
@@ -1914,51 +1914,41 @@ fn format_day_time(unix: u64) -> String {
 
 /// Local HH:MM for a unix timestamp, via `date` to avoid a timezone dependency.
 fn format_time(unix: u64) -> String {
-    use chrono::TimeZone;
-    chrono::Local
-        .timestamp_opt(unix as i64, 0)
-        .single()
-        .map_or_else(|| unix.to_string(), |t| when(t, chrono::Local::now()))
+    use flowbuddy_core::time;
+    time::at_s(unix).map_or_else(|| unix.to_string(), |t| when(&t, &time::now()))
 }
 
 /// A time to come: "14:30" today, "Sat 14:30" within the week, and with
 /// the date further off.
-fn when(t: chrono::DateTime<chrono::Local>, now: chrono::DateTime<chrono::Local>) -> String {
-    if t.date_naive() == now.date_naive() {
-        t.format("%H:%M").to_string()
-    } else if t - now < chrono::Duration::days(6) {
-        t.format("%a %H:%M").to_string()
+fn when(t: &flowbuddy_core::time::LocalTime, now: &flowbuddy_core::time::LocalTime) -> String {
+    use flowbuddy_core::time;
+    if t.date() == now.date() {
+        time::format(t, "%H:%M")
+    } else if time::seconds_between(now, t) < 6 * 86_400 {
+        time::format(t, "%a %H:%M")
     } else {
-        t.format("%a %-d %b %Y %H:%M").to_string()
+        time::format(t, "%a %-d %b %Y %H:%M")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{parse_duration, when};
-    use chrono::TimeZone;
+    use flowbuddy_core::time;
 
     #[test]
     fn times_to_come_say_the_day_when_needed() {
-        let now = chrono::Local
-            .with_ymd_and_hms(2026, 10, 29, 9, 0, 0)
-            .unwrap();
-        let at = |d, h| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, d, h, 30, 0)
-                .unwrap()
-        };
-        assert_eq!(when(at(29, 14), now), "14:30");
-        assert_eq!(when(at(31, 14), now), "Sat 14:30");
-        let far = now + chrono::Duration::days(400);
-        assert!(when(far, now).contains("2027"), "{}", when(far, now));
+        let now = time::local(2026, 10, 29, 9, 0);
+        let at = |d, h| time::local(2026, 10, d, h, 30);
+        assert_eq!(when(&at(29, 14), &now), "14:30");
+        assert_eq!(when(&at(31, 14), &now), "Sat 14:30");
+        let far = time::local(2027, 12, 2, 9, 0);
+        assert!(when(&far, &now).contains("2027"), "{}", when(&far, &now));
     }
 
     #[test]
     fn durations() {
-        let now = chrono::Local
-            .with_ymd_and_hms(2026, 10, 24, 22, 0, 0)
-            .unwrap();
+        let now = &time::local(2026, 10, 24, 22, 0);
         assert_eq!(parse_duration("30m", now), Some(1800));
         assert_eq!(parse_duration("2h30m", now), Some(9000));
         assert_eq!(parse_duration("90s", now), Some(90));

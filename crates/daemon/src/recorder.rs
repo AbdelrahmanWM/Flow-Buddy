@@ -25,7 +25,7 @@ impl Recorder {
         flowbuddy_core::paths::private_dir(dir)?;
         let name = format!(
             "{prefix}-{}",
-            chrono::Local::now().format("%Y%m%d-%H%M%S.jsonl")
+            flowbuddy_core::time::format(&flowbuddy_core::time::now(), "%Y%m%d-%H%M%S.jsonl")
         );
         let path = dir.join(name);
         let mut r = Recorder {

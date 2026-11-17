@@ -108,8 +108,9 @@ class DaemonLink {
             if (!answered && this._startDaemon) {
                 const start = this._startDaemon;
                 this._startDaemon = null;
+                // It needs a moment to listen: look again soon, and often.
                 if (start())
-                    this._backoff = 1;
+                    this._backoff = 0.2;
             }
             this.editorOnly = false;
             // Whatever was allowed, it's off until the daemon says so again.

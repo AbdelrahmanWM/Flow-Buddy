@@ -29,6 +29,13 @@ It does nothing when the daemon isn't running, and retries every few seconds. To
 
 The facts are worked out by trying motions on the buffer, which stops after 15 ms per movement so long files and slow folding stay responsive (`let g:flowbuddy_facts_budget_ms = 30` to allow more). `:echo flowbuddy#stats()` shows how many movements were looked at, how many ran out of time, and the slowest in milliseconds.
 
+## Without keyboard access (editor only)
+
+With `scripts/install.sh --editor-only` nothing reads your keyboard, and this plugin does two more things:
+
+- **It starts the daemon** when none is running and there's no service to run one: `flowbuddyd --editor-only --exit-when-idle`, which stops by itself ten minutes after the last editor closes. `let g:flowbuddy_start_daemon = 0` turns that off.
+- **It sends the keys you type in Normal, Visual and Operator-pending mode**, which are commands, so "that took 7 keys" still works. Keys typed in Insert, Replace, Command-line or Terminal mode are never sent, the character after `f`, `t` or `r` goes as `x`, and keys a mapping or script ran don't count. It only happens while the daemon says it reads no keyboard. `let g:flowbuddy_keys = 0` turns it off. Needs Vim 9.1.0563 or later (`KeyInputPre`) or Neovim; on an older Vim, motion tips without key counts aren't shown.
+
 ## Tips
 
 Tips for what you do in Vim show in Vim, in a small window at the top right, for a few seconds (`coaching.nudge_seconds`). It doesn't take the cursor; a click closes it. `:FlowBuddyGotIt` and `:FlowBuddyNotHelpful` answer the tip on show, like the top-bar menu does. To have them on the desktop instead: `flowbuddy config set coaching.show_in desktop`, or `let g:flowbuddy_tips = 0` for this Vim only. Needs Vim's popup windows (`+popupwin`) or Neovim.

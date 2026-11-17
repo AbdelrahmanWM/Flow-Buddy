@@ -43,6 +43,8 @@ run systemctl --user disable --now flowbuddy-tips.timer 2>/dev/null || true
 run rm -f "${unit%/*}/flowbuddy-weekly.service" "${unit%/*}/flowbuddy-tips.service" "${unit%/*}/flowbuddy-tips.timer"
 run rm -f "$unit"
 run systemctl --user daemon-reload
+# One the editor plugins started (an editor-only install) has no service.
+run pkill -u "$(id -u)" -x flowbuddyd 2>/dev/null || true
 
 say "Removing programs and the extension"
 run gnome-extensions disable "$uuid" 2>/dev/null || true

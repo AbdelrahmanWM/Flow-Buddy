@@ -655,6 +655,7 @@ mod tests {
             r#"{"v":0,"type":"operator","op":"delete","at_ms":1729740000500,"objects":["i(","a("]}"#,
             r#"{"v":0,"type":"editor_mode","mode":"visual_line"}"#,
             r#"{"v":0,"type":"motion","start_ms":1729740000000,"end_ms":1729740000900,"moves":12,"mode":"normal","lines":12,"cols":0,"facts":{"paragraph_hops":2,"window_lines":40}}"#,
+            r#"{"v":0,"type":"editor_keys","keys":"jjjjjjj","start_ms":1729740000000,"end_ms":1729740000600}"#,
             r#"{"v":0,"type":"command","id":7,"name":"status"}"#,
             r#"{"v":0,"type":"command","id":8,"name":"set_mode","args":{"mode":"active"}}"#,
             r#"{"v":0,"type":"command","id":9,"name":"pause","args":{"seconds":3600}}"#,

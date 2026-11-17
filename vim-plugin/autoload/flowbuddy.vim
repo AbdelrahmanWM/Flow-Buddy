@@ -619,8 +619,8 @@ function! flowbuddy#start() abort
   let s:last = getpos('.')[1:2]
   let s:last_top = line('w0')
   if !s:open() && flowbuddy#start_daemon()
-    " It needs a moment to listen.
-    call timer_start(400, {-> s:connected() || s:open()})
+    " It needs a moment to listen: look often until it does.
+    call s:await_daemon(40)
   endif
   let s:reconnect_timer = timer_start(s:RECONNECT_MS, function('s:retry'), {'repeat': -1})
 endfunction
@@ -649,6 +649,14 @@ function! flowbuddy#daemon_to_start() abort
     endif
   endfor
   return ''
+endfunction
+
+" Try to connect every 150 ms, `tries` times; then the slow retry takes over.
+function! s:await_daemon(tries, ...) abort
+  if s:connected() || s:open() || a:tries <= 1
+    return
+  endif
+  call timer_start(150, function('s:await_daemon', [a:tries - 1]))
 endfunction
 
 let s:daemon_started = 0

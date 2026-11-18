@@ -5,6 +5,24 @@ let &runtimepath = expand('<sfile>:p:h:h') . ',' . &runtimepath
 runtime autoload/flowbuddy.vim
 set lines=30 columns=80
 
+" Floating tip windows: Vim's popups, Neovim's floats.
+function! s:floats() abort
+  if has('nvim')
+    return filter(nvim_list_wins(), 'nvim_win_get_config(v:val).relative !=# ""')
+  endif
+  return popup_list()
+endfunction
+
+function! s:close_floats() abort
+  if has('nvim')
+    for w in s:floats()
+      call nvim_win_close(w, v:true)
+    endfor
+  else
+    call popup_clear()
+  endif
+endfunction
+
 function! s:buf(lines) abort
   %delete _
   call setline(1, a:lines)
@@ -322,6 +340,137 @@ function! Test_unknown_ex_command() abort
   call assert_false(flowbuddy#is_unknown_ex(''))
 endfunction
 
+function! Test_keys_to_send() abort
+  " [key, mode, typed] -> what's sent. As Vim reports them: the character
+  " after f arrives in Normal mode, the one after r in Replace mode.
+  call flowbuddy#drop_keys()
+  let cases = [
+        \ ['j', 'n', 1, 'j'], ['5', 'n', 1, '5'], ['<C-D>', 'n', 1, '<C-D>'],
+        \ ['f', 'n', 1, 'f'], ['b', 'n', 1, 'x'],
+        \ ['r', 'n', 1, 'r'], ['S', 'R', 1, 'x'],
+        \ ['d', 'n', 1, 'd'], ['t', 'no', 1, 't'], [',', 'no', 1, 'x'],
+        \ ['c', 'n', 1, 'c'], ['i', 'no', 1, 'i'], ['w', 'no', 1, 'w'],
+        \ ['h', 'i', 1, ''], ['<Esc>', 'i', 1, ''], ['<BS>', 'i', 1, ''],
+        \ [':', 'n', 1, ':'], ['w', 'c', 1, ''], ['<CR>', 'c', 1, ''],
+        \ ['/', 'n', 1, '/'], ['p', 'c', 1, ''],
+        \ ['R', 'n', 1, 'R'], ['z', 'R', 1, ''],
+        \ ['v', 'n', 1, 'v'], ['j', 'v', 1, 'j'], ['r', 'v', 1, 'r'], ['q', 'v', 1, 'x'],
+        \ ['"', 'n', 1, '"'], ['r', 'n', 1, 'r'], ['p', 'n', 1, 'p'],
+        \ ['g', 'n', 1, 'g'], ['f', 'n', 1, 'f'], ['j', 'n', 1, 'j'],
+        \ ['m', 'n', 1, 'm'], ['t', 'n', 1, 't'], ['k', 'n', 1, 'k'],
+        \ ['^', 'n', 0, ''], ['j', 'n', 0, ''],
+        \ ['a', 't', 1, ''], ['y', 'r', 1, ''], ['y', 'rm', 1, ''], ['x', 's', 1, ''],
+        \ ['<LeftMouse>', 'n', 1, '<LeftMouse>'],
+        \ ]
+  for [key, mode, typed, want] in cases
+    call assert_equal(want, flowbuddy#key_to_send(key, mode, typed), key . ' in ' . mode)
+  endfor
+endfunction
+
+function! Test_typed_text_is_never_kept() abort
+  if !exists('##KeyInputPre') && !has('nvim')
+    return
+  endif
+  new
+  call setline(1, ['alpha beta gamma', 'delta (epsilon) zeta', '', 'eta'])
+  " As plugin/flowbuddy.vim sets it up.
+  if has('nvim')
+    lua vim.on_key(function(key, typed) if typed and typed ~= '' then pcall(vim.fn['flowbuddy#on_key'], typed, vim.api.nvim_get_mode().mode, true) end end, vim.api.nvim_create_namespace('flowbuddy_test'))
+  else
+    augroup flowbuddy_test_keys
+      autocmd!
+      autocmd KeyInputPre * call flowbuddy#on_key(v:char, mode(1), v:event.typed)
+    augroup END
+  endif
+  call flowbuddy#drop_keys()
+  call flowbuddy#want_keys(1)
+  " Moving keys; then text in Insert mode, on the command line, in a
+  " search, after r, and in Replace mode.
+  call feedkeys("jjk", 'tx')
+  call feedkeys("iSECRETtext\<Esc>", 'tx')
+  call feedkeys(":let g:typed_pw = 'HUNTER'\<CR>", 'tx')
+  call feedkeys("/zeta\<CR>", 'tx')
+  call feedkeys("rZ", 'tx')
+  call feedkeys("RQUIET\<Esc>", 'tx')
+  call feedkeys("fadw", 'tx')
+  let sent = flowbuddy#pending_keys()
+  call assert_equal('jjki:/rxRfxdw', sent)
+  for text in ['SECRET', 'HUNTER', 'zeta', 'Z', 'QUIET', 'text']
+    call assert_true(stridx(sent, text) < 0, text . ' in ' . sent)
+  endfor
+  " Not wanted (the daemon reads a keyboard): nothing is kept at all.
+  call flowbuddy#want_keys(0)
+  call flowbuddy#drop_keys()
+  call feedkeys("jjdd", 'tx')
+  call assert_equal('', flowbuddy#pending_keys())
+  " Nor during a practice drill, nor with g:flowbuddy_keys off.
+  call flowbuddy#want_keys(1)
+  let g:flowbuddy_keys = 0
+  call feedkeys("jj", 'tx')
+  call assert_equal('', flowbuddy#pending_keys())
+  unlet g:flowbuddy_keys
+  call flowbuddy#want_keys(0)
+  if has('nvim')
+    lua vim.on_key(nil, vim.api.nvim_create_namespace('flowbuddy_test'))
+  else
+    autocmd! flowbuddy_test_keys
+  endif
+  bwipe!
+endfunction
+
+function! Test_starting_the_daemon() abort
+  let dir = tempname()
+  call mkdir(dir . '/config/systemd/user', 'p')
+  let fake = dir . '/flowbuddyd'
+  call writefile(['#!/bin/sh', 'echo "$@" >> ' . shellescape(dir . '/started')], fake)
+  call setfperm(fake, 'rwx------')
+  let [old_socket, old_config, old_ssh] = [$FLOWBUDDY_SOCKET, $XDG_CONFIG_HOME, $SSH_CONNECTION]
+  let $FLOWBUDDY_SOCKET = dir . '/none.sock'
+  let $XDG_CONFIG_HOME = dir . '/config'
+  let $SSH_CONNECTION = ''
+  let g:flowbuddy_daemon = fake
+  " Turned off: nothing.
+  let g:flowbuddy_start_daemon = 0
+  call assert_equal('', flowbuddy#daemon_to_start())
+  unlet g:flowbuddy_start_daemon
+  " Over ssh: nothing.
+  let $SSH_CONNECTION = '10.0.0.1 1 10.0.0.2 22'
+  call assert_equal('', flowbuddy#daemon_to_start())
+  let $SSH_CONNECTION = ''
+  " The full install's service exists: it's the one to run it.
+  call writefile([], dir . '/config/systemd/user/flowbuddyd.service')
+  call assert_equal('', flowbuddy#daemon_to_start())
+  call delete(dir . '/config/systemd/user/flowbuddyd.service')
+  " Otherwise it's started, for the editors only, and only once.
+  call assert_equal(fake, flowbuddy#daemon_to_start())
+  call assert_equal(1, flowbuddy#start_daemon())
+  call assert_equal(0, flowbuddy#start_daemon())
+  let waited = 0
+  while !filereadable(dir . '/started') && waited < 40
+    sleep 50m
+    let waited += 1
+  endwhile
+  call assert_equal(['--editor-only --exit-when-idle'], readfile(dir . '/started'))
+  let [$FLOWBUDDY_SOCKET, $XDG_CONFIG_HOME, $SSH_CONNECTION] = [old_socket, old_config, old_ssh]
+  unlet g:flowbuddy_daemon
+  call delete(dir, 'rf')
+endfunction
+
+function! Test_socket_owner() abort
+  " A file of yours passes; one of root's doesn't; a missing one doesn't.
+  let mine = tempname()
+  call writefile([], mine)
+  call assert_equal(flowbuddy#uid(), flowbuddy#owner(mine))
+  call assert_true(flowbuddy#socket_is_mine(mine))
+  if flowbuddy#uid() != 0
+    call assert_equal(0, flowbuddy#owner('/etc/passwd'))
+    call assert_false(flowbuddy#socket_is_mine('/etc/passwd'))
+  endif
+  call assert_equal(-1, flowbuddy#owner(mine . '.missing'))
+  call assert_false(flowbuddy#socket_is_mine(mine . '.missing'))
+  call delete(mine)
+endfunction
+
 function! Test_tip_lines() abort
   let msg = {'title': 'Delete inside', 'text': 'That took 6 keys. `di(` does it from anywhere inside, in 3.',
         \ 'explain': ['`di(` delete inside the brackets']}
@@ -345,7 +494,7 @@ function! Test_a_tip_is_answered_once() abort
   call flowbuddy#respond('dismiss')
   call assert_equal([{'type': 'nudge_response', 'nudge_id': 'n-1', 'action': 'dismiss'}], flowbuddy#answers())
   call assert_equal('Flow Buddy: no tip to answer', trim(execute('call flowbuddy#respond("dismiss")')))
-  call assert_true(empty(popup_list()))
+  call assert_true(empty(s:floats()))
 endfunction
 
 function! Test_practice_shows_start_and_goal() abort
@@ -376,7 +525,7 @@ function! Test_practice_counts_keys() abort
   call assert_equal([[1, 'FlowBuddyStart'], [6, 'FlowBuddyGoal']], sort(map(sign_getplaced(bufnr(), {'group': 'flowbuddy_practice'})[0].signs, '[v:val.lnum, v:val.name]')))
   " A tip arriving now isn't shown over the drill.
   call flowbuddy#on_daemon('{"type":"nudge","nudge_id":"n-p","rule_id":"r","title":"T","text":"x","ttl_ms":5000}')
-  call assert_true(empty(popup_list()))
+  call assert_true(empty(s:floats()))
   sleep 20m
   call feedkeys('jj', 'xt')
   sleep 300m
@@ -392,7 +541,7 @@ function! Test_practice_counts_keys() abort
   call assert_equal([5, 4], map(copy(got.rounds), 'v:val.keys'))
   call assert_equal(['All done.'], flowbuddy#practice#panel())
   call assert_equal('false', json_encode(got.stopped))
-  call popup_clear()
+  call s:close_floats()
   bwipe!
 endfunction
 

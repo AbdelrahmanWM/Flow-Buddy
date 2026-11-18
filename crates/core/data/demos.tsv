@@ -41,7 +41,7 @@ d-to-end	On `let x = compute(a, b);` with the cursor on `compute`: `D` leaves `l
 substitute	On `cat` with the cursor on `c`: `s` deletes the `c` and you type `b` for `bat`. `S` clears the whole line and you retype it.
 clipboard	`"+yy` copies the line to the system clipboard: paste it into a browser with Ctrl-V. Copied a link in the browser? `"+p` pastes it into Vim.
 goto-def	Cursor on `total` in `return total;`: `gd` jumps up to `let total = 0;`, where it was defined.
-last-nonblank	On `return x;   ` (with trailing spaces): `$` lands after the spaces, `g_` on the `;`.
+last-nonblank	On `return x;   ` (with trailing spaces): `$` lands on the last space, `g_` on the `;`.
 insert-delete	You're typing `the quick brwn` and spot the typo: `Ctrl-w` deletes `brwn` so you can type `brown`. `Ctrl-u` deletes everything typed on the line.
 cmdline-complete	Type `:e src/ma` then `Tab`: it becomes `:e src/main.rs`. Several matches? `Tab` again cycles, `Ctrl-d` lists them.
 cmdline-history	You ran `:%s/foo/bar/g` an hour ago. Type `:%s` then `Up`: that command comes back, ready to edit or run.
@@ -110,7 +110,7 @@ replace-mode	On `id: 0000` with the cursor on the first `0`: `R1234` Esc types o
 visual-block	On the first of four lines: `Ctrl-v`, `3j`, `I// ` and Esc puts `// ` at the start of all four.
 block-append	On the first of ten lines of different lengths: `Ctrl-v`, `9j`, `$`, `A;` and Esc puts a `;` at the end of every one.
 sentence	In `First idea. Second idea here. Third.` with the cursor on `here`: `das` deletes `Second idea here. `; `cis` lets you rewrite it.
-gn-select	After `/todo` Enter: `gn` selects the next `todo`; `U` makes it `TODO`. Then `.` does the next one.
+gn-select	After `/todo` Enter: `gn` selects the next `todo`, to see it before acting. `gUgn` makes it `TODO`, and then `.` does the next one.
 section	In a C file where each function's `{` starts a line: `]]` goes to the next function's `{`, `[[` to the previous.
 unmatched	Deep inside `foo(a, bar(b), c)` with the cursor on `c`: `[(` jumps to the `(` after `foo`, `])` to its closing `)`.
 sentence-motion	In a paragraph of prose: `)` goes to the start of the next sentence, `(` back to the start of this one.
@@ -149,7 +149,7 @@ fold-levels	`zm` folds one more level everywhere, to see the file's outline; `zr
 fold-make	With `:set foldmethod=manual`, cursor in a long block: `zfap` folds the paragraph into one line. `zd` removes the fold.
 window-size	After resizing the terminal, splits are uneven: `Ctrl-w =` makes them equal. `Ctrl-w _` makes this one as tall as it goes.
 window-move	Two windows one above the other: `Ctrl-w H` moves this one to the far left, so they're side by side. `Ctrl-w T` moves it into a tab of its own.
-window-under	Cursor on `utils.py` in an import: `Ctrl-w f` opens it in a new split beside this file.
+window-under	Cursor on `utils.py` in an import: `Ctrl-w f` opens it in a new split above this file, keeping this one open.
 last-tab	In tab 5 after coming from tab 2: `g<Tab>` goes back to tab 2, and again to tab 5.
 diff	`vimdiff ours.txt theirs.txt`: `]c` jumps to the next difference; `do` takes the other file's version, `dp` gives yours to it.
 method-jump	In a class: `]m` jumps to the start of the next method, `[m` to the previous one.

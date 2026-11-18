@@ -17,7 +17,7 @@ The binaries use `libxkbcommon` to read keys in your keyboard layout; every GNOM
 
 ## From source
 
-With Rust (via [rustup](https://rustup.rs), 1.88 or newer):
+With Rust (via [rustup](https://rustup.rs), 1.89 or newer):
 
 ```sh
 git clone https://github.com/AbdelrahmanWM/Flow-Buddy && cd Flow-Buddy
@@ -25,6 +25,18 @@ scripts/install.sh --with-udev
 ```
 
 For keyboard layouts other than US, install `libxkbcommon-dev` first.
+
+## Editor only
+
+```sh
+scripts/install.sh --editor-only
+```
+
+This installs the two programs and the plugins for Vim, Neovim and VS Code, and nothing else: no keyboard access, no service, no desktop extension, no shell hooks, no `sudo`. Open an editor and its plugin starts the daemon (`flowbuddyd --editor-only --exit-when-idle`), which reads no input device and stops by itself ten minutes after the last editor closes. `let g:flowbuddy_start_daemon = 0` in Vim, or the `flowbuddy.startDaemon` setting in VS Code, turns the starting off.
+
+Coaching then covers Vim, Neovim and VS Code: the README's table says what each level has. Tips show in the editor. In VS Code an extension can't see keys while vscodevim has them, so repeats (`jjjj`, `llll`) are counted from single cursor steps, and keys that don't move the cursor go uncounted.
+
+To move up, run `scripts/install.sh --with-udev`: the service takes over, with the same database and settings. `flowbuddyd --editor-only` also works as your own service, if you'd rather it always ran.
 
 ## After installing
 

@@ -447,14 +447,22 @@ pub fn ask(ai: &AiConfig, prompt: &str, out: &mut dyn Write) -> Option<Result<()
             if let Some(model) = &ai.model {
                 command.extend(["--model".into(), model.clone()]);
             }
-            let dir = std::env::temp_dir().join("flowbuddy-coach");
-            let _ = std::fs::create_dir_all(&dir);
-            run_in(&command, prompt, timeout, out, Some(&dir)).map_err(|e| match (e, &ai.model) {
-                (RunError::Failed(why), Some(model)) => RunError::Failed(format!(
-                    "{why}. If Claude Code said the model is wrong, [ai] model is \"{model}\": try `flowbuddy config set ai.model opus`"
-                )),
-                (e, _) => e,
-            })
+            // Ours alone: Claude Code reads settings (and hooks) from the
+            // folder it runs in, so it mustn't be one another user can
+            // write to, like /tmp.
+            flowbuddy_core::paths::scratch_dir("coach")
+                .map_err(|e| RunError::Failed(format!("no private folder to run in: {e}")))
+                .and_then(|dir| {
+                    let result = run_in(&command, prompt, timeout, out, Some(&dir));
+                    let _ = std::fs::remove_dir_all(&dir);
+                    result
+                })
+                .map_err(|e| match (e, &ai.model) {
+                    (RunError::Failed(why), Some(model)) => RunError::Failed(format!(
+                        "{why}. If Claude Code said the model is wrong, [ai] model is \"{model}\": try `flowbuddy config set ai.model opus`"
+                    )),
+                    (e, _) => e,
+                })
         }
         AiProvider::Anthropic => api_key(ai, "ANTHROPIC_API_KEY").and_then(|key| {
             let url = ai
@@ -511,8 +519,20 @@ fn agent(timeout_s: u32) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(u64::from(timeout_s))))
         .http_status_as_error(false)
+        // The key goes to the server you named and nowhere it points on.
+        .max_redirects(0)
         .build()
         .into()
+}
+
+/// A key is only sent encrypted, or to this machine.
+fn safe_for_a_key(base_url: &str) -> Result<(), RunError> {
+    if base_url.starts_with("https://") || flowbuddy_core::text::is_local_url(base_url) {
+        return Ok(());
+    }
+    Err(RunError::Failed(format!(
+        "[ai] base_url is {base_url}: your API key would be sent unencrypted. Use https://, or a server on this machine (http://localhost…)"
+    )))
 }
 
 /// One Messages API call. Refusals and errors come back as errors; the key
@@ -533,6 +553,7 @@ pub fn anthropic(
         "fallbacks": "default",
         "messages": [{"role": "user", "content": prompt}],
     });
+    safe_for_a_key(base_url)?;
     let mut resp = agent(timeout_s)
         .post(&format!("{}/v1/messages", base_url.trim_end_matches('/')))
         .header("x-api-key", key)
@@ -575,6 +596,7 @@ pub fn openai(
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
     });
+    safe_for_a_key(base_url)?;
     let mut resp = agent(timeout_s)
         .post(&format!(
             "{}/chat/completions",
@@ -754,6 +776,20 @@ mod tests {
 
     /// A one-shot HTTP server: answers one request with `status` and `body`,
     /// and hands back what it was sent.
+    #[test]
+    fn a_key_is_never_sent_unencrypted_to_another_machine() {
+        for url in ["http://api.example.com", "http://localhost.example.com/v1"] {
+            let err = anthropic(url, "sk-secret", "m", "x", 1)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("unencrypted"), "{err}");
+            assert!(!err.contains("sk-secret"));
+            assert!(openai(url, "sk-secret", "m", "x", 1).is_err());
+        }
+        assert!(safe_for_a_key("https://api.example.com").is_ok());
+        assert!(safe_for_a_key("http://127.0.0.1:11434/v1").is_ok());
+    }
+
     fn fake_server(status: u16, body: &'static str) -> (String, std::thread::JoinHandle<String>) {
         use std::io::{BufRead, BufReader};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

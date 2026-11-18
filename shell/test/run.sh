@@ -41,6 +41,12 @@ FAKE
             start=(fish --no-config -i)
             ;;
     esac
+    # Esc then A, to switch to Normal mode and back. Fish 4 reads an Esc
+    # with a key right behind it as Alt plus that key, and piped input
+    # comes all at once; so for fish, set the mode the way its key
+    # bindings do, which is what the hook watches.
+    switch_modes='echo mode'$'\033''A'
+    [[ $sh == fish ]] && switch_modes='set -g fish_bind_mode default; set -g fish_bind_mode insert'
     input="$rc
 true
 cd ..
@@ -51,7 +57,7 @@ ls $secret
 cat $secret
 echo one two three four
 echo one two three five
-echo mode$(printf '\033')A
+$switch_modes
 exit
 "
     # Each line is typed after the previous prompt, give or take; the

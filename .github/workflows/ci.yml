@@ -42,6 +42,11 @@ jobs:
         run: |
           command -v vim >/dev/null || sudo apt-get install -yq vim
           vim-plugin/test/run.sh
+      - name: Test the plugin in Neovim
+        run: |
+          sudo apt-get install -yq neovim
+          nvim --version | head -1
+          vim-plugin/test/run.sh nvim
       - name: Test the shell hooks (bash, zsh, fish)
         run: |
           sudo apt-get install -yq zsh fish

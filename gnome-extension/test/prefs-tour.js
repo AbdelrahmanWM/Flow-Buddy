@@ -75,7 +75,9 @@ app.connect('activate', () => {
             button(dialog, 'Next').emit('clicked');
             await settle(carousel, 6);
             button(dialog, 'Done').emit('clicked');
-            await wait(800);
+            // Closing animates too.
+            for (let t = 0; t < 50 && win.get_visible_dialog(); t++)
+                await wait(100);
             check('Done closes it', win.get_visible_dialog(), null);
         } catch (e) {
             failed++;

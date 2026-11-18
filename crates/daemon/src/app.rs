@@ -79,6 +79,8 @@ pub struct App {
     /// Unix seconds.
     paused_until: Option<u64>,
     keyboards: usize,
+    /// Started with `--editor-only`: no keyboard is read.
+    editor_only: bool,
     resolver: Resolver,
     resolved: Resolved,
     tracker: Tracker,
@@ -104,6 +106,9 @@ pub struct App {
     /// For the VS Code pack: when the last click came, and the last VS Code
     /// shortcut (Ctrl-P, Ctrl-`) as its letter and time.
     last_click_ms: Option<u64>,
+    /// When another window last took focus: a click then was to get there,
+    /// not to do something inside it.
+    window_switch_ms: Option<u64>,
     /// When an editor last took focus: a click then was to bring it up.
     editor_focus_ms: Option<u64>,
     last_shortcut: Option<(char, u64)>,
@@ -209,6 +214,8 @@ const MAX_RAISE: u32 = 3;
 const UI_SHORTCUT_MS: u64 = 15_000;
 /// A click this recent did.
 const UI_CLICK_MS: u64 = 1500;
+/// A click this soon after another window took focus was the switch.
+const WINDOW_SWITCH_MS: u64 = 2500;
 
 /// A VS Code finding waits this long for editor activity after its keys;
 /// in the editor a heartbeat follows within about half a second.
@@ -269,11 +276,7 @@ fn window_id(app_id: &str) -> String {
 }
 
 fn local_hour(now_ms: u64) -> u32 {
-    use chrono::{TimeZone, Timelike};
-    chrono::Local
-        .timestamp_millis_opt(now_ms as i64)
-        .single()
-        .map_or(12, |t| t.hour())
+    flowbuddy_core::time::at_ms(now_ms).map_or(12, |t| t.hour() as u32)
 }
 
 fn flavor(kind: ContextKind) -> Flavor {
@@ -324,6 +327,7 @@ impl App {
             mode: state.mode.unwrap_or(config.coaching.default_mode),
             paused_until: state.paused_until,
             keyboards: 0,
+            editor_only: false,
             resolver,
             resolved,
             tracker: Tracker::new(Flavor::Vim),
@@ -342,6 +346,7 @@ impl App {
             claude_checked_ms: None,
             claude_probe: crate::claude::vim_mode_on,
             last_click_ms: None,
+            window_switch_ms: None,
             editor_focus_ms: None,
             last_shortcut: None,
             mode_guess: ModeGuess::default(),
@@ -559,12 +564,10 @@ impl App {
     }
 
     fn gate(&self, now_ms: u64) -> Gate {
-        use chrono::Timelike;
-        let local = chrono::Local::now();
         Gate {
             mode: self.mode,
             paused: !self.capturing(now_ms) && self.mode != CoachingMode::Off,
-            local_minute: local.hour() * 60 + local.minute(),
+            local_minute: flowbuddy_core::time::minute_of_day(&flowbuddy_core::time::now()),
         }
     }
 
@@ -577,18 +580,17 @@ impl App {
 
     /// Passive mode: one notification about the day, at `summary_time`.
     fn end_of_day(&mut self, now_ms: u64) {
-        use chrono::{TimeZone, Timelike};
         if self.mode != CoachingMode::Passive {
             return;
         }
         let Some(target) = config::parse_hm(&self.config.coaching.summary_time) else {
             return;
         };
-        let Some(local) = chrono::Local.timestamp_millis_opt(now_ms as i64).single() else {
+        let Some(local) = flowbuddy_core::time::at_ms(now_ms) else {
             return;
         };
         let today = memory::day(now_ms);
-        if local.hour() * 60 + local.minute() < target
+        if flowbuddy_core::time::minute_of_day(&local) < target
             || self.state.last_summary_day.as_deref() == Some(today.as_str())
         {
             return;
@@ -604,7 +606,6 @@ impl App {
 
     /// Every mode but off: one note a week about progress, at `summary_time`.
     fn weekly_note(&mut self, now_ms: u64) {
-        use chrono::{TimeZone, Timelike};
         if self.mode == CoachingMode::Off || !self.capturing(now_ms) {
             return;
         }
@@ -619,10 +620,10 @@ impl App {
         let Some(target) = config::parse_hm(&self.config.coaching.summary_time) else {
             return;
         };
-        let Some(local) = chrono::Local.timestamp_millis_opt(now_ms as i64).single() else {
+        let Some(local) = flowbuddy_core::time::at_ms(now_ms) else {
             return;
         };
-        let minute = local.hour() * 60 + local.minute();
+        let minute = flowbuddy_core::time::minute_of_day(&local);
         let quiet = self
             .config
             .coaching
@@ -1196,20 +1197,27 @@ impl App {
         let text_changed = config.text != self.config.text;
         self.config = config;
         if text_changed {
-            let msg = self.editor_config();
-            for c in self.clients.values() {
-                if c.kind == Some(ClientKind::Editor) {
-                    let _ = c.tx.send(msg.clone());
-                }
-            }
+            self.send_editor_config();
         }
         tracing::info!("config reloaded");
     }
 
     fn editor_config(&self) -> ServerMsg {
-        ServerMsg::EditorConfig(flowbuddy_core::ipc::EditorConfig::from_config(
-            &self.config.text,
-        ))
+        ServerMsg::EditorConfig(flowbuddy_core::ipc::EditorConfig {
+            // Without a keyboard, the editors say what's typed.
+            keys: self.keyboards == 0,
+            ..flowbuddy_core::ipc::EditorConfig::from_config(&self.config.text)
+        })
+    }
+
+    /// Tell every editor plugin what it may do and send.
+    fn send_editor_config(&self) {
+        let msg = self.editor_config();
+        for c in self.clients.values() {
+            if c.kind == Some(ClientKind::Editor) {
+                let _ = c.tx.send(msg.clone());
+            }
+        }
     }
 
     /// Findings and adoptions go here: coaching policy and storage hook in
@@ -1348,7 +1356,12 @@ impl App {
             .is_some_and(|(k, t)| k == key && recent(t, UI_SHORTCUT_MS))
         {
             How::Shortcut
-        } else if self.last_click_ms.is_some_and(|t| recent(t, UI_CLICK_MS)) {
+        } else if self.last_click_ms.is_some_and(|t| recent(t, UI_CLICK_MS))
+            // Coming back from another window, the click was the way in.
+            && !self
+                .window_switch_ms
+                .is_some_and(|t| recent(t, WINDOW_SWITCH_MS))
+        {
             How::Click
         } else {
             How::Other
@@ -1798,13 +1811,37 @@ impl App {
 
     /// The focused window changed (from the GNOME extension, or X11).
     pub fn set_focus(&mut self, app_id: Option<String>, pid: Option<u32>, now_ms: u64) {
-        self.resolver.set_focus(app_id.map(|a| window_id(&a)), pid);
+        let app_id = app_id.map(|a| window_id(&a));
+        if app_id.as_deref() != self.resolver.focused_app() {
+            self.window_switch_ms = Some(now_ms);
+        }
+        self.resolver.set_focus(app_id, pid);
         self.resolver.prune();
         self.update_context(None, now_ms);
     }
 
     pub fn set_keyboards(&mut self, n: usize) {
+        let changed = (self.keyboards == 0) != (n == 0);
         self.keyboards = n;
+        // The editors' keys are wanted only while no keyboard is read.
+        if changed {
+            self.send_editor_config();
+        }
+    }
+
+    /// No keyboard is read: the editors say where you are and what you
+    /// type in their moving modes.
+    pub fn set_editor_only(&mut self, on: bool) {
+        self.editor_only = on;
+        self.resolver.set_editor_only(on);
+    }
+
+    /// How many editor plugins are connected, for exiting when idle.
+    pub fn editors_connected(&self) -> usize {
+        self.clients
+            .values()
+            .filter(|c| c.kind == Some(ClientKind::Editor))
+            .count()
     }
 
     pub fn on_conn(&mut self, ev: ConnEvent, now_ms: u64) {
@@ -1868,6 +1905,7 @@ impl App {
                     ServerMsg::Welcome {
                         daemon_version: flowbuddy_core::VERSION.into(),
                         mode: self.mode,
+                        editor_only: self.editor_only,
                     },
                 );
                 // The welcome has no pause in it: a top bar that connects
@@ -2090,6 +2128,31 @@ impl App {
             }
             // From an editor that isn't the current context.
             ClientMsg::Motion(_) => {}
+            ClientMsg::EditorKeys {
+                keys,
+                start_ms,
+                end_ms,
+            } if self.resolved.editor == Some(conn) && self.keyboards == 0 => {
+                let (keys, clicks) = flowbuddy_core::editor::typed_keys(&keys);
+                // Times from another program: not in the future, in order.
+                let end = end_ms.min(now_ms);
+                let start = start_ms.min(end);
+                if clicks > 0 {
+                    self.on_pointer_click(start);
+                }
+                let gaps = keys.len().saturating_sub(1).max(1) as u64;
+                for (i, key) in keys.into_iter().enumerate() {
+                    let stroke = KeyStroke {
+                        key,
+                        repeat: false,
+                        at_ms: start + (end - start) * i as u64 / gaps,
+                    };
+                    self.on_key(stroke, now_ms);
+                }
+            }
+            // The keyboard says it better, and only once; or it's from an
+            // editor that isn't where you are.
+            ClientMsg::EditorKeys { .. } => {}
             ClientMsg::Operator(mut report) if self.resolved.editor == Some(conn) => {
                 report.clamp();
                 let (keys_used, op_keys, backward) = self.keys_for_operator(report.at_ms);
@@ -2321,6 +2384,9 @@ impl App {
             mode: self.mode,
             paused_until: self.paused_until.filter(|&t| t > now_s),
             context: self.resolved.kind.as_str().into(),
+            editor_only: self.editor_only,
+            why: (self.resolved.kind == ContextKind::Unsupported)
+                .then(|| self.resolver.why_unsupported()),
             app: self.resolver.focused_app().map(Into::into),
             layout: Some(self.keymap_layout.0.clone()),
             layout_note: self.keymap_layout.1.clone(),
@@ -2438,7 +2504,8 @@ pub(crate) mod tests {
             rx.try_recv().unwrap(),
             ServerMsg::Welcome {
                 daemon_version: flowbuddy_core::VERSION.into(),
-                mode: CoachingMode::Passive
+                mode: CoachingMode::Passive,
+                editor_only: false,
             }
         );
     }
@@ -2966,17 +3033,11 @@ pub(crate) mod tests {
 
     #[test]
     fn passive_mode_sends_one_end_of_day_summary() {
-        use chrono::TimeZone;
         let (mut app, recorder) = app_with_store(CoachingMode::Passive);
         app.config.coaching.summary_time = "18:00".into();
         // Only the summary here; the daily tip has its own test.
         app.config.learn.daily = false;
-        let at = |h, m| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, 24, h, m, 0)
-                .unwrap()
-                .timestamp_millis() as u64
-        };
+        let at = |h, m| flowbuddy_core::time::local_ms(2026, 10, 24, h, m);
         focus(&mut app, "code_code", 500);
         type_at(&mut app, "<Esc>xxxxxw", at(10, 0));
         app.tick(at(17, 59));
@@ -3091,16 +3152,10 @@ pub(crate) mod tests {
 
     #[test]
     fn weekly_note_by_the_model_when_opted_in() {
-        use chrono::TimeZone;
         let (mut app, recorder) = app_with_store(CoachingMode::Balanced);
         app.config.ai.weekly = true;
         app.config.ai.command = Some(vec!["ollama".into(), "run".into(), "m".into()]);
-        let at = |d| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, d, 19, 0, 0)
-                .unwrap()
-                .timestamp_millis() as u64
-        };
+        let at = |d| flowbuddy_core::time::local_ms(2026, 10, d, 19, 0);
         app.tick(at(15));
         app.tick(at(22));
         let sent = recorder.0.borrow();
@@ -3110,14 +3165,8 @@ pub(crate) mod tests {
 
     #[test]
     fn weekly_note_once_a_week() {
-        use chrono::TimeZone;
         let (mut app, recorder) = app_with_store(CoachingMode::Balanced);
-        let at = |d, h| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, d, h, 0, 0)
-                .unwrap()
-                .timestamp_millis() as u64
-        };
+        let at = |d, h| flowbuddy_core::time::local_ms(2026, 10, d, h, 0);
         let x = |app: &mut App, t| {
             let store = app.memory.store().unwrap();
             let hit = flowbuddy_store::Event::Hit {
@@ -3465,6 +3514,104 @@ pub(crate) mod tests {
             }
         }
         assert!(tried > 40, "{tried}");
+    }
+
+    /// With no keyboard read, the Vim plugin's keys feed the rules; with
+    /// one, they're ignored, so nothing is counted twice.
+    #[test]
+    fn editor_keys_stand_in_for_the_keyboard() {
+        let paragraph = |at: u64| Motion {
+            start_ms: at,
+            end_ms: at + 600,
+            moves: 7,
+            mode: EditorMode::Normal,
+            lines: 7,
+            cols: 0,
+            facts: flowbuddy_core::editor::MotionFacts {
+                paragraph_hops: Some(1),
+                ..Default::default()
+            },
+        };
+        let typed = |at: u64| ClientMsg::EditorKeys {
+            keys: "jjjjjjj".into(),
+            start_ms: at,
+            end_ms: at + 600,
+        };
+        // Editor only: nothing reports window focus, no keyboard.
+        let mut app = test_app(CoachingMode::Active);
+        app.set_editor_only(true);
+        let mut vim = tipping_editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            100,
+        );
+        assert_eq!(app.context().kind, ContextKind::TerminalVim);
+        send(&mut app, 3, typed(10_000), 10_650);
+        send(&mut app, 3, ClientMsg::Motion(paragraph(10_000)), 10_700);
+        let tips: Vec<Nudge> = std::iter::from_fn(|| vim.try_recv().ok())
+            .filter_map(|m| match m {
+                ServerMsg::Nudge(n) => Some(n),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tips.len(), 1, "{tips:?}");
+        assert_eq!(
+            glossary::plain(&tips[0].text),
+            "That took 7 keys. } gets there in 1, or 7j in 2."
+        );
+        // From an editor that isn't where you are: nothing.
+        let _other = editor(&mut app, 4, EditorKind::Vim, 220);
+        let before = app.commands.len();
+        send(&mut app, 4, typed(20_000), 20_650);
+        assert_eq!(app.commands.len(), before);
+
+        // The plugin is told to send keys while there's no keyboard, and
+        // to stop when one appears.
+        let wants = |rx: &mut UnboundedReceiver<ServerMsg>| {
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|m| match m {
+                    ServerMsg::EditorConfig(c) => Some(c.keys),
+                    _ => None,
+                })
+                .last()
+        };
+        let mut app = test_app(CoachingMode::Active);
+        let mut vim = editor(&mut app, 3, EditorKind::Vim, 210);
+        assert_eq!(wants(&mut vim), Some(true));
+        app.set_keyboards(1);
+        assert_eq!(wants(&mut vim), Some(false));
+        app.set_keyboards(2);
+        assert_eq!(wants(&mut vim), None, "nothing changed");
+
+        // With a keyboard, the same keys from the plugin are ignored.
+        let mut app = test_app(CoachingMode::Active);
+        app.set_editor_only(true);
+        app.set_keyboards(1);
+        let _vim = tipping_editor(&mut app, 3, EditorKind::Vim, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            100,
+        );
+        send(&mut app, 3, typed(10_000), 10_650);
+        assert!(app.commands.is_empty());
     }
 
     #[test]
@@ -3840,6 +3987,40 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_click_back_into_vscode_isnt_a_click_into_its_terminal() {
+        let mut app = test_app(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let _vs = editor(&mut app, 2, EditorKind::Vscode, 510);
+        let terminal = |app: &mut App, at| {
+            send(
+                app,
+                2,
+                ClientMsg::EditorFocus {
+                    focused: false,
+                    panel: Some(Panel::Terminal),
+                },
+                at,
+            )
+        };
+        // Three times: from the browser, a click on VS Code's terminal.
+        for at in [10_000, 20_000, 30_000] {
+            app.set_focus(Some("google-chrome".into()), Some(600), at - 5_000);
+            app.on_pointer_click(at - 300);
+            app.set_focus(Some("code_code".into()), Some(500), at - 250);
+            terminal(&mut app, at);
+        }
+        assert!(nudges(&mut ext).is_empty());
+        // Staying in VS Code and clicking into the terminal is the habit.
+        for at in [50_000, 60_000, 70_000] {
+            app.on_pointer_click(at - 300);
+            terminal(&mut app, at);
+        }
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].rule_id, "vscode.terminal-toggle");
+    }
+
+    #[test]
     fn typing_accuracy_is_opt_in_and_counts_only() {
         for on in [false, true] {
             let (mut app, _) = app_with_store(CoachingMode::Active);
@@ -4009,15 +4190,9 @@ pub(crate) mod tests {
 
     #[test]
     fn something_new_once_a_day() {
-        use chrono::TimeZone;
         let (mut app, _) = app_with_store(CoachingMode::Balanced);
         let mut ext = ext_hello(&mut app, 1);
-        let at = |d, h| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, d, h, 0, 0)
-                .unwrap()
-                .timestamp_millis() as u64
-        };
+        let at = |d, h| flowbuddy_core::time::local_ms(2026, 10, d, h, 0);
         // Not while you're elsewhere.
         focus(&mut app, "firefox", 900);
         app.tick(at(20, 10));
@@ -4691,15 +4866,9 @@ pub(crate) mod tests {
 
     #[test]
     fn a_lesson_you_know_or_want_swapped() {
-        use chrono::TimeZone;
         let (mut app, _) = app_with_store(CoachingMode::Balanced);
         let mut ext = ext_hello(&mut app, 1);
-        let at = |h, m| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, 20, h, m, 0)
-                .unwrap()
-                .timestamp_millis() as u64
-        };
+        let at = |h, m| flowbuddy_core::time::local_ms(2026, 10, 20, h, m);
         focus(&mut app, "code_code", 500);
         type_at(&mut app, "<Esc>wwwbbb", at(10, 0));
         app.tick(at(10, 0) + 61_000);

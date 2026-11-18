@@ -484,3 +484,140 @@ mod tests {
         assert_eq!(r.back.unwrap().bigwords, Some(2));
     }
 }
+
+/// Keys an editor plugin typed out in Vim's notation (`jj5w<C-D><Esc>`),
+/// as keys, and how many mouse clicks were among them. The plugin only
+/// sends keys from Normal, Visual and Operator-pending mode. Anything not
+/// understood is left out, and at most [`MAX_TYPED`] keys are taken: this
+/// is input from another program.
+pub fn typed_keys(notation: &str) -> (Vec<crate::key::Key>, u32) {
+    use crate::key::{Key, Mods, Sym};
+    let mut keys = Vec::new();
+    let mut clicks = 0;
+    let mut chars = notation.chars().peekable();
+    while let Some(c) = chars.next() {
+        if keys.len() >= MAX_TYPED {
+            break;
+        }
+        if c != '<' {
+            if !c.is_control() {
+                keys.push(Key::ch(c));
+            }
+            continue;
+        }
+        // `<Name>`; a lone `<` is itself.
+        let mut name = String::new();
+        let mut closed = false;
+        while let Some(&n) = chars.peek() {
+            if n == '>' {
+                chars.next();
+                closed = true;
+                break;
+            }
+            if name.len() >= 24 || n == '<' {
+                break;
+            }
+            name.push(n);
+            chars.next();
+        }
+        if !closed {
+            keys.push(Key::ch('<'));
+            keys.extend(name.chars().filter(|c| !c.is_control()).map(Key::ch));
+            continue;
+        }
+        let mut mods = Mods::default();
+        let mut rest = name.as_str();
+        loop {
+            let (m, tail) = match rest.split_once('-') {
+                Some((m, tail)) if m.len() == 1 && !tail.is_empty() => (m, tail),
+                _ => break,
+            };
+            match m {
+                "C" | "c" => mods.ctrl = true,
+                "S" | "s" => mods.shift = true,
+                "M" | "m" | "A" | "a" => mods.alt = true,
+                "D" | "d" | "T" | "t" => mods.logo = true,
+                _ => break,
+            }
+            rest = tail;
+        }
+        let sym = match rest.to_ascii_lowercase().as_str() {
+            "esc" => Sym::Esc,
+            "cr" | "enter" | "return" | "nl" => Sym::Enter,
+            "bs" => Sym::Backspace,
+            "del" => Sym::Delete,
+            "insert" => Sym::Insert,
+            "tab" => Sym::Tab,
+            "up" => Sym::Up,
+            "down" => Sym::Down,
+            "left" => Sym::Left,
+            "right" => Sym::Right,
+            "home" => Sym::Home,
+            "end" => Sym::End,
+            "pageup" => Sym::PageUp,
+            "pagedown" => Sym::PageDown,
+            "space" => Sym::Char(' '),
+            "lt" => Sym::Char('<'),
+            "bar" => Sym::Char('|'),
+            "bslash" => Sym::Char('\\'),
+            "leftmouse" | "rightmouse" | "middlemouse" => {
+                clicks += 1;
+                continue;
+            }
+            one if one.chars().count() == 1 => {
+                let c = rest.chars().next().unwrap_or(' ');
+                // Ctrl-D and Ctrl-d are one key; Shift is in the letter.
+                Sym::Char(if mods.ctrl { c.to_ascii_lowercase() } else { c })
+            }
+            f if f.starts_with('f') && f[1..].parse::<u8>().is_ok() => {
+                Sym::F(f[1..].parse().unwrap_or(1))
+            }
+            // Releases, drags, the wheel, focus events, <Plug>, <Cmd>…
+            _ => continue,
+        };
+        // Shift only counts on keys that aren't characters.
+        if matches!(sym, Sym::Char(_)) {
+            mods.shift = false;
+        }
+        keys.push(Key { sym, mods });
+    }
+    (keys, clicks)
+}
+
+/// The most keys taken from one `editor_keys` message.
+pub const MAX_TYPED: usize = 256;
+
+#[cfg(test)]
+mod typed_tests {
+    use super::*;
+    use crate::key::{Key, Sym};
+
+    #[test]
+    fn vim_notation_to_keys() {
+        let (keys, clicks) =
+            typed_keys("j5w<C-D><Esc><Space><lt><S-Tab><LeftMouse><LeftRelease>dd");
+        assert_eq!(clicks, 1);
+        let shown: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+        assert_eq!(
+            shown,
+            [
+                "j", "5", "w", "<C-d>", "<Esc>", " ", "<", "<S-Tab>", "d", "d"
+            ]
+        );
+        assert_eq!(keys[3], Key::ctrl('d'));
+        assert_eq!(keys[4], Key::ESC);
+    }
+
+    #[test]
+    fn odd_input_is_left_out_not_trusted() {
+        // Unknown names, control characters, an unclosed `<`, and too many.
+        let (keys, _) = typed_keys("a<Plug>(x)<FocusGained>\u{1b}\u{0}b<");
+        let shown: String = keys.iter().map(|k| k.to_string()).collect();
+        assert_eq!(shown, "a(x)b<");
+        let (keys, _) = typed_keys(&"j".repeat(10_000));
+        assert_eq!(keys.len(), MAX_TYPED);
+        let (keys, _) = typed_keys("<<<<C-");
+        assert!(keys.iter().all(|k| matches!(k.sym, Sym::Char(_))));
+        assert!(typed_keys("").0.is_empty());
+    }
+}

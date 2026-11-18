@@ -22,14 +22,22 @@ impl Recorder {
 
     /// Start a recording named `<prefix>-<time>.jsonl`.
     pub fn start_as(dir: &Path, prefix: &str, now_ms: u64) -> std::io::Result<Recorder> {
-        fs::create_dir_all(dir)?;
+        flowbuddy_core::paths::private_dir(dir)?;
         let name = format!(
             "{prefix}-{}",
-            chrono::Local::now().format("%Y%m%d-%H%M%S.jsonl")
+            flowbuddy_core::time::format(&flowbuddy_core::time::now(), "%Y%m%d-%H%M%S.jsonl")
         );
         let path = dir.join(name);
         let mut r = Recorder {
-            out: BufWriter::new(File::create(&path)?),
+            out: BufWriter::new({
+                use std::os::unix::fs::OpenOptionsExt;
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&path)?
+            }),
             path,
             started_ms: now_ms,
         };

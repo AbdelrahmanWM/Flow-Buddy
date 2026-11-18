@@ -78,6 +78,8 @@ struct Context {
 
 ### Resolving the context
 
+**With no window-focus source** (the daemon was started with `--editor-only`, or nothing has ever reported which window has focus, as on KDE with Wayland), the editors decide: the context is the editor plugin that last said it has focus, `TerminalVim` for Vim and Neovim, `VsCodeVim` for VS Code. One that never said (a terminal without focus events) counts while it's the last active. With `--editor-only` the daemon also opens no input device, and takes the keys from `editor_keys`. Otherwise:
+
 | Focused app (from extension) | Terminal report (from hook) | Context |
 |---|---|---|
 | VS Code, companion says a panel has focus | — | `Unsupported` |
@@ -268,6 +270,12 @@ Keystrokes alone can't show which pane of an editor has focus, what mode it's re
 {"v":0,"type":"motion","start_ms":1729740000000,"end_ms":1729740000900,"moves":12,"mode":"normal","lines":12,"cols":0,"facts":{"paragraph_hops":2,"window_lines":40}}
 ```
 `lines` and `cols` are deltas, never positions; times are Unix epoch milliseconds, so the daemon can count the keys it saw in that window. `facts` describe the end position (see `MotionFacts` in `crates/core/src/editor.rs`), for example "`}` twice lands exactly here" or "`f` plus the target character, then `;` twice". The character itself is never sent. Every editor message rejects unknown fields, so nothing text-like can be added by accident.
+
+**`editor_keys`**: the keys typed in Normal, Visual and Operator-pending mode, in Vim's notation, with when the first and last were typed. Sent only while the daemon says it reads no keyboard (`editor_config` with `keys: true`), and used only then, so nothing is counted twice.
+```json
+{"v":0,"type":"editor_keys","keys":"jjjjjjj","start_ms":1729740000000,"end_ms":1729740000600}
+```
+Keys typed in Insert, Replace, Command-line or Terminal mode, or at a prompt, are never sent: there they're your text. The character after `f`, `F`, `t`, `T` and `r` is sent as `x`. Only typed keys count, not what a mapping or a script ran. The Vim plugin sends them from `KeyInputPre` (Vim 9.1.0563 and later) or `vim.on_key` (Neovim). VS Code can't see keys under vscodevim, so the companion sends single cursor steps as `j`, `k`, `h` and `l`. The daemon takes at most 256 keys a message and drops any it doesn't understand.
 
 **`operator`**: `d`, `c` or `y` ran and its range was exactly these text objects, best match first. Names come from a fixed list (`iw`, `aw`, `iW`, `aW`, `ip`, `ap`, `i(`/`a(`, `i[`/`a[`, `i{`/`a{`, `i<`/`a<`, and the quotes); the text is never sent.
 ```json

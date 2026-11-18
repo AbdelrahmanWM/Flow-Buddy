@@ -33,6 +33,12 @@ scripts/install.sh --with-udev    # builds with Rust; a release download needs n
 flowbuddy tour                    # how it works, a sample tip, and the settings that matter
 ```
 
+Or, to try it in Vim, Neovim and VS Code without giving it your keyboard:
+
+```sh
+scripts/install.sh --editor-only  # then open your editor; see "Two ways to install"
+```
+
 [docs/install.md](docs/install.md) has release downloads, keyboard access, the editor plugins, updating and uninstalling.
 
 ## Privacy, in three lines
@@ -94,9 +100,25 @@ The pictures are made by `scripts/screenshots/shoot.sh`, in a throwaway GNOME se
 
 The parts that teach (the habit rules, the skill model, the reviews, the measurement) don't depend on Vim. Vim comes first because its keys are a skill with a lot of room to grow. The shell is a second, smaller pack (`cd ..` again and again, `Ctrl-r` for history). Next are the browser with Vimium (#124) and JetBrains IDEs (#125). If there's a tool you'd like Flow Buddy to teach, open a discussion.
 
+## Two ways to install
+
+| | Editor only | Full |
+|---|---|---|
+| Install | `scripts/install.sh --editor-only` | `scripts/install.sh --with-udev`, then log out and back in |
+| Keyboard access | none | reads the keyboard (see [privacy](docs/privacy.md#keyboard-access)) |
+| Vim and Neovim: motions, text objects, operators, repeats, mistakes | ✓ | ✓ |
+| VS Code with vscodevim | motions and repeats, counted from single cursor steps | everything |
+| `:` command tips, and tips for what you do in Insert mode | | ✓ |
+| The shell's vi mode, shell commands, Claude Code's Vim mode | | ✓ |
+| Tips | in the editor | in the editor, the top bar, notifications |
+| Lessons, reviews, practice, the skill map, summaries, `coach` | ✓ | ✓ |
+| Runs as | started by the editor plugins; stops when the last editor has been closed for ten minutes | a service |
+
+Editor only is the quick way to try it: the plugins tell the daemon what you type in Vim's moving modes (never Insert or the command line), and nothing reads your keyboard. Both use the same database, so moving up to the full install later keeps everything.
+
 ## Where it runs
 
-Linux: GNOME on Wayland (with the top-bar indicator and the settings window), or any X11 desktop such as KDE, Xfce or i3 (tips as notifications). Not yet KDE on Wayland (#123) or macOS.
+Linux. The full install: GNOME on Wayland (with the top-bar indicator and the settings window), or any X11 desktop such as KDE, Xfce or i3 (tips as notifications). Editor only: any Linux desktop, including KDE on Wayland. Not yet macOS.
 
 ## Contributing
 

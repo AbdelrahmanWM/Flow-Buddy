@@ -1,6 +1,7 @@
 {
   "name": "flowbuddy-vscode",
   "displayName": "Flow Buddy",
+  "icon": "icon.png",
   "description": "Tells the local Flow Buddy daemon whether the editor has focus, vscodevim's mode and how the cursor moved. Numbers and flags only; nothing leaves your machine.",
   "version": "0.1.0",
   "publisher": "flowbuddy",
@@ -91,12 +92,17 @@
             "statusBar"
           ],
           "enumDescriptions": [
-            "Flow Buddy's card on the desktop, with the whole tip, what it does and the answers (from the top bar on GNOME, a notification elsewhere)",
+            "Flow Buddy's card on the desktop, with the whole tip, what it does and the answers (from the top bar on GNOME, a notification elsewhere). With an editor-only install there's no desktop card, so tips show as VS Code notifications",
             "A VS Code notification at the bottom right, with Got it and Not helpful, and the tip in the status bar",
             "Only VS Code's status bar, highlighted, for a few seconds"
           ],
           "default": "desktop",
           "description": "How Flow Buddy's tips show in VS Code."
+        },
+        "flowbuddy.startDaemon": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start Flow Buddy's daemon when it isn't running and no service runs it (an editor-only install). It reads no keyboard, and exits by itself ten minutes after the last editor closes."
         }
       }
     },

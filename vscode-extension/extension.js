@@ -21,6 +21,44 @@ const tips = require('./tips');
 
 let link = null;
 
+// With no daemon and no service to run one (an editor-only install),
+// start one that reads no keyboard. It runs on its own, serves the next
+// window too, and exits ten minutes after the last editor closes. Off
+// with the setting flowbuddy.startDaemon.
+function startDaemon() {
+    const vscode = require('vscode');
+    const fs = require('fs');
+    const os = require('os');
+    const exists = p => {
+        try {
+            fs.accessSync(p, fs.constants.X_OK);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+    const config = process.env.XDG_CONFIG_HOME || `${os.homedir()}/.config`;
+    const socket = process.env.FLOWBUDDY_SOCKET || `/run/user/${process.getuid()}/flowbuddy.sock`;
+    const bin = tools.daemonToStart({
+        enabled: vscode.workspace.getConfiguration('flowbuddy').get('startDaemon', true),
+        socketExists: fs.existsSync(socket),
+        serviceExists: fs.existsSync(`${config}/systemd/user/flowbuddyd.service`),
+        pathVar: process.env.PATH,
+        home: os.homedir(),
+        exists,
+    });
+    if (!bin)
+        return false;
+    try {
+        require('child_process').spawn(bin, ['--editor-only', '--exit-when-idle'],
+            {detached: true, stdio: 'ignore'}).unref();
+        return true;
+    } catch (e) {
+        console.warn(`flowbuddy: couldn't start ${bin}: ${e}`);
+        return false;
+    }
+}
+
 function activate(context) {
     let focus = null;
     let modes = null;
@@ -37,7 +75,9 @@ function activate(context) {
             mappings?.resend();
         },
         onNudge: nudge => shown?.show(nudge),
-        showsTips: () => tips.style(require('vscode')) !== 'desktop',
+        // The desktop shows them, unless the daemon has no desktop to use.
+        showsTips: () => link.editorOnly || tips.style(require('vscode')) !== 'desktop',
+        startDaemon,
     });
     context.subscriptions.push(require('vscode').workspace.onDidChangeConfiguration(e => {
         if (e.affectsConfiguration('flowbuddy.tips'))

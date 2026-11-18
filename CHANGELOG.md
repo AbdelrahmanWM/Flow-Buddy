@@ -37,6 +37,7 @@ The first public release.
 - `scripts/install.sh` for the daemon, CLI, GNOME extension, shell hooks, Vim plugin and VS Code companion; `scripts/uninstall.sh --purge` removes everything.
 - `flowbuddy tour`, `setup`, `doctor`, `config`, and profiles. Also a GNOME settings window, VS Code palette commands and a VS Code walkthrough.
 - Prebuilt binaries for Linux x86_64 and aarch64.
+- An editor-only install (`scripts/install.sh --editor-only`): coaching in Vim, Neovim and VS Code from their plugins alone, with no keyboard access, service or `sudo`. The plugins start the daemon and it stops by itself.
 
 ### Privacy
 

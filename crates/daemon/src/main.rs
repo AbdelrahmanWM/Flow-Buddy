@@ -33,11 +33,24 @@ use crate::resolver::{Procfs, Resolver, TmuxCli};
 #[derive(Parser)]
 #[command(name = "flowbuddyd", version = flowbuddy_core::VERSION)]
 struct Args {
+    /// Read no keyboard: coach from the editor plugins alone (the Vim
+    /// plugin and the VS Code companion say where you are and what you
+    /// type in their moving modes). Needs no keyboard access.
+    #[arg(long)]
+    editor_only: bool,
+    /// With --editor-only: exit once no editor has been connected for ten
+    /// minutes. The plugins start the daemon this way when none is
+    /// running.
+    #[arg(long, requires = "editor_only")]
+    exit_when_idle: bool,
     /// Print translated keys to stderr. Development builds only.
     #[cfg(debug_assertions)]
     #[arg(long)]
     debug_keys: bool,
 }
+
+/// How long an editor-started daemon stays with no editor connected.
+const IDLE_EXIT: Duration = Duration::from_secs(600);
 
 pub fn now_ms() -> u64 {
     SystemTime::now()
@@ -73,7 +86,13 @@ async fn main() -> anyhow::Result<()> {
     let server = tokio::spawn(ipc_server::serve(listener, conn_tx));
 
     let (cap_tx, mut cap_rx) = mpsc::channel::<CaptureEvent>(1024);
-    let capture = tokio::spawn(capture::run(cap_tx));
+    // Editor only: no input device is opened. The sender is kept so the
+    // channel stays open.
+    let _no_capture = args.editor_only.then(|| cap_tx.clone());
+    let capture = (!args.editor_only).then(|| tokio::spawn(capture::run(cap_tx)));
+    if args.editor_only {
+        info!("editor only: reading no keyboard");
+    }
 
     let mut xkb_options = key_options(&config, None);
     let mut options = KeymapOptions::from_xkb(xkb_options.iter().map(String::as_str));
@@ -84,6 +103,8 @@ async fn main() -> anyhow::Result<()> {
     let mut app =
         App::new(config, state, resolver, Box::new(notify::NotifySend)).with_state_path(state_path);
     app.set_keymap_layout(layout, note);
+    app.set_editor_only(args.editor_only);
+    let mut idle_since = Instant::now();
     let db = paths::database();
     match flowbuddy_store::Store::open(&db) {
         Ok(store) => app = app.with_store(store),
@@ -98,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
     // Outside GNOME there's no extension to say what has focus; on X11 the
     // daemon can see it itself.
     let (x11_tx, mut x11_rx) = mpsc::unbounded_channel::<focus_x11::Focus>();
-    if focus_x11::wanted() {
+    if !args.editor_only && focus_x11::wanted() {
         info!("watching the focused window on X11");
         focus_x11::watch(x11_tx);
     }
@@ -145,7 +166,15 @@ async fn main() -> anyhow::Result<()> {
                     keymap = rebuild(&mut app, &keymap_config, &xkb_options, options);
                 }
             }
-            _ = ticker.tick() => app.tick(now_ms()),
+            _ = ticker.tick() => {
+                app.tick(now_ms());
+                if app.editors_connected() > 0 {
+                    idle_since = Instant::now();
+                } else if args.exit_when_idle && idle_since.elapsed() >= IDLE_EXIT {
+                    info!("no editor for a while: exiting");
+                    break;
+                }
+            }
             _ = tip_ticker.tick() => app.tick_tips(now_ms()),
             Some(f) = x11_rx.recv() => app.set_focus(f.app_id, f.pid, now_ms()),
             Some(()) = cfg_rx.recv() => match Config::load(&config_path) {
@@ -170,7 +199,9 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     drop(app); // clears the key buffer
-    capture.abort();
+    if let Some(capture) = capture {
+        capture.abort();
+    }
     server.abort();
     watcher.abort();
     Ok(())

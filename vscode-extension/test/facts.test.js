@@ -16,7 +16,7 @@ function load() {
     return module.exports;
 }
 
-const {computeFacts, rangeFacts, lineRange, rested, charObjects, lineObjects, Cursor, wordForward, wordBackward, wordEndForward} = load();
+const {computeFacts, rangeFacts, lineRange, rested, charObjects, lineObjects, Cursor, wordForward, wordBackward, wordEndForward, stepKey} = load();
 
 // Every field of MotionFacts; the daemon rejects anything else.
 const FIELDS = [
@@ -250,6 +250,13 @@ check('outside the line', {r: rangeFacts('abc', 4, 5)}, {r: null});
 check('d} over lines', lineRange(['a', 'b', 'c'], ''), {linewise: true, lines: 2, facts: {file_end: false, paragraph_hops: 1}});
 check('a blank among them', lineRange(['a', '', 'c'], '').facts, {file_end: false});
 check('dG', lineRange(['a'], undefined).facts, {file_end: true, paragraph_hops: 1});
+
+const at = (line, col) => ({line, col});
+check('step: a line down, whatever the column', [stepKey(at(3, 9), at(4, 2)), stepKey(at(3, null), at(4, null))], ['j', 'j']);
+check('step: a line up', stepKey(at(3, 0), at(2, 0)), 'k');
+check('step: a character right and left', [stepKey(at(3, 4), at(3, 5)), stepKey(at(3, 4), at(3, 3))], ['l', 'h']);
+check('step: a jump is no step', [stepKey(at(3, 4), at(8, 4)), stepKey(at(3, 4), at(3, 9)), stepKey(at(3, 4), at(3, 4))], [null, null, null]);
+check('step: nothing known', [stepKey(null, at(1, 1)), stepKey(at(3, null), at(3, 4))], [null, null]);
 
 print(`${passed} passed, ${failed} failed`);
 if (failed)

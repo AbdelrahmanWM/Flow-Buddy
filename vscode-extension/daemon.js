@@ -17,7 +17,11 @@ function socketPath() {
 }
 
 class DaemonLink {
-    constructor({version, onConnected, onNudge, showsTips = () => true}) {
+    constructor({version, onConnected, onNudge, showsTips = () => true, startDaemon = null}) {
+        // Called once, the first time nothing answers: may start a daemon.
+        this._startDaemon = startDaemon;
+        // The daemon reads no keyboard and shows tips only through editors.
+        this.editorOnly = false;
         this._version = version;
         this._onConnected = onConnected;
         // A tip to show here.
@@ -97,7 +101,18 @@ class DaemonLink {
             if (this._sock !== sock)
                 return;
             this._sock = null;
+            const answered = this._ready;
             this._ready = false;
+            // Nothing answered: an editor-only install has no service, so
+            // start the daemon ourselves, once, and try again soon.
+            if (!answered && this._startDaemon) {
+                const start = this._startDaemon;
+                this._startDaemon = null;
+                // It needs a moment to listen: look again soon, and often.
+                if (start())
+                    this._backoff = 0.2;
+            }
+            this.editorOnly = false;
             // Whatever was allowed, it's off until the daemon says so again.
             this.editorConfig = null;
             this.snippets.clear();
@@ -113,6 +128,11 @@ class DaemonLink {
         } catch (e) {
             console.warn(`flowbuddy: bad message from daemon: ${e}`);
             return;
+        }
+        if (msg.type === 'welcome' && !!msg.editor_only !== this.editorOnly) {
+            // With no desktop to show tips, they show here: say so.
+            this.editorOnly = !!msg.editor_only;
+            this.hello();
         }
         if (msg.type === 'editor_config') {
             this.editorConfig = msg;

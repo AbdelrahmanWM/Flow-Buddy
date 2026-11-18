@@ -150,6 +150,24 @@ pub fn allowed(path: Option<&str>, config: &TextConfig, snippets: bool) -> bool 
     config.shapes
 }
 
+/// Whether `url`'s host is this machine: exactly `localhost`, `127.0.0.1`
+/// or `[::1]`, with any port. `localhost.example.com` isn't.
+pub fn is_local_url(url: &str) -> bool {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // After any user:password@.
+    let host_port = authority.rsplit('@').next().unwrap_or("");
+    let host = if host_port.starts_with('[') {
+        host_port.split_inclusive(']').next().unwrap_or("")
+    } else {
+        host_port.split(':').next().unwrap_or("")
+    };
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "localhost" | "127.0.0.1" | "[::1]"
+    )
+}
+
 /// Whether the AI provider runs on this machine: a command (such as
 /// `ollama run`), or an OpenAI-compatible server on localhost. Snippets
 /// only go elsewhere with `[text] cloud = true`.
@@ -158,12 +176,7 @@ pub fn local_provider(ai: &crate::config::AiConfig) -> bool {
     match ai.provider {
         AiProvider::Command => true,
         AiProvider::None => ai.command.is_some(),
-        AiProvider::Openai => ai.base_url.as_deref().is_some_and(|u| {
-            let host = u.split("://").nth(1).unwrap_or(u);
-            ["localhost", "127.0.0.1", "[::1]"]
-                .iter()
-                .any(|h| host.starts_with(h))
-        }),
+        AiProvider::Openai => ai.base_url.as_deref().is_some_and(is_local_url),
         AiProvider::Anthropic | AiProvider::ClaudeCode => false,
     }
 }
@@ -389,6 +402,29 @@ pub fn redact(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_urls_are_exactly_local() {
+        for u in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:8080",
+            "http://[::1]:1234/v1",
+            "https://LOCALHOST/v1",
+            "localhost:11434",
+        ] {
+            assert!(is_local_url(u), "{u}");
+        }
+        for u in [
+            "http://localhost.example.com/v1",
+            "http://127.0.0.1.example.com",
+            "http://localhost@example.com/v1",
+            "https://api.example.com/localhost",
+            "http://example.com:80/?h=localhost",
+            "",
+        ] {
+            assert!(!is_local_url(u), "{u}");
+        }
+    }
 
     fn on() -> TextConfig {
         TextConfig {

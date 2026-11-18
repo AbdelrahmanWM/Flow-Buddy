@@ -69,12 +69,9 @@ pub fn load(path: &Path) -> Vec<Session> {
 }
 
 pub fn save(path: &Path, sessions: &[Session]) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
     let from = sessions.len().saturating_sub(KEEP);
     let text = serde_json::to_string_pretty(&sessions[from..]).map_err(std::io::Error::other)?;
-    std::fs::write(path, text)
+    flowbuddy_core::paths::write_private(path, text.as_bytes())
 }
 
 /// What the plugin writes when the drill ends.
@@ -152,19 +149,16 @@ pub fn report(session: &Session, before: Option<&Session>, stopped: bool, now: u
 
 /// "Tue 14:02", or "today 14:02".
 fn ago(at: u64, now: u64) -> String {
-    use chrono::{Local, TimeZone};
-    let (Some(t), Some(n)) = (
-        Local.timestamp_opt(at as i64, 0).single(),
-        Local.timestamp_opt(now as i64, 0).single(),
-    ) else {
+    use flowbuddy_core::time;
+    let (Some(t), Some(n)) = (time::at_s(at), time::at_s(now)) else {
         return String::new();
     };
-    if t.date_naive() == n.date_naive() {
-        t.format("today %H:%M").to_string()
-    } else if n - t < chrono::Duration::days(6) {
-        t.format("%a %H:%M").to_string()
+    if t.date() == n.date() {
+        time::format(&t, "today %H:%M")
+    } else if time::seconds_between(&t, &n) < 6 * 86_400 {
+        time::format(&t, "%a %H:%M")
     } else {
-        t.format("%-d %b").to_string()
+        time::format(&t, "%-d %b")
     }
 }
 
@@ -208,11 +202,12 @@ pub fn seed() -> u64 {
 }
 
 pub fn write_drill(dir: &Path, drill: &Drill) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
     let path = dir.join("drill.json");
-    std::fs::write(
+    flowbuddy_core::paths::write_private(
         &path,
-        serde_json::to_string(drill).map_err(std::io::Error::other)?,
+        serde_json::to_string(drill)
+            .map_err(std::io::Error::other)?
+            .as_bytes(),
     )?;
     Ok(path)
 }

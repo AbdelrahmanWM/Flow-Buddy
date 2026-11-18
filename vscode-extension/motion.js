@@ -8,7 +8,7 @@
 'use strict';
 
 const vscode = require('vscode');
-const {computeFacts, rested} = require('./facts');
+const {computeFacts, rested, stepKey} = require('./facts');
 const {textAllowed} = require('./textguard');
 
 const REST_MS = 1000;
@@ -73,6 +73,30 @@ class MotionTracker {
         this._rests = [];
         // Where the last edit was, for `g;`: the document and line only.
         this._lastChange = null;
+        // Single cursor steps as keys, for a daemon with no keyboard.
+        this._keys = '';
+        this._keysStart = 0;
+        this._keysEnd = 0;
+        this._keysId = null;
+    }
+
+    // One step (j, k, h or l) seen: batched, and sent before anything else.
+    _step(key, now) {
+        if (!this._keys)
+            this._keysStart = now;
+        this._keys += key;
+        this._keysEnd = now;
+        clearTimeout(this._keysId);
+        this._keysId = setTimeout(() => this._flushKeys(), 150);
+    }
+
+    _flushKeys() {
+        clearTimeout(this._keysId);
+        this._keysId = null;
+        if (!this._keys)
+            return;
+        this._link.send({type: 'editor_keys', keys: this._keys, start_ms: this._keysStart, end_ms: this._keysEnd});
+        this._keys = '';
     }
 
     enable(subscriptions) {
@@ -143,6 +167,12 @@ class MotionTracker {
         if (!from || samePos(from, pos))
             return;
         const now = Date.now();
+        // The daemon asks for these only while it reads no keyboard.
+        if (this._link.editorConfig?.keys) {
+            const key = stepKey(from, pos);
+            if (key)
+                this._step(key, now);
+        }
         this._segment ??= {mode, start: from, startMs: now, moves: 0, top};
         this._segment.moves++;
         this._segment.end = pos;
@@ -159,6 +189,7 @@ class MotionTracker {
     }
 
     _finish() {
+        this._flushKeys();
         clearTimeout(this._restId);
         this._restId = null;
         const seg = this._segment;

@@ -4,8 +4,33 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 use flowbuddy_core::ipc::{self, ClientKind, ClientMsg, Command, ServerMsg};
+
+/// The daemon can't be reached, and why, in a few words.
+#[derive(Debug)]
+pub struct NotRunning(pub String);
+
+impl std::fmt::Display for NotRunning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "flowbuddyd isn't running ({}). Start it with: systemctl --user start flowbuddyd (flowbuddy doctor checks the rest)",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for NotRunning {}
+
+/// Why the daemon can't be reached, without the advice: for `status` and
+/// `doctor`, which give their own.
+pub fn why(e: &anyhow::Error) -> String {
+    match e.downcast_ref::<NotRunning>() {
+        Some(n) => n.0.clone(),
+        None => format!("{e:#}"),
+    }
+}
 
 pub struct Client {
     reader: BufReader<UnixStream>,
@@ -16,11 +41,14 @@ pub struct Client {
 impl Client {
     pub fn connect(kind: ClientKind) -> anyhow::Result<Client> {
         let path = flowbuddy_core::paths::socket();
-        let stream = UnixStream::connect(&path).with_context(|| {
-            format!(
-                "flowbuddyd is not running (no socket at {})",
-                path.display()
-            )
+        let stream = UnixStream::connect(&path).map_err(|e| {
+            let at = path.display();
+            NotRunning(match e.kind() {
+                std::io::ErrorKind::NotFound => format!("no socket at {at}"),
+                std::io::ErrorKind::ConnectionRefused => format!("nothing is listening at {at}"),
+                std::io::ErrorKind::PermissionDenied => format!("{at} isn't yours to open"),
+                _ => format!("{at}: {e}"),
+            })
         })?;
         stream.set_read_timeout(Some(Duration::from_secs(2)))?;
         let mut client = Client {

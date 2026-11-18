@@ -498,11 +498,8 @@ impl State {
 
     /// Write atomically (temp file + rename).
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        crate::paths::write_private(&tmp, &serde_json::to_vec_pretty(self)?)?;
         std::fs::rename(tmp, path)
     }
 

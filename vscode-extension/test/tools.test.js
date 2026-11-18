@@ -103,6 +103,15 @@ check('map escapes', html.includes('&lt;C-d&gt;') && html.includes('&quot;half&q
 check('map counts', html.includes('Basics <small>you use 1 of 2</small>'), true);
 check('map: no scripts', /<script/i.test(html) || !html.includes("default-src 'none'"), false);
 check('drills: the CLI\'s names', t.DRILLS.map(d => d.args.join('')).join(' '), ' vertical horizontal delete inside');
+const has = (...paths) => p => paths.includes(p);
+const start = over => t.daemonToStart({enabled: true, socketExists: false, serviceExists: false,
+    pathVar: '/usr/bin:/opt/bin', home: '/home/me', exists: has('/opt/bin/flowbuddyd', '/home/me/.local/bin/flowbuddyd'), ...over});
+check('daemon: on the PATH first', start({}), '/opt/bin/flowbuddyd');
+check('daemon: else where the installer puts it', start({pathVar: '/usr/bin'}), '/home/me/.local/bin/flowbuddyd');
+check('daemon: not when turned off', start({enabled: false}), null);
+check('daemon: not when a socket is there', start({socketExists: true}), null);
+check('daemon: not when the service exists', start({serviceExists: true}), null);
+check('daemon: not when it isn\'t installed', start({exists: has()}), null);
 check('map: nothing yet', t.mapHtml({nothing_yet: true}).includes('Nothing recorded yet'), true);
 
 print(`${passed} passed, ${failed} failed`);

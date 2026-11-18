@@ -8,6 +8,9 @@ A companion extension for [Flow Buddy](../README.md). The daemon only knows whic
 
 Plain JavaScript, no build step and no dependencies. `scripts/install.sh` installs it; it does nothing until the daemon is running, and reconnects when the daemon restarts.
 
+
+With an editor-only install (`scripts/install.sh --editor-only`), nothing reads your keyboard. The companion then starts the daemon itself when none is running (the `flowbuddy.startDaemon` setting turns that off), shows tips as VS Code notifications, and reports single cursor steps (a line down, a character right) as `j`, `k`, `h` and `l`, because an extension can't see keys while vscodevim has them. Keys that don't move the cursor one step go uncounted.
+
 ## Privacy
 
 The extension sends only the fields in `crates/core/src/editor.rs`: flags, modes, counts and deltas. It never sends text, characters, file names, paths or absolute positions. Motion facts are computed here from the text, and only their numbers leave the extension (for example "`f` plus the character at the end, then `;` twice", without the character). The daemon rejects any field it doesn't know, and it is on the same machine: nothing goes over the network.

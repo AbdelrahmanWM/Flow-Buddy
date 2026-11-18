@@ -13,6 +13,9 @@ pub struct Env {
     pub status: Result<Status, String>,
     /// `systemctl --user is-enabled flowbuddyd`: `None` without systemd.
     pub service_enabled: Option<bool>,
+    /// The service's unit file is there: a full install. Without it (an
+    /// editor-only install), the editor plugins start the daemon.
+    pub service_installed: bool,
     /// `XDG_CURRENT_DESKTOP`, e.g. `ubuntu:GNOME`.
     pub desktop: String,
     pub gnome_extension_installed: bool,
@@ -93,7 +96,26 @@ fn bad(what: impl Into<String>, fix: impl Into<String>) -> Check {
 
 pub fn checks(env: &Env) -> Vec<Check> {
     let mut out = Vec::new();
+    // Editor only: the daemon says so, or (when it isn't running) there's
+    // no service to run it. Then the keyboard, the service, the desktop
+    // extension and the shell hooks aren't part of the install.
+    let editor_only = match &env.status {
+        Ok(s) => s.editor_only,
+        Err(_) => !env.service_installed,
+    };
     match &env.status {
+        Ok(s) if s.editor_only => {
+            out.push(ok(format!(
+                "the daemon is running ({}), for the editors only: no keyboard is read",
+                s.daemon_version
+            )));
+            if env.daemon_replaced {
+                out.push(bad(
+                    "the daemon is an older build: it was updated while it ran",
+                    "close Vim and VS Code, wait for it to stop (or `pkill -x flowbuddyd`), and open them again",
+                ));
+            }
+        }
         Ok(s) => {
             out.push(ok(format!("the daemon is running ({})", s.daemon_version)));
             if env.daemon_replaced {
@@ -117,12 +139,17 @@ pub fn checks(env: &Env) -> Vec<Check> {
                 ));
             }
         }
+        Err(e) if editor_only => out.push(bad(
+            format!("the daemon isn't running ({e})"),
+            "open Vim or VS Code: with an editor-only install, their plugins start it (and it stops ten minutes after the last one closes). For the full install: scripts/install.sh --with-udev",
+        )),
         Err(e) => out.push(bad(
             format!("the daemon isn't running ({e})"),
             "systemctl --user start flowbuddyd; if it stops again, journalctl --user -u flowbuddyd",
         )),
     }
     match env.service_enabled {
+        _ if editor_only => {}
         Some(true) => out.push(ok("the service starts at login")),
         Some(false) => out.push(bad(
             "the service doesn't start at login",
@@ -130,7 +157,11 @@ pub fn checks(env: &Env) -> Vec<Check> {
         )),
         None => {}
     }
-    if env.desktop.to_uppercase().contains("GNOME") {
+    if editor_only {
+        out.push(ok(
+            "editor only: coaching and tips in Vim, Neovim and VS Code (scripts/install.sh --with-udev adds the shell, Claude Code and the desktop)",
+        ));
+    } else if env.desktop.to_uppercase().contains("GNOME") {
         let connected = env
             .status
             .as_ref()
@@ -164,7 +195,8 @@ pub fn checks(env: &Env) -> Vec<Check> {
         )),
         _ => {}
     }
-    for (shell, hooked) in &env.shells {
+    // The hooks only matter to a daemon that reads the keyboard.
+    for (shell, hooked) in env.shells.iter().filter(|_| !editor_only) {
         out.push(if *hooked {
             ok(format!("{shell} reports its commands"))
         } else {
@@ -337,6 +369,7 @@ impl Env {
         Env {
             status,
             service_enabled,
+            service_installed: config_dir.join("systemd/user/flowbuddyd.service").exists(),
             desktop: std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
             gnome_extension_installed: data
                 .join("gnome-shell/extensions/flowbuddy@abdelrahmanwm.github.io/extension.js")
@@ -388,6 +421,8 @@ mod tests {
             mode: CoachingMode::Balanced,
             paused_until: None,
             context: "unsupported".into(),
+            why: None,
+            editor_only: false,
             app: None,
             confident: false,
             mode_from_editor: false,
@@ -405,6 +440,7 @@ mod tests {
         Env {
             status: Ok(status(1, vec![ClientKind::GnomeExtension])),
             service_enabled: Some(true),
+            service_installed: true,
             desktop: "ubuntu:GNOME".into(),
             gnome_extension_installed: true,
             vscode: (true, true),
@@ -498,6 +534,42 @@ mod tests {
         e.status = Err("connection refused".into());
         let text = report(&checks(&e));
         assert!(text.contains("✗ the daemon isn't running (connection refused)\n    → systemctl --user start flowbuddyd"), "{text}");
+    }
+
+    #[test]
+    fn an_editor_only_install_isnt_missing_the_rest() {
+        // Running for the editors only: no complaint about the keyboard,
+        // the service, the desktop extension or the shell hooks.
+        let mut e = env();
+        if let Ok(s) = &mut e.status {
+            s.editor_only = true;
+            s.keyboards = 0;
+            s.clients.clear();
+        }
+        e.service_enabled = Some(false);
+        e.service_installed = false;
+        e.gnome_extension_installed = false;
+        e.shells = vec![("bash", false)];
+        let c = checks(&e);
+        assert!(c.iter().all(|c| c.ok), "{}", report(&c));
+        let text = report(&c);
+        assert!(
+            text.contains("for the editors only: no keyboard is read"),
+            "{text}"
+        );
+        assert!(
+            text.contains("editor only: coaching and tips in Vim"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("bash") && !text.contains("service"),
+            "{text}"
+        );
+        // Not running, and no service to start: the editors start it.
+        e.status = Err("no socket at /run/user/1000/flowbuddy.sock".into());
+        let text = report(&checks(&e));
+        assert!(text.contains("open Vim or VS Code"), "{text}");
+        assert!(!text.contains("systemctl"), "{text}");
     }
 
     #[test]

@@ -56,9 +56,47 @@ function! s:now_ms() abort
   return s:epoch_base_ms + float2nr(reltimefloat(reltime(s:started)) * 1000)
 endfunction
 
+" Whether the socket at `path` belongs to you. Your runtime folder is
+" yours alone, so anything in it does. Anywhere else (over ssh the socket
+" is in /tmp) another user could have put a socket of their own there, to
+" pose as the daemon: the file's owner is checked, once per file.
+let s:owner_checked = {}
+function! flowbuddy#socket_is_mine(path) abort
+  let runtime = empty($XDG_RUNTIME_DIR) ? '' : fnamemodify($XDG_RUNTIME_DIR, ':p:h')
+  if !empty(runtime) && fnamemodify(a:path, ':p:h') ==# runtime
+    return 1
+  endif
+  let key = a:path . ' ' . getftime(a:path)
+  if !has_key(s:owner_checked, key)
+    let s:owner_checked = {}
+    let s:owner_checked[key] = flowbuddy#owner(a:path) == flowbuddy#uid()
+  endif
+  return s:owner_checked[key]
+endfunction
+
+" The user id that owns `path`, or -1.
+function! flowbuddy#owner(path) abort
+  if has('nvim')
+    let st = luaeval('(vim.uv or vim.loop).fs_stat(_A)', a:path)
+    return type(st) == v:t_dict ? get(st, 'uid', -1) : -1
+  endif
+  let out = trim(system('stat -c %u -- ' . shellescape(a:path)))
+  return v:shell_error || out !~# '^\d\+$' ? -1 : str2nr(out)
+endfunction
+
+function! flowbuddy#uid() abort
+  if !exists('s:uid')
+    let s:uid = has('nvim') ? luaeval('(vim.uv or vim.loop).getuid()') : str2nr(trim(system('id -u')))
+  endif
+  return s:uid
+endfunction
+
 function! s:open() abort
   let path = s:socket_path()
   if !filereadable(path) && getftype(path) !=# 'socket'
+    return 0
+  endif
+  if !flowbuddy#socket_is_mine(path)
     return 0
   endif
   try
@@ -77,6 +115,9 @@ function! s:open() abort
     let s:ch = v:null
     return 0
   endif
+  " A new daemon says again whether it wants keys.
+  let s:send_keys = 0
+  call flowbuddy#drop_keys()
   " Over ssh this pid is on another machine: it would only confuse.
   call s:send({'type': 'hello', 'client': 'editor', 'client_version': s:VERSION,
         \ 'editor': has('nvim') ? 'nvim' : 'vim',
@@ -122,6 +163,10 @@ function! s:send(msg) abort
   if !s:connected()
     return
   endif
+  " Keys typed before this go first, so the daemon sees things in order.
+  if !empty(s:keys) && get(a:msg, 'type', '') !=# 'editor_keys'
+    call flowbuddy#flush_keys()
+  endif
   let line = json_encode(extend({'v': 0}, a:msg)) . "\n"
   try
     if has('nvim')
@@ -165,6 +210,10 @@ function! flowbuddy#on_daemon(line) abort
   endif
   let type = get(msg, 'type', '')
   if type ==# 'editor_config'
+    let s:send_keys = get(msg, 'keys', v:false) is v:true
+    if !s:send_keys
+      call flowbuddy#drop_keys()
+    endif
     let s:text = {'shapes': get(msg, 'shapes', v:false) is v:true,
           \ 'snippets': get(msg, 'snippets', v:false) is v:true,
           \ 'exclude': get(msg, 'exclude', []), 'projects': get(msg, 'projects', [])}
@@ -177,6 +226,102 @@ function! flowbuddy#on_daemon(line) abort
     let found = s:text.snippets ? flowbuddy#snippets_for(get(msg, 'times', [])) : []
     call s:send({'type': 'snippets', 'id': get(msg, 'id', 0), 'snippets': found})
   endif
+endfunction
+
+" Keys ------------------------------------------------------------------------
+
+" When the daemon reads no keyboard (an editor-only install), it asks for
+" the keys you type in Normal, Visual and Operator-pending mode: those are
+" commands. Keys typed in Insert, Replace, Command-line or Terminal mode,
+" or at a prompt, are your text, and are never sent or even kept here. The
+" character after f, F, t, T or r is sent as "x": after r it's text too.
+" Only keys you typed count: not what a mapping or a script ran.
+" Off altogether with `let g:flowbuddy_keys = 0`.
+let s:send_keys = 0
+let s:keys = ''
+let s:keys_start = 0
+let s:keys_end = 0
+let s:keys_timer = -1
+let s:mask_next = 0
+let s:arg_next = 0
+
+" What to send for `key` (in Vim's notation, as keytrans() gives it) typed
+" in `mode`: the key, "x" for a masked one, or '' for nothing.
+function! flowbuddy#key_to_send(key, mode, typed) abort
+  if !a:typed
+    return ''
+  endif
+  if s:mask_next
+    let s:mask_next = 0
+    return 'x'
+  endif
+  if a:mode !~# "^n" && a:mode !~# "^[vV\<C-v>]"
+    let s:arg_next = 0
+    return ''
+  endif
+  if s:arg_next
+    " A register, a mark, or the second key of g, z, [ and the like.
+    let s:arg_next = 0
+    return a:key
+  endif
+  if a:key =~# '^[fFtTr]$'
+    let s:mask_next = 1
+  elseif a:key =~# '^["m''`@gzZ\[\]]$' || a:key ==? '<C-W>'
+        \ || (a:key ==# 'q' && reg_recording() ==# '')
+    let s:arg_next = 1
+  endif
+  return a:key
+endfunction
+
+" KeyInputPre (Vim) and vim.on_key (Neovim) come here with each key.
+function! flowbuddy#on_key(char, mode, typed) abort
+  if !s:send_keys || s:simulating || !get(g:, 'flowbuddy_keys', 1) || get(g:, 'flowbuddy_practising', 0)
+    let s:mask_next = 0
+    let s:arg_next = 0
+    return
+  endif
+  let k = flowbuddy#key_to_send(keytrans(a:char), a:mode, a:typed)
+  if k ==# ''
+    return
+  endif
+  let now = s:now_ms()
+  if empty(s:keys)
+    let s:keys_start = now
+  endif
+  let s:keys .= k
+  let s:keys_end = now
+  call timer_stop(s:keys_timer)
+  if strchars(s:keys) >= 120
+    call flowbuddy#flush_keys()
+  else
+    let s:keys_timer = timer_start(150, {-> flowbuddy#flush_keys()})
+  endif
+endfunction
+
+function! flowbuddy#flush_keys() abort
+  call timer_stop(s:keys_timer)
+  if empty(s:keys)
+    return
+  endif
+  let msg = {'type': 'editor_keys', 'keys': s:keys, 'start_ms': s:keys_start, 'end_ms': s:keys_end}
+  let s:keys = ''
+  call s:send(msg)
+endfunction
+
+function! flowbuddy#drop_keys() abort
+  call timer_stop(s:keys_timer)
+  let s:keys = ''
+  let s:mask_next = 0
+  let s:arg_next = 0
+endfunction
+
+" For the tests: the keys waiting to be sent, and switching sending on.
+function! flowbuddy#pending_keys() abort
+  return s:keys
+endfunction
+
+function! flowbuddy#want_keys(on) abort
+  let s:send_keys = a:on
 endfunction
 
 " Tips ------------------------------------------------------------------------
@@ -466,15 +611,79 @@ function! flowbuddy#start() abort
   endif
   let s:started = reltime()
   if has('nvim')
-    let [sec, usec] = luaeval('{vim.uv.gettimeofday()}')
+    let [sec, usec] = luaeval('{(vim.uv or vim.loop).gettimeofday()}')
     let s:epoch_base_ms = sec * 1000 + usec / 1000
   else
     let s:epoch_base_ms = str2nr(trim(system('date +%s%3N')))
   endif
   let s:last = getpos('.')[1:2]
   let s:last_top = line('w0')
-  call s:open()
+  if !s:open() && flowbuddy#start_daemon()
+    " It needs a moment to listen: look often until it does.
+    call s:await_daemon(40)
+  endif
   let s:reconnect_timer = timer_start(s:RECONNECT_MS, function('s:retry'), {'repeat': -1})
+endfunction
+
+" With no daemon running and no service to run one (an editor-only
+" install), start one that reads no keyboard: `flowbuddyd --editor-only
+" --exit-when-idle`, on its own, so it outlives this Vim and serves the
+" next; it exits by itself ten minutes after the last editor closes.
+" Never over ssh, and never when the full install's service exists: if
+" that's stopped, you stopped it. Off with `let g:flowbuddy_start_daemon = 0`.
+" Returns the program to start, or '' for none.
+function! flowbuddy#daemon_to_start() abort
+  if !get(g:, 'flowbuddy_start_daemon', 1) || !empty($SSH_CONNECTION)
+    return ''
+  endif
+  if getftype(s:socket_path()) ==# 'socket'
+    return ''
+  endif
+  let config = empty($XDG_CONFIG_HOME) ? expand('~/.config') : $XDG_CONFIG_HOME
+  if filereadable(config . '/systemd/user/flowbuddyd.service')
+    return ''
+  endif
+  for bin in [get(g:, 'flowbuddy_daemon', ''), exepath('flowbuddyd'), expand('~/.local/bin/flowbuddyd')]
+    if !empty(bin) && executable(bin)
+      return bin
+    endif
+  endfor
+  return ''
+endfunction
+
+" Try to connect every 150 ms, `tries` times; then the slow retry takes over.
+function! s:await_daemon(tries, ...) abort
+  if s:connected() || s:open() || a:tries <= 1
+    return
+  endif
+  call timer_start(150, function('s:await_daemon', [a:tries - 1]))
+endfunction
+
+let s:daemon_started = 0
+function! flowbuddy#start_daemon() abort
+  if s:daemon_started
+    return 0
+  endif
+  let bin = flowbuddy#daemon_to_start()
+  if empty(bin)
+    return 0
+  endif
+  let s:daemon_started = 1
+  let cmd = [bin, '--editor-only', '--exit-when-idle']
+  " In a session of its own, so closing this terminal doesn't end it.
+  if executable('setsid')
+    let cmd = ['setsid', '-f'] + cmd
+  endif
+  try
+    if has('nvim')
+      call jobstart(cmd, {'detach': v:true})
+    else
+      call job_start(cmd, {'in_io': 'null', 'out_io': 'null', 'err_io': 'null', 'stoponexit': ''})
+    endif
+  catch
+    return 0
+  endtry
+  return 1
 endfunction
 
 function! flowbuddy#stop() abort

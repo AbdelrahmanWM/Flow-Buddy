@@ -261,6 +261,16 @@ pub enum ClientMsg {
     EditorMode { mode: EditorMode },
     /// Editor clients: a finished movement and facts about where it ended.
     Motion(Motion),
+    /// Editor clients: keys typed in Normal, Visual or Operator-pending
+    /// mode, in Vim's notation (`jjj5w<C-D>`), typed between `start_ms`
+    /// and `end_ms`. Never keys from Insert or Command-line mode, and the
+    /// character after `f`, `t` or `r` is sent as `x`. Used only while the
+    /// daemon reads no keyboard itself.
+    EditorKeys {
+        keys: String,
+        start_ms: u64,
+        end_ms: u64,
+    },
     /// Editor clients: an operator's range matched these text objects.
     Operator(OperatorReport),
     /// Editor clients: something happened in the editor's UI, by name.
@@ -304,7 +314,7 @@ pub struct TipSnippet {
 }
 
 impl ClientMsg {
-    pub const TYPES: [&'static str; 14] = [
+    pub const TYPES: [&'static str; 15] = [
         "hello",
         "focus",
         "ctx",
@@ -314,6 +324,7 @@ impl ClientMsg {
         "editor_focus",
         "editor_mode",
         "motion",
+        "editor_keys",
         "operator",
         "editor_event",
         "editor_mappings",
@@ -370,6 +381,11 @@ pub enum ServerMsg {
     Welcome {
         daemon_version: String,
         mode: CoachingMode,
+        /// The daemon reads no keyboard and shows tips only through the
+        /// editors: an editor that would leave tips to the desktop shows
+        /// them itself.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        editor_only: bool,
     },
     Ack {
         id: Option<u64>,
@@ -412,6 +428,10 @@ pub struct EditorConfig {
     pub exclude: Vec<String>,
     /// Folders snippets may come from, expanded.
     pub projects: Vec<String>,
+    /// The daemon reads no keyboard: send the keys typed in Normal, Visual
+    /// and Operator-pending mode (`editor_keys`). Off, none are sent.
+    #[serde(default)]
+    pub keys: bool,
 }
 
 impl EditorConfig {
@@ -425,6 +445,7 @@ impl EditorConfig {
                 .iter()
                 .map(|p| crate::text::expand(p))
                 .collect(),
+            keys: false,
         }
     }
 }
@@ -441,6 +462,13 @@ pub struct Status {
     pub paused_until: Option<u64>,
     /// Context *kind* only, never keys or titles.
     pub context: String,
+    /// The daemon was started to read no keyboard (`--editor-only`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub editor_only: bool,
+    /// When the context is unsupported, why, in a few words: "a command is
+    /// running: git", "the shell isn't in vi mode".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// The focused app's id, e.g. `code_code`. Never its title.
     #[serde(default)]
     pub app: Option<String>,
@@ -627,6 +655,7 @@ mod tests {
             r#"{"v":0,"type":"operator","op":"delete","at_ms":1729740000500,"objects":["i(","a("]}"#,
             r#"{"v":0,"type":"editor_mode","mode":"visual_line"}"#,
             r#"{"v":0,"type":"motion","start_ms":1729740000000,"end_ms":1729740000900,"moves":12,"mode":"normal","lines":12,"cols":0,"facts":{"paragraph_hops":2,"window_lines":40}}"#,
+            r#"{"v":0,"type":"editor_keys","keys":"jjjjjjj","start_ms":1729740000000,"end_ms":1729740000600}"#,
             r#"{"v":0,"type":"command","id":7,"name":"status"}"#,
             r#"{"v":0,"type":"command","id":8,"name":"set_mode","args":{"mode":"active"}}"#,
             r#"{"v":0,"type":"command","id":9,"name":"pause","args":{"seconds":3600}}"#,

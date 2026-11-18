@@ -4,6 +4,10 @@
 #   scripts/install.sh               build (or, from a release, use bin/) and install everything
 #   scripts/install.sh --dry-run     print what would be done
 #   scripts/install.sh --with-udev   also install the keyboard access rule (sudo)
+#   scripts/install.sh --editor-only  only the programs and the editor plugins: no
+#                                     keyboard access, service, desktop extension
+#                                     or shell hooks. Coaching in Vim, Neovim and
+#                                     VS Code only; the plugins start the daemon.
 #   scripts/install.sh --yes         don't ask before editing ~/.bashrc
 #
 # Installs:
@@ -36,16 +40,22 @@ udev_rule=/etc/udev/rules.d/70-flowbuddy.rules
 marker_begin="# >>> flowbuddy >>>"
 marker_end="# <<< flowbuddy <<<"
 
-dry_run=0 with_udev=0 yes=0
+dry_run=0 with_udev=0 yes=0 editor_only=0
 for arg in "$@"; do
     case $arg in
         --dry-run) dry_run=1 ;;
         --with-udev) with_udev=1 ;;
+        --editor-only) editor_only=1 ;;
         --yes | -y) yes=1 ;;
-        -h | --help) sed -n '2,17p' "$0"; exit 0 ;;
+        -h | --help) sed -n '2,24p' "$0"; exit 0 ;;
         *) echo "unknown option: $arg" >&2; exit 2 ;;
     esac
 done
+
+if ((editor_only && with_udev)); then
+    echo "--editor-only reads no keyboard, so it doesn't go with --with-udev" >&2
+    exit 2
+fi
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 run() {
@@ -111,6 +121,9 @@ add_hook() {
     fi
 }
 
+# The full install: the shell hooks, the desktop extension, and further
+# down the service and keyboard access. Editor-only skips them all.
+if ((!editor_only)); then
 say "Installing the shell hooks"
 for f in flowbuddy.bash flowbuddy.zsh flowbuddy.fish; do
     run install -Dm644 "$repo/shell/$f" "$share_dir/$f"
@@ -157,6 +170,8 @@ if ! { command -v gnome-extensions >/dev/null && run gnome-extensions enable "$u
     fi
 fi
 
+fi # full install
+
 if command -v code >/dev/null || [[ -d $HOME/.vscode ]]; then
     say "Installing the VS Code companion"
     # Same folder for the snap and the .deb. Older versions are replaced.
@@ -166,7 +181,7 @@ if command -v code >/dev/null || [[ -d $HOME/.vscode ]]; then
         fi
     done
     run mkdir -p "$vscode_ext"
-    for f in "$repo"/vscode-extension/*.js "$repo"/vscode-extension/*.json "$repo"/vscode-extension/README.md; do
+    for f in "$repo"/vscode-extension/*.js "$repo"/vscode-extension/*.json "$repo"/vscode-extension/README.md "$repo"/vscode-extension/icon.png; do
         run install -m644 "$f" "$vscode_ext/${f##*/}"
     done
     run mkdir -p "$vscode_ext/walkthrough"
@@ -222,6 +237,7 @@ if ((${#vim_packs[@]})); then
     done
 fi
 
+if ((!editor_only)); then
 say "Installing the systemd user service"
 run install -Dm644 "$repo/packaging/systemd/flowbuddyd.service" "$unit_dir/flowbuddyd.service"
 run install -Dm644 "$repo/packaging/systemd/flowbuddy-weekly.service" "$unit_dir/flowbuddy-weekly.service"
@@ -241,6 +257,7 @@ if ((with_udev)); then
     run sudo udevadm trigger --subsystem-match=input --action=change
     run systemctl --user restart flowbuddyd.service
 fi
+fi # full install
 
 # Whether this user can read a keyboard already (the udev rule, or the
 # input group from before).
@@ -250,6 +267,22 @@ for dev in /dev/input/event*; do
 done
 
 say "Done"
+if ((editor_only)); then
+    cat <<MSG
+    Editor only: Flow Buddy coaches in Vim, Neovim and VS Code (with the
+    Vim extension), and reads no keyboard.
+      - Open one of them: its plugin starts the daemon, which stops by
+        itself ten minutes after the last editor closes.
+      - Check with: flowbuddy doctor
+      - New to Flow Buddy? Take the tour, a few minutes: flowbuddy tour
+      - For the shell, Claude Code and tips on the desktop too, run
+        scripts/install.sh --with-udev later: everything learned is kept.
+MSG
+    if [[ -f $unit_dir/flowbuddyd.service ]]; then
+        echo "    note: the full install's service is still here, and still runs the daemon."
+    fi
+    exit 0
+fi
 cat <<MSG
     Next:
       - GNOME Shell loads new and updated extensions at login: log out and
@@ -262,6 +295,7 @@ if ((!with_udev && !can_read_keys)); then
     cat <<MSG
       - Flow Buddy can't read your keyboard yet. Either re-run with
         --with-udev (recommended: active session only), or see
-        docs/privacy.md#keyboard-access for the alternatives.
+        docs/privacy.md#keyboard-access for the alternatives. Until then
+        it coaches from the editor plugins alone.
 MSG
 fi

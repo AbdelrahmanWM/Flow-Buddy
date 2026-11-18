@@ -1,17 +1,13 @@
 //! Day keys: stats are grouped by *local* date, as `YYYY-MM-DD`.
 
-use chrono::{Days, Local, NaiveDate, TimeZone};
+use flowbuddy_core::time::{self, LocalDate};
 
-pub fn local_date(now_ms: u64) -> NaiveDate {
-    Local
-        .timestamp_millis_opt(now_ms as i64)
-        .single()
-        .map(|t| t.date_naive())
-        .unwrap_or_default()
+pub fn local_date(now_ms: u64) -> LocalDate {
+    time::date_of_ms(now_ms)
 }
 
-pub fn key(date: NaiveDate) -> String {
-    date.format("%Y-%m-%d").to_string()
+pub fn key(date: LocalDate) -> String {
+    time::date_key(date)
 }
 
 /// Today's key for a unix-millisecond timestamp.
@@ -23,8 +19,8 @@ pub fn day(now_ms: u64) -> String {
 /// of `now_ms`. `range(now, 7, 0)` is the last week, `range(now, 7, 7)`
 /// the week before.
 pub fn range(now_ms: u64, n: u64, offset: u64) -> (String, String) {
-    let last = local_date(now_ms) - Days::new(offset);
-    let first = last - Days::new(n.saturating_sub(1));
+    let last = time::days_before(local_date(now_ms), offset as i64);
+    let first = time::days_before(last, n.saturating_sub(1) as i64);
     (key(first), key(last))
 }
 
@@ -34,10 +30,7 @@ mod tests {
 
     #[test]
     fn ranges() {
-        let noon = Local
-            .with_ymd_and_hms(2026, 10, 24, 12, 0, 0)
-            .unwrap()
-            .timestamp_millis() as u64;
+        let noon = time::local_ms(2026, 10, 24, 12, 0);
         assert_eq!(day(noon), "2026-10-24");
         assert_eq!(
             range(noon, 1, 0),

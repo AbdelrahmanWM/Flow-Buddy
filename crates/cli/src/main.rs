@@ -440,7 +440,7 @@ fn main() {
             let status: Result<flowbuddy_core::ipc::Status, String> =
                 Client::connect(ClientKind::Cli)
                     .and_then(|mut c| c.query(Command::Status))
-                    .map_err(|e| format!("{e:#}"))
+                    .map_err(|e| client::why(&e))
                     .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()));
             let daemon = status.as_ref().ok().map(|s| s.daemon_version.clone());
             let checks = doctor::checks(&doctor::Env::gather(status));
@@ -635,9 +635,9 @@ fn status(watch: bool) -> anyhow::Result<()> {
     let mut client = match Client::connect(ClientKind::Cli) {
         Ok(c) => c,
         Err(e) => {
-            println!("flowbuddyd: not running");
-            println!("  {e:#}");
+            println!("flowbuddyd: not running ({})", client::why(&e));
             println!("  start it with: systemctl --user start flowbuddyd");
+            println!("  flowbuddy doctor checks everything else");
             std::process::exit(3);
         }
     };
@@ -671,19 +671,24 @@ fn print_status(s: &Status) {
     if let Some(timing) = &s.timing {
         println!("  handling:  {timing}");
     }
-    println!("  keyboards: {}", s.keyboards);
+    if s.editor_only {
+        println!("  keyboards: none (editor only: the editor plugins say what you type)");
+    } else {
+        println!("  keyboards: {}", s.keyboards);
+        if s.keyboards == 0 {
+            println!("             no readable keyboard: run scripts/install.sh --with-udev,");
+            println!("             or see docs/privacy.md#keyboard-access. Until then, keys");
+            println!("             come from the Vim plugin, in its moving modes");
+        }
+    }
     if let Some(filter) = &s.tip_filter {
         println!("  filter:    {filter}");
     }
-    if let Some(layout) = &s.layout {
+    if let Some(layout) = s.layout.as_ref().filter(|_| !s.editor_only) {
         match &s.layout_note {
             Some(note) => println!("  layout:    {layout} ({note})"),
             None => println!("  layout:    {layout}"),
         }
-    }
-    if s.keyboards == 0 {
-        println!("             no readable keyboard: run scripts/install.sh --with-udev,");
-        println!("             or see docs/privacy.md#keyboard-access");
     }
     let clients: Vec<String> = s
         .clients
@@ -708,7 +713,10 @@ fn print_status(s: &Status) {
 
 fn context_line(s: &Status) -> String {
     if s.context == "unsupported" {
-        "unsupported (not watching)".into()
+        match &s.why {
+            Some(why) => format!("unsupported (not watching: {why})"),
+            None => "unsupported (not watching)".into(),
+        }
     } else if s.mode_from_editor {
         format!("{} (mode from the editor)", s.context)
     } else if s.confident {
@@ -974,10 +982,7 @@ fn write_tips() -> anyhow::Result<()> {
         eprintln!("flowbuddy: left out a tip ({why})");
     }
     let path = tips_file();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, serde_json::to_string_pretty(&cache)?)?;
+    flowbuddy_core::paths::write_private(&path, serde_json::to_string_pretty(&cache)?.as_bytes())?;
     println!("{} personal tips written", cache.tips.len());
     Ok(())
 }
@@ -1063,10 +1068,10 @@ fn run_review(
     }
     let parsed = review::parse(&String::from_utf8_lossy(&answer)).map_err(anyhow::Error::msg)?;
     let path = review_file();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, serde_json::to_string_pretty(&parsed.proposals)?)?;
+    flowbuddy_core::paths::write_private(
+        &path,
+        serde_json::to_string_pretty(&parsed.proposals)?.as_bytes(),
+    )?;
     Ok(Some(parsed))
 }
 
@@ -1242,7 +1247,8 @@ fn practice_cmd(
         None => {}
     }
     let d = flowbuddy_core::practice::drill(family, rounds, practice::seed());
-    let dir = std::env::temp_dir().join(format!("flowbuddy-practice-{}", std::process::id()));
+    // Private: Vim reads the drill from here.
+    let dir = flowbuddy_core::paths::scratch_dir("practice")?;
     let drill_path = practice::write_drill(&dir, &d)?;
     let out = dir.join("result.json");
     let cmd = practice::editor_command(editor, &drill_path, &out);
@@ -1508,21 +1514,21 @@ fn set_mode(mode: Option<CoachingMode>) -> anyhow::Result<()> {
 }
 
 fn pause(duration: &str) -> anyhow::Result<()> {
-    let seconds = parse_duration(duration, chrono::Local::now()).ok_or_else(|| {
+    use flowbuddy_core::time;
+    let seconds = parse_duration(duration, &time::now()).ok_or_else(|| {
         anyhow::anyhow!("can't read {duration:?}; try 30m, 1h, 2h30m or until-tomorrow")
     })?;
     Client::connect(ClientKind::Cli)?.command(Command::Pause { seconds })?;
-    let until = chrono::Local::now() + chrono::Duration::seconds(seconds as i64);
-    println!("paused until {}", when(until, chrono::Local::now()));
+    let now = time::now();
+    let until = time::at_s(now.timestamp().as_second() as u64 + seconds).unwrap_or(now.clone());
+    println!("paused until {}", when(&until, &now));
     Ok(())
 }
 
 /// `30m`, `1h`, `2h30m`, `90s`, or `until-tomorrow` (next local midnight).
-fn parse_duration(s: &str, now: chrono::DateTime<chrono::Local>) -> Option<u64> {
+fn parse_duration(s: &str, now: &flowbuddy_core::time::LocalTime) -> Option<u64> {
     if s == "until-tomorrow" {
-        let midnight = (now.date_naive() + chrono::Days::new(1)).and_hms_opt(0, 0, 0)?;
-        let midnight = midnight.and_local_timezone(chrono::Local).earliest()?;
-        return u64::try_from((midnight - now).num_seconds()).ok();
+        return flowbuddy_core::time::until_tomorrow(now);
     }
     let (mut total, mut num) = (0u64, String::new());
     for c in s.chars() {
@@ -1768,7 +1774,7 @@ fn run_tour() -> anyhow::Result<()> {
     let status = || {
         Client::connect(ClientKind::Cli)
             .and_then(|mut c| c.query(Command::Status))
-            .map_err(|e| format!("{e:#}"))
+            .map_err(|e| client::why(&e))
             .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
     };
     let checks = || doctor::checks(&doctor::Env::gather(status()));
@@ -1908,51 +1914,41 @@ fn format_day_time(unix: u64) -> String {
 
 /// Local HH:MM for a unix timestamp, via `date` to avoid a timezone dependency.
 fn format_time(unix: u64) -> String {
-    use chrono::TimeZone;
-    chrono::Local
-        .timestamp_opt(unix as i64, 0)
-        .single()
-        .map_or_else(|| unix.to_string(), |t| when(t, chrono::Local::now()))
+    use flowbuddy_core::time;
+    time::at_s(unix).map_or_else(|| unix.to_string(), |t| when(&t, &time::now()))
 }
 
 /// A time to come: "14:30" today, "Sat 14:30" within the week, and with
 /// the date further off.
-fn when(t: chrono::DateTime<chrono::Local>, now: chrono::DateTime<chrono::Local>) -> String {
-    if t.date_naive() == now.date_naive() {
-        t.format("%H:%M").to_string()
-    } else if t - now < chrono::Duration::days(6) {
-        t.format("%a %H:%M").to_string()
+fn when(t: &flowbuddy_core::time::LocalTime, now: &flowbuddy_core::time::LocalTime) -> String {
+    use flowbuddy_core::time;
+    if t.date() == now.date() {
+        time::format(t, "%H:%M")
+    } else if time::seconds_between(now, t) < 6 * 86_400 {
+        time::format(t, "%a %H:%M")
     } else {
-        t.format("%a %-d %b %Y %H:%M").to_string()
+        time::format(t, "%a %-d %b %Y %H:%M")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{parse_duration, when};
-    use chrono::TimeZone;
+    use flowbuddy_core::time;
 
     #[test]
     fn times_to_come_say_the_day_when_needed() {
-        let now = chrono::Local
-            .with_ymd_and_hms(2026, 10, 29, 9, 0, 0)
-            .unwrap();
-        let at = |d, h| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, d, h, 30, 0)
-                .unwrap()
-        };
-        assert_eq!(when(at(29, 14), now), "14:30");
-        assert_eq!(when(at(31, 14), now), "Sat 14:30");
-        let far = now + chrono::Duration::days(400);
-        assert!(when(far, now).contains("2027"), "{}", when(far, now));
+        let now = time::local(2026, 10, 29, 9, 0);
+        let at = |d, h| time::local(2026, 10, d, h, 30);
+        assert_eq!(when(&at(29, 14), &now), "14:30");
+        assert_eq!(when(&at(31, 14), &now), "Sat 14:30");
+        let far = time::local(2027, 12, 2, 9, 0);
+        assert!(when(&far, &now).contains("2027"), "{}", when(&far, &now));
     }
 
     #[test]
     fn durations() {
-        let now = chrono::Local
-            .with_ymd_and_hms(2026, 10, 24, 22, 0, 0)
-            .unwrap();
+        let now = &time::local(2026, 10, 24, 22, 0);
         assert_eq!(parse_duration("30m", now), Some(1800));
         assert_eq!(parse_duration("2h30m", now), Some(9000));
         assert_eq!(parse_duration("90s", now), Some(90));
@@ -1975,6 +1971,8 @@ mod status_tests {
             mode: CoachingMode::Active,
             paused_until: None,
             context: context.into(),
+            why: None,
+            editor_only: false,
             app: Some("code_code".into()),
             confident,
             mode_from_editor: false,
@@ -1986,6 +1984,18 @@ mod status_tests {
             keyboards: 1,
             clients: vec![],
         }
+    }
+
+    #[test]
+    fn unsupported_says_why() {
+        let s = Status {
+            why: Some("a command is running: git".into()),
+            ..status("unsupported", false)
+        };
+        assert_eq!(
+            context_line(&s),
+            "unsupported (not watching: a command is running: git)"
+        );
     }
 
     #[test]

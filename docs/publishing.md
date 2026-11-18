@@ -17,7 +17,7 @@ A release (push a `v*` tag; see `.github/workflows/release.yml`) builds everythi
 ## VS Code Marketplace and Open VSX
 
 1. Create a publisher named `flowbuddy` at <https://marketplace.visualstudio.com/manage> (or change `publisher` in `vscode-extension/package.json` to yours), and an Open VSX namespace at <https://open-vsx.org>.
-2. Add an icon: a 128×128 PNG as `vscode-extension/icon.png`, and `"icon": "icon.png"` in `package.json`.
+2. The icon is `vscode-extension/icon.png` (from `docs/images/icon.svg`).
 3. Publish the `.vsix` from the release: `npx @vscode/vsce publish --packagePath flowbuddy-vscode-0.1.0.vsix` and `npx ovsx publish flowbuddy-vscode-0.1.0.vsix -p <token>`.
 
 ## Vim and Neovim

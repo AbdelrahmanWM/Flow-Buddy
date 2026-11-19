@@ -143,7 +143,26 @@ pub fn report(session: &Session, before: Option<&Session>, stopped: bool, now: u
     if stopped {
         let _ = writeln!(out, "\nStopped early; the rounds done are kept.");
     }
-    let _ = writeln!(out, "\n{}", others(session.family));
+    let _ = writeln!(out, "\n{}", wrap(&others(session.family), 79));
+    out
+}
+
+/// `text` broken between words into lines no wider than `width`.
+fn wrap(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut line = 0;
+    for word in text.split(' ') {
+        let len = word.chars().count();
+        if line > 0 && line + 1 + len > width {
+            out.push('\n');
+            line = 0;
+        } else if line > 0 {
+            out.push(' ');
+            line += 1;
+        }
+        out.push_str(word);
+        line += len;
+    }
     out
 }
 
@@ -251,6 +270,13 @@ mod tests {
         );
         assert!(text.contains("  3 keys; 5j does it in 2"), "{text}");
         assert!(!text.contains("Stopped"));
+    }
+
+    #[test]
+    fn the_report_fits_a_terminal() {
+        let text = report(&session(1_000, &[(4, 2)]), None, true, 1_000);
+        assert!(text.contains("Other drills: "), "{text}");
+        assert!(text.lines().all(|l| l.chars().count() <= 79), "{text}");
     }
 
     #[test]

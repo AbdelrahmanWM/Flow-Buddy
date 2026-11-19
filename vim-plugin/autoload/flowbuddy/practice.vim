@@ -73,11 +73,12 @@ function! flowbuddy#practice#run(drill_path, out_path, ...) abort
   if exists('*flowbuddy#on_focus')
     call flowbuddy#on_focus(0)
   endif
-  " Changes in the buffer you were in stay there.
-  if &modified
-    silent new
-  else
+  " From `flowbuddy practice`, this Vim is the drill's. From inside your
+  " own, it gets a tab page: :q closes it and your windows are as they were.
+  if s:quit
     silent enew
+  else
+    silent tabnew
   endif
   setlocal buftype=nofile bufhidden=wipe noswapfile nolist nowrap nospell nobuflisted
   setlocal number signcolumn=yes
@@ -94,6 +95,9 @@ function! flowbuddy#practice#run(drill_path, out_path, ...) abort
     autocmd ColorScheme * call s:colours()
   augroup END
   call s:load()
+  " Started with -c, Vim sometimes didn't paint the drill until a key
+  " (seen in a fresh GNOME session's first drill): paint it once more.
+  call timer_start(150, {-> execute('redraw!')})
 endfunction
 
 function! s:colours() abort
@@ -131,8 +135,24 @@ function! flowbuddy#practice#instructions(drill, round, keys) abort
     let lines += ['Goal   ' . r.ask . ' (in yellow)']
   endif
   let lines += [flowbuddy#practice#score_line(r.par, a:keys)]
-  let lines += ['How    ' . get(a:drill, 'how', a:drill.about)]
+  let lines += flowbuddy#practice#wrap('How    ' . get(a:drill, 'how', a:drill.about), &columns - 1)
   return lines + ['       :q stops; the rounds done are kept']
+endfunction
+
+" `line` as lines no wider than `width`, broken between words, the rest
+" lined up under the text after its label ("How    ").
+function! flowbuddy#practice#wrap(line, width) abort
+  let indent = repeat(' ', 7)
+  let out = []
+  let cur = ''
+  for word in split(a:line, ' \+\zs\ze\S')
+    if cur !=# '' && strdisplaywidth(cur . word) > a:width
+      call add(out, substitute(cur, ' \+$', '', ''))
+      let cur = indent
+    endif
+    let cur .= word
+  endfor
+  return out + [cur]
 endfunction
 
 " "Aim 3 keys   You 5 keys (2 over)".
@@ -352,11 +372,20 @@ function! flowbuddy#practice#start(...) abort
   let drill = tempname()
   call writefile([out], drill)
   let family = json_decode(out).family
-  if type(json_decode(out).why) == v:t_string
-    echo 'A drill for: ' . json_decode(out).why
-  endif
+  let why = json_decode(out).why
   call flowbuddy#practice#run(drill, tempname(), 0, [shellescape(cli), family])
   call delete(drill)
+  " After the drill is on screen, and never wider than it: a longer message
+  " would stop at Press ENTER, and that Enter would be the drill's first key.
+  if type(why) == v:t_string
+    call timer_start(0, {-> s:say('A drill for: ' . why)})
+  endif
+endfunction
+
+function! s:say(text) abort
+  let width = &columns - 15
+  redraw
+  echo strdisplaywidth(a:text) > width ? strcharpart(a:text, 0, width - 1) . '…' : a:text
 endfunction
 
 " :FlowBuddyTour: `flowbuddy tour` in a terminal window; it asks questions.

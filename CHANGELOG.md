@@ -4,6 +4,8 @@ What changed in each release. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-19
+
 ### Added
 
 - The VS Code extension comes with the daemon on Linux and macOS: install it from the Marketplace and it works, with no keyboard access and nothing else to install. Elsewhere, it says it can't run there yet.
@@ -74,7 +76,8 @@ The first public release.
 - The daemon makes no network connections, and a test enforces it.
 - See [docs/privacy.md](docs/privacy.md).
 
-[Unreleased]: https://github.com/AbdelrahmanWM/Flow-Buddy/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/AbdelrahmanWM/Flow-Buddy/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/AbdelrahmanWM/Flow-Buddy/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/AbdelrahmanWM/Flow-Buddy/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/AbdelrahmanWM/Flow-Buddy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/AbdelrahmanWM/Flow-Buddy/releases/tag/v0.1.0

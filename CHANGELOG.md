@@ -4,6 +4,12 @@ What changed in each release. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-19
+
+### Fixed
+
+- The GNOME settings window lets go of everything it made when it closes, as extensions.gnome.org's review asks.
+
 ## [0.1.0] - 2026-11-19
 
 The first public release.
@@ -45,5 +51,6 @@ The first public release.
 - The daemon makes no network connections, and a test enforces it.
 - See [docs/privacy.md](docs/privacy.md).
 
-[Unreleased]: https://github.com/AbdelrahmanWM/Flow-Buddy/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/AbdelrahmanWM/Flow-Buddy/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/AbdelrahmanWM/Flow-Buddy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/AbdelrahmanWM/Flow-Buddy/releases/tag/v0.1.0

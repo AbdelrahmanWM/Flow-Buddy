@@ -5,7 +5,7 @@
 " rests for g:flowbuddy_rest_ms; then facts about where it ended are worked
 " out here, from the buffer, and only the resulting numbers are sent.
 
-let s:VERSION = '0.1.0'
+let s:VERSION = '0.1.1'
 " Give up looking for a motion that lands exactly after this many presses.
 let s:MAX_HOPS = 20
 let s:RECONNECT_MS = 5000

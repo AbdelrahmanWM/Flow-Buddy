@@ -8,6 +8,7 @@
 
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
+import Pango from 'gi://Pango';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 
@@ -85,6 +86,7 @@ class FlowBuddyIndicator extends PanelMenu.Button {
         // Wrapped, so a long tip doesn't make the whole menu wide.
         this._tip.label.add_style_class_name('flowbuddy-menu-tip');
         this._tip.label.clutter_text.line_wrap = true;
+        this._tip.label.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
         this.menu.addMenuItem(this._tip);
 
         // What the tip's commands do: collapsed until you want it.
@@ -225,6 +227,7 @@ class FlowBuddyIndicator extends PanelMenu.Button {
             const item = new PopupMenu.PopupMenuItem('', {reactive: false});
             item.label.add_style_class_name('flowbuddy-menu-tip');
             item.label.clutter_text.line_wrap = true;
+            item.label.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
             item.label.clutter_text.set_markup(toMarkup(line));
             this._explain.menu.addMenuItem(item);
         }

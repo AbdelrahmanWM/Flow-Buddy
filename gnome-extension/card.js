@@ -10,6 +10,7 @@
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
+import Pango from 'gi://Pango';
 import St from 'gi://St';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -45,9 +46,13 @@ export class Card {
         });
         this._title = new St.Label({style_class: 'flowbuddy-card-title', x_expand: true});
         this._text = new St.Label({style_class: 'flowbuddy-card-text'});
-        this._text.clutter_text.line_wrap = true;
         this._explain = new St.Label({style_class: 'flowbuddy-card-explain', visible: kept});
-        this._explain.clutter_text.line_wrap = true;
+        // Wrapped, never cut short: a label ellipsizes unless told not to,
+        // and on some fonts (Fedora's) it did so instead of wrapping.
+        for (const label of [this._text, this._explain]) {
+            label.clutter_text.line_wrap = true;
+            label.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        }
         if (kept) {
             // The title row is the handle to drag it by.
             const header = new St.BoxLayout({x_expand: true, reactive: true, track_hover: true});

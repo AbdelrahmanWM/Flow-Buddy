@@ -416,8 +416,10 @@ function! flowbuddy#wrap(text, width) abort
   return out
 endfunction
 
-function! flowbuddy#show_tip(msg) abort
-  if !flowbuddy#shows_tips() || type(get(a:msg, 'nudge_id', 0)) != v:t_string
+" A second argument shows it even with no daemon to say where tips go
+" (the plugin's own "no daemon yet").
+function! flowbuddy#show_tip(msg, ...) abort
+  if (!a:0 && !flowbuddy#shows_tips()) || type(get(a:msg, 'nudge_id', 0)) != v:t_string
     return
   endif
   " Not over a practice drill.
@@ -692,14 +694,15 @@ function! flowbuddy#missing_daemon() abort
 endfunction
 
 function! s:say_missing(...) abort
-  let script = s:ROOT . '/scripts/get-daemon.sh'
-  echohl WarningMsg
-  if filereadable(script)
-    echomsg 'Flow Buddy: no daemon yet. :FlowBuddyGetDaemon downloads it (or set your plugin manager to run scripts/get-daemon.sh).'
+  if filereadable(s:ROOT . '/scripts/get-daemon.sh')
+    let how = '`:FlowBuddyGetDaemon` downloads it. Or have your plugin manager run `scripts/get-daemon.sh` as the build step.'
   else
-    echomsg 'Flow Buddy: no daemon yet. See https://github.com/AbdelrahmanWM/Flow-Buddy#install'
+    let how = 'See https://github.com/AbdelrahmanWM/Flow-Buddy#install'
   endif
-  echohl None
+  " Where tips go, so it's seen; and in :messages, short enough for one line.
+  call flowbuddy#show_tip({'nudge_id': 'local-no-daemon', 'rule_id': '', 'title': 'Flow Buddy needs its daemon',
+        \ 'text': how, 'ttl_ms': 20000}, 1)
+  echomsg 'Flow Buddy: no daemon yet (:FlowBuddyGetDaemon)'
 endfunction
 
 " :FlowBuddyGetDaemon: scripts/get-daemon.sh from this plugin's folder,

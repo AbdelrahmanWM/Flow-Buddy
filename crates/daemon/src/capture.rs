@@ -3,6 +3,10 @@
 //! Devices are only *read*, never grabbed: Flow Buddy coaches, it never
 //! blocks input. Hotplug is handled by watching `/dev/input` with inotify,
 //! which avoids a dependency on libudev.
+//!
+//! Linux only: elsewhere (macOS) the daemon is always editor-only and
+//! `run` just says it can't read keys.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -10,7 +14,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use evdev::{Device, EventType, KeyCode};
+#[cfg(target_os = "linux")]
 use futures_util::StreamExt;
+#[cfg(target_os = "linux")]
 use inotify::{Inotify, WatchMask};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -108,7 +114,14 @@ pub fn scan(skip: &HashSet<&PathBuf>) -> io::Result<Scan> {
     Ok(scan)
 }
 
+/// Not on this system: keys come from the editor plugins alone.
+#[cfg(not(target_os = "linux"))]
+pub async fn run(_tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
+    anyhow::bail!("reading the keyboard needs Linux; run with --editor-only")
+}
+
 /// Run capture until `tx` is closed. Spawns one reader task per device.
+#[cfg(target_os = "linux")]
 pub async fn run(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
     let (gone_tx, mut gone_rx) = mpsc::unbounded_channel::<PathBuf>();
     let mut active: HashMap<PathBuf, DeviceKind> = HashMap::new();

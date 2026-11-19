@@ -94,7 +94,7 @@ else
     if pkg-config --exists xkbcommon 2>/dev/null; then
         features=(--features flowbuddy-daemon/xkb)
     else
-        echo "    note: libxkbcommon-dev isn't installed, so keys are read as US."
+        echo "    note: libxkbcommon's development files aren't installed, so keys are read as US."
         echo "    For other layouts: $(install_hint 'pkg-config libxkbcommon-dev' 'pkgconf-pkg-config libxkbcommon-devel'), then run this again."
     fi
     run cargo build --release --manifest-path "$repo/Cargo.toml" -p flowbuddy-daemon -p flowbuddy-cli "${features[@]}"

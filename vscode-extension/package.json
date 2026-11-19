@@ -19,6 +19,13 @@
   "extensionKind": [
     "ui"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Flow Buddy runs no code from the workspace. In Restricted Mode, a workspace's own setting for starting the daemon is ignored.",
+      "restrictedConfigurations": ["flowbuddy.startDaemon"]
+    }
+  },
   "activationEvents": [
     "onStartupFinished"
   ],

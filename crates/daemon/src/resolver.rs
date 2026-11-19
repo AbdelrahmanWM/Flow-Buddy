@@ -699,7 +699,7 @@ pub(crate) mod tests {
     #[test]
     fn vscode_snap_and_desktop_ids() {
         let mut r = resolver();
-        for id in ["code_code", "code.desktop", "Code"] {
+        for id in ["code_code", "code.desktop", "Code", "com.microsoft.VSCode"] {
             r.set_focus(Some(id.into()), Some(500));
             assert_eq!(kind(&r), ContextKind::VsCodeVim, "{id}");
         }

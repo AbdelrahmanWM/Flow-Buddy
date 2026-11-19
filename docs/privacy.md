@@ -5,6 +5,7 @@ Flow Buddy reads your keyboard. That is a lot of trust to ask for, so this docum
 ## Summary
 
 - Nothing leaves your machine unless you choose a cloud AI for `flowbuddy coach` (off by default). The daemon, which reads the keys, has no networking code at all.
+- One download, when you ask for it: installed with a Vim or Neovim plugin manager, `scripts/get-daemon.sh` (the plugin's build step, or `:FlowBuddyGetDaemon`) fetches the daemon from this project's GitHub releases and checks its checksum. It sends nothing about you. The VS Code extension downloads nothing: its daemon comes inside it.
 - Raw keystrokes and typed text are never written to disk or logs.
 - Only aggregate counts and abstract "shapes" of mistakes are stored (for example, `j×7 in Normal mode`).
 - You can inspect, export and delete everything that is stored.

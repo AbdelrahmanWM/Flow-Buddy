@@ -4,6 +4,19 @@ What changed in each release. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+
+- The VS Code extension comes with the daemon on Linux and macOS: install it from the Marketplace and it works, with no keyboard access and nothing else to install. Elsewhere, it says it can't run there yet.
+- Vim and Neovim from a plugin manager: `scripts/get-daemon.sh` as the build step fetches the matching daemon (checksum checked); without it, the plugin says so and `:FlowBuddyGetDaemon` does it. lazy.nvim, vim-plug and packer specs in the README.
+- macOS, editor-only: coaching in VS Code, Vim and Neovim (built and tested on macOS in CI).
+
+### Fixed
+
+- In balanced mode, the default, a new install's first tip came only after half an hour: the first tip now shows at once, then batches.
+- Today's lesson waited for nothing and could take the place of the tip for what you'd just done: it now comes once you rest.
+- Down from the middle of a line onto a blank line (`j`×7 to an empty line) got no tip, in Vim and VS Code: `}` is suggested now.
+- VS Code: the editor plugins' socket path matches the daemon's everywhere, including macOS.
+
 ## [0.1.2] - 2026-11-19
 
 ### Fixed

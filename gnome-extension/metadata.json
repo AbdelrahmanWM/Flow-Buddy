@@ -1,7 +1,7 @@
 {
   "uuid": "flowbuddy@abdelrahmanwm.github.io",
   "name": "Flow Buddy",
-  "description": "Reports the focused app to the local Flow Buddy daemon and shows its coaching hints in the top bar. Nothing leaves your machine.",
+  "description": "Learn Vim's faster commands while you work. Flow Buddy notices habits like pressing j seven times to reach a blank line, and shows the shorter way (}) in a card under the top bar. Its menu has your recent tips, the coaching mode and the settings.\n\nThis extension is Flow Buddy's desktop part: it needs the Flow Buddy daemon, installed from https://github.com/AbdelrahmanWM/Flow-Buddy (see docs/install.md). Until then, the menu says how to start it.\n\nKeys are turned into counts and habits on your machine. Nothing you type is kept, and nothing is sent anywhere.",
   "shell-version": [
     "50"
   ],

@@ -120,6 +120,8 @@ Editor only is the quick way to try it: the plugins tell the daemon what you typ
 
 Linux. The full install: GNOME on Wayland (with the top-bar indicator and the settings window), or any X11 desktop such as KDE, Xfce or i3 (tips as notifications). Editor only: any Linux desktop, including KDE on Wayland. Not yet macOS.
 
+Tested on fresh installs of Ubuntu 26.04 and Fedora 44 Workstation (GNOME 50, Wayland), from source and from a release download, with Vim, Neovim, VS Code (vscodevim), bash, zsh and fish.
+
 ## Contributing
 
 Bug reports, wrong tips and new rules are all welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). [docs/architecture.md](docs/architecture.md) explains how it works, and [docs/writing-rules.md](docs/writing-rules.md) how to add a rule. To report a security problem, see [SECURITY.md](SECURITY.md).

@@ -5,7 +5,7 @@
 " rests for g:flowbuddy_rest_ms; then facts about where it ended are worked
 " out here, from the buffer, and only the resulting numbers are sent.
 
-let s:VERSION = '0.1.2'
+let s:VERSION = '0.1.3'
 " The folder this plugin came in, when it's a clone of the whole repository
 " (a plugin manager's): scripts/get-daemon.sh puts the programs in its bin/.
 let s:ROOT = expand('<sfile>:p:h:h:h')

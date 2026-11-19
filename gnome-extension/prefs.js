@@ -54,6 +54,19 @@ const SKILL_CSS = `
 export default class FlowBuddyPrefs extends ExtensionPreferences {
     async fillPreferencesWindow(window) {
         this._window = window;
+        // Nothing of this window outlives it (extensions.gnome.org's review
+        // asks for it): the skill tiles' CSS and every field go when it closes.
+        window.connect('close-request', () => {
+            if (this._skillCss)
+                Gtk.StyleContext.remove_provider_for_display(Gdk.Display.get_default(), this._skillCss);
+            this._skillCss = null;
+            this._window = null;
+            this._cli = null;
+            this._pages = null;
+            this._list = null;
+            this._reverting = null;
+            return false;
+        });
         window.set_default_size(720, 760);
         window.set_search_enabled(true);
         this._cli = findCli();
@@ -98,6 +111,9 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
     }
 
     _addPage(page) {
+        // A command can finish after the window has closed.
+        if (!this._window)
+            return;
         this._window.add(page);
         this._pages.push(page);
     }
@@ -110,7 +126,7 @@ export default class FlowBuddyPrefs extends ExtensionPreferences {
     }
 
     _toast(text) {
-        this._window.add_toast(new Adw.Toast({title: text, timeout: 4}));
+        this._window?.add_toast(new Adw.Toast({title: text, timeout: 4}));
     }
 
     _generalPage(basic, profiles, settings) {

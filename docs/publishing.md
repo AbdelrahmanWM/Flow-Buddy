@@ -10,9 +10,10 @@ A release (push a `v*` tag; see `.github/workflows/release.yml`) builds everythi
 ## GNOME extensions (extensions.gnome.org)
 
 1. The uuid, `flowbuddy@abdelrahmanwm.github.io`, has to be a domain you control. `abdelrahmanwm.github.io` is your GitHub Pages domain, so it is.
-2. Upload `flowbuddy@abdelrahmanwm.github.io.shell-extension.zip` from the release at <https://extensions.gnome.org/upload/>.
-3. In the description, say clearly that the extension needs the Flow Buddy daemon (link to docs/install.md). Reviewers reject extensions that look broken on their own.
-4. Review rules this extension already meets: everything is created in `enable()` and undone in `disable()`; timeouts are removed; no subprocesses in the shell process (only the preferences window runs `flowbuddy`); no GTK in the shell.
+2. Check it the way reviewers do, with [shexli](https://pypi.org/project/shexli/) in a virtualenv: `shexli flowbuddy@abdelrahmanwm.github.io.shell-extension.zip` should say `clean`.
+3. Upload `flowbuddy@abdelrahmanwm.github.io.shell-extension.zip` from the release at <https://extensions.gnome.org/upload/>.
+4. In the description, say clearly that the extension needs the Flow Buddy daemon (link to docs/install.md). Reviewers reject extensions that look broken on their own.
+5. Review rules this extension already meets: everything is created in `enable()` and undone in `disable()`; timeouts are removed; no subprocesses in the shell process (only the preferences window runs `flowbuddy`); no GTK in the shell.
 
 ## VS Code Marketplace and Open VSX
 

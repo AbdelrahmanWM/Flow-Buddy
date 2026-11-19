@@ -92,8 +92,14 @@ function! flowbuddy#owner(path) abort
     let st = luaeval('(vim.uv or vim.loop).fs_stat(_A)', a:path)
     return type(st) == v:t_dict ? get(st, 'uid', -1) : -1
   endif
-  let out = trim(system('stat -c %u -- ' . shellescape(a:path)))
-  return v:shell_error || out !~# '^\d\+$' ? -1 : str2nr(out)
+  " GNU stat (Linux) takes -c; BSD stat (macOS) takes -f.
+  for flag in ['-c', '-f']
+    let out = trim(system('stat ' . flag . ' %u -- ' . shellescape(a:path)))
+    if !v:shell_error && out =~# '^\d\+$'
+      return str2nr(out)
+    endif
+  endfor
+  return -1
 endfunction
 
 function! flowbuddy#uid() abort

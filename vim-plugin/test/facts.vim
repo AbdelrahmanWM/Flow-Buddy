@@ -456,6 +456,46 @@ function! Test_starting_the_daemon() abort
   call delete(dir, 'rf')
 endfunction
 
+function! Test_no_daemon_anywhere() abort
+  let dir = tempname()
+  call mkdir(dir . '/config', 'p')
+  let saved = [$FLOWBUDDY_SOCKET, $XDG_CONFIG_HOME, $SSH_CONNECTION, $PATH, $HOME]
+  let $FLOWBUDDY_SOCKET = dir . '/none.sock'
+  let $XDG_CONFIG_HOME = dir . '/config'
+  let $SSH_CONNECTION = ''
+  let $HOME = dir
+  let $PATH = '/usr/bin:/bin'
+  " Nothing to run: say so.
+  call assert_equal(1, flowbuddy#missing_daemon())
+  " Turned off, or over ssh: say nothing.
+  let g:flowbuddy_start_daemon = 0
+  call assert_equal(0, flowbuddy#missing_daemon())
+  unlet g:flowbuddy_start_daemon
+  " Where the installer puts it: there's one.
+  call mkdir(dir . '/.local/bin', 'p')
+  call writefile(['#!/bin/sh'], dir . '/.local/bin/flowbuddyd')
+  call setfperm(dir . '/.local/bin/flowbuddyd', 'rwx------')
+  call assert_equal(0, flowbuddy#missing_daemon())
+  let [$FLOWBUDDY_SOCKET, $XDG_CONFIG_HOME, $SSH_CONNECTION, $PATH, $HOME] = saved
+  call delete(dir, 'rf')
+  " In a plugin manager's clone, get-daemon.sh is next to the plugin.
+  call assert_true(filereadable(flowbuddy#root() . '/scripts/get-daemon.sh'), flowbuddy#root())
+endfunction
+
+function! Test_socket_where_the_daemon_puts_it() abort
+  let saved = [$FLOWBUDDY_SOCKET, $XDG_RUNTIME_DIR, $XDG_STATE_HOME, $SSH_CONNECTION]
+  let [$FLOWBUDDY_SOCKET, $SSH_CONNECTION] = ['', '']
+  let $XDG_RUNTIME_DIR = '/r'
+  call assert_equal('/r/flowbuddy.sock', flowbuddy#socket_path())
+  " Without one, /run/user/<uid>, or where there's none (macOS) the state
+  " folder, as the daemon does.
+  let $XDG_RUNTIME_DIR = ''
+  let $XDG_STATE_HOME = '/s'
+  let run = '/run/user/' . trim(system('id -u'))
+  call assert_equal(isdirectory(run) ? run . '/flowbuddy.sock' : '/s/flowbuddy/flowbuddy.sock', flowbuddy#socket_path())
+  let [$FLOWBUDDY_SOCKET, $XDG_RUNTIME_DIR, $XDG_STATE_HOME, $SSH_CONNECTION] = saved
+endfunction
+
 function! Test_socket_owner() abort
   " A file of yours passes; one of root's doesn't; a missing one doesn't.
   let mine = tempname()

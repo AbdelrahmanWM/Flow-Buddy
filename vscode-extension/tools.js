@@ -4,35 +4,57 @@
 
 const PLACES = ['.local/bin/flowbuddy', '.cargo/bin/flowbuddy'];
 
-// The `flowbuddy` command: on the PATH, else where the installer puts it.
-function cliPath(pathVar, home, exists) {
+// A Flow Buddy program, `name` (flowbuddy or flowbuddyd): on the PATH,
+// else where the installer puts it, else the one this extension ships
+// with in `bundled` (the Marketplace's Linux and macOS builds have one).
+// An installed one comes first: it's the one its service and hooks use.
+function findProgram(name, pathVar, home, exists, bundled = null) {
     for (const dir of (pathVar || '').split(':').filter(Boolean)) {
-        if (exists(`${dir}/flowbuddy`))
-            return `${dir}/flowbuddy`;
+        if (exists(`${dir}/${name}`))
+            return `${dir}/${name}`;
     }
     for (const place of PLACES) {
-        if (exists(`${home}/${place}`))
-            return `${home}/${place}`;
+        const path = `${home}/${place.replace(/flowbuddy$/, name)}`;
+        if (exists(path))
+            return path;
     }
+    if (bundled && exists(`${bundled}/${name}`))
+        return `${bundled}/${name}`;
     return null;
+}
+
+// The `flowbuddy` command.
+function cliPath(pathVar, home, exists, bundled = null) {
+    return findProgram('flowbuddy', pathVar, home, exists, bundled);
+}
+
+// The daemon's socket, by the same rules as the daemon (paths.rs): a
+// folder only this user can reach, never a shared one like /tmp.
+function socketPath({env, uid, home, isDir}) {
+    if (env.FLOWBUDDY_SOCKET)
+        return env.FLOWBUDDY_SOCKET;
+    if (env.XDG_RUNTIME_DIR)
+        return `${env.XDG_RUNTIME_DIR}/flowbuddy.sock`;
+    if (uid !== null && isDir(`/run/user/${uid}`))
+        return `/run/user/${uid}/flowbuddy.sock`;
+    return `${env.XDG_STATE_HOME || `${home}/.local/state`}/flowbuddy/flowbuddy.sock`;
+}
+
+// Nothing can run Flow Buddy here: no daemon answering or about to, no
+// service, and no daemon to start. Then the extension can't do anything,
+// and says so once.
+function missingDaemon({socketExists, serviceExists, pathVar, home, exists, bundled = null}) {
+    return !socketExists && !serviceExists && !findProgram('flowbuddyd', pathVar, home, exists, bundled);
 }
 
 // The daemon to start when none is running: `flowbuddyd`, on the PATH or
 // where the installer puts it. None when starting is turned off, when a
 // socket is there (something's listening, or about to), or when the full
 // install's service exists: if that's stopped, you stopped it.
-function daemonToStart({enabled, socketExists, serviceExists, pathVar, home, exists}) {
+function daemonToStart({enabled, socketExists, serviceExists, pathVar, home, exists, bundled = null}) {
     if (!enabled || socketExists || serviceExists)
         return null;
-    for (const dir of (pathVar || '').split(':').filter(Boolean)) {
-        if (exists(`${dir}/flowbuddyd`))
-            return `${dir}/flowbuddyd`;
-    }
-    for (const place of PLACES) {
-        if (exists(`${home}/${place}d`))
-            return `${home}/${place}d`;
-    }
-    return null;
+    return findProgram('flowbuddyd', pathVar, home, exists, bundled);
 }
 
 // A value as you'd type it.
@@ -292,4 +314,4 @@ function register(vscode, run, subscriptions, cli = () => null) {
         subscriptions.push(vscode.commands.registerCommand(id, () => fn().catch(failed)));
 }
 
-module.exports = {cliPath, daemonToStart, settingItems, choices, typed, needsConfirm, doctorText, progressText, mapHtml, DRILLS, register};
+module.exports = {cliPath, daemonToStart, findProgram, socketPath, missingDaemon, settingItems, choices, typed, needsConfirm, doctorText, progressText, mapHtml, DRILLS, register};

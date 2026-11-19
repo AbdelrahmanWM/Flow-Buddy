@@ -56,6 +56,33 @@ jobs:
           for f in shell/flowbuddy.bash shell/test/run.sh scripts/*.sh; do bash -n "$f"; done
           shellcheck shell/flowbuddy.bash shell/test/run.sh scripts/*.sh
 
+  # macOS: editor-only (no keyboard reading). The daemon, the CLI and the
+  # Vim plugin, as the Marketplace and plugin-manager installs use them.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets
+      - run: cargo test --workspace
+      - name: The daemon runs editor-only and listens where the plugins look
+        run: |
+          cargo build -p flowbuddy-daemon -p flowbuddy-cli
+          unset XDG_RUNTIME_DIR
+          target/debug/flowbuddyd --editor-only --exit-when-idle > daemon.log 2>&1 &
+          for _ in $(seq 50); do [ -S ~/.local/state/flowbuddy/flowbuddy.sock ] && break; sleep 0.2; done
+          cat daemon.log
+          test -S ~/.local/state/flowbuddy/flowbuddy.sock
+          target/debug/flowbuddy status
+          kill %1
+      - name: Test the Vim plugin
+        run: |
+          vim --version | head -1
+          vim-plugin/test/run.sh vim
+
   # The checks that guard what's public: secrets, dependencies, versions.
   hygiene:
     runs-on: ubuntu-latest

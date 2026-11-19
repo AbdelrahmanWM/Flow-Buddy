@@ -6,6 +6,9 @@
 " out here, from the buffer, and only the resulting numbers are sent.
 
 let s:VERSION = '0.1.2'
+" The folder this plugin came in, when it's a clone of the whole repository
+" (a plugin manager's): scripts/get-daemon.sh puts the programs in its bin/.
+let s:ROOT = expand('<sfile>:p:h:h:h')
 " Give up looking for a motion that lands exactly after this many presses.
 let s:MAX_HOPS = 20
 let s:RECONNECT_MS = 5000
@@ -37,6 +40,10 @@ let s:SNIPPET_MS = 1800000
 
 " Connection ----------------------------------------------------------------
 
+function! flowbuddy#socket_path() abort
+  return s:socket_path()
+endfunction
+
 function! s:socket_path() abort
   if !empty($FLOWBUDDY_SOCKET)
     return $FLOWBUDDY_SOCKET
@@ -45,9 +52,14 @@ function! s:socket_path() abort
   if !empty($SSH_CONNECTION)
     return '/tmp/flowbuddy-' . $USER . '.sock'
   endif
-  let dir = $XDG_RUNTIME_DIR
-  if empty(dir)
-    let dir = '/run/user/' . trim(system('id -u'))
+  " The same rules as the daemon's (paths.rs): a folder only you can reach.
+  if !empty($XDG_RUNTIME_DIR)
+    return $XDG_RUNTIME_DIR . '/flowbuddy.sock'
+  endif
+  let dir = '/run/user/' . trim(system('id -u'))
+  if !isdirectory(dir)
+    " macOS has none: the state folder.
+    let dir = (empty($XDG_STATE_HOME) ? expand('~/.local/state') : $XDG_STATE_HOME) . '/flowbuddy'
   endif
   return dir . '/flowbuddy.sock'
 endfunction
@@ -618,9 +630,14 @@ function! flowbuddy#start() abort
   endif
   let s:last = getpos('.')[1:2]
   let s:last_top = line('w0')
-  if !s:open() && flowbuddy#start_daemon()
-    " It needs a moment to listen: look often until it does.
-    call s:await_daemon(40)
+  if !s:open()
+    if flowbuddy#start_daemon()
+      " It needs a moment to listen: look often until it does.
+      call s:await_daemon(40)
+    elseif flowbuddy#missing_daemon() && !get(g:, 'flowbuddy_quiet', 0)
+      " After startup's own messages, so it isn't lost among them.
+      call timer_start(1500, function('s:say_missing'))
+    endif
   endif
   let s:reconnect_timer = timer_start(s:RECONNECT_MS, function('s:retry'), {'repeat': -1})
 endfunction
@@ -643,12 +660,65 @@ function! flowbuddy#daemon_to_start() abort
   if filereadable(config . '/systemd/user/flowbuddyd.service')
     return ''
   endif
-  for bin in [get(g:, 'flowbuddy_daemon', ''), exepath('flowbuddyd'), expand('~/.local/bin/flowbuddyd')]
+  return s:find_daemon()
+endfunction
+
+" flowbuddyd, wherever it is: the one you named, on the PATH, where the
+" installer puts it, or in this plugin's folder (scripts/get-daemon.sh).
+function! s:find_daemon() abort
+  for bin in [get(g:, 'flowbuddy_daemon', ''), exepath('flowbuddyd'),
+        \ expand('~/.local/bin/flowbuddyd'), s:ROOT . '/bin/flowbuddyd']
     if !empty(bin) && executable(bin)
       return bin
     endif
   endfor
   return ''
+endfunction
+
+function! flowbuddy#root() abort
+  return s:ROOT
+endfunction
+
+" Nothing can run Flow Buddy here: no daemon listening, no service, and no
+" daemon to start. Then the plugin can't do anything, and says so once.
+function! flowbuddy#missing_daemon() abort
+  if !get(g:, 'flowbuddy_start_daemon', 1) || !empty($SSH_CONNECTION)
+    return 0
+  endif
+  let config = empty($XDG_CONFIG_HOME) ? expand('~/.config') : $XDG_CONFIG_HOME
+  return getftype(s:socket_path()) !=# 'socket'
+        \ && !filereadable(config . '/systemd/user/flowbuddyd.service')
+        \ && empty(s:find_daemon())
+endfunction
+
+function! s:say_missing(...) abort
+  let script = s:ROOT . '/scripts/get-daemon.sh'
+  echohl WarningMsg
+  if filereadable(script)
+    echomsg 'Flow Buddy: no daemon yet. :FlowBuddyGetDaemon downloads it (or set your plugin manager to run scripts/get-daemon.sh).'
+  else
+    echomsg 'Flow Buddy: no daemon yet. See https://github.com/AbdelrahmanWM/Flow-Buddy#install'
+  endif
+  echohl None
+endfunction
+
+" :FlowBuddyGetDaemon: scripts/get-daemon.sh from this plugin's folder,
+" then start it.
+function! flowbuddy#get_daemon() abort
+  let script = s:ROOT . '/scripts/get-daemon.sh'
+  if !filereadable(script)
+    echohl ErrorMsg
+    echomsg 'Flow Buddy: this copy of the plugin has no scripts/get-daemon.sh; see https://github.com/AbdelrahmanWM/Flow-Buddy#install'
+    echohl None
+    return
+  endif
+  execute '!sh ' . shellescape(script)
+  if v:shell_error == 0
+    let s:daemon_started = 0
+    if flowbuddy#start_daemon()
+      call s:await_daemon(40)
+    endif
+  endif
 endfunction
 
 " Try to connect every 150 ms, `tries` times; then the slow retry takes over.

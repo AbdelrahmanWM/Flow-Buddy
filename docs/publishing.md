@@ -2,10 +2,11 @@
 
 A release (push a `v*` tag; see `.github/workflows/release.yml`) builds everything the stores take. These steps need the maintainer's accounts, so they're done by hand.
 
-## Before the first release
+## Before a release
 
-- `scripts/check-versions.sh 0.1.0` passes (CI runs it on the tag too).
-- `CHANGELOG.md` has a `## [0.1.0]` entry: the release notes come from it. Replace "unreleased" with the date.
+- Set the new version in `Cargo.toml`, `gnome-extension/metadata.json` (`version-name`), `vscode-extension/package.json` and `vim-plugin/autoload/flowbuddy.vim`, then `cargo update -w`. `scripts/check-versions.sh X.Y.Z` must pass (CI runs it on the tag too).
+- `CHANGELOG.md` has a dated `## [X.Y.Z]` entry: the release notes come from it.
+- Merge that, then push the tag `vX.Y.Z` on main.
 
 ## GNOME extensions (extensions.gnome.org)
 
@@ -19,7 +20,7 @@ A release (push a `v*` tag; see `.github/workflows/release.yml`) builds everythi
 
 1. Create a publisher named `flowbuddy` at <https://marketplace.visualstudio.com/manage> (or change `publisher` in `vscode-extension/package.json` to yours), and an Open VSX namespace at <https://open-vsx.org>.
 2. The icon is `vscode-extension/icon.png` (from `docs/images/icon.svg`).
-3. Publish the `.vsix` from the release: `npx @vscode/vsce publish --packagePath flowbuddy-vscode-0.1.0.vsix` and `npx ovsx publish flowbuddy-vscode-0.1.0.vsix -p <token>`.
+3. Publish the `.vsix` from the release: `npx @vscode/vsce publish --packagePath flowbuddy-vscode-X.Y.Z.vsix` and `npx ovsx publish flowbuddy-vscode-X.Y.Z.vsix -p <token>`.
 
 ## Vim and Neovim
 

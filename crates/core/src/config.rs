@@ -319,6 +319,9 @@ pub const VSCODES: &[&str] = &[
     "code-oss",
     "codium",
     "com.visualstudio.code",
+    // The official .deb and .rpm since 2026: their .desktop file's name.
+    "com.microsoft.VSCode",
+    "com.microsoft.VSCodeInsiders",
     "Code",
     "VSCodium",
 ];

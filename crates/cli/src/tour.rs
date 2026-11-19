@@ -182,7 +182,7 @@ struct Tour<'a, 'b> {
 }
 
 /// Wrapped at this width, like the rest of the CLI's prose.
-const WIDTH: usize = 79;
+pub(crate) const WIDTH: usize = 79;
 
 impl Tour<'_, '_> {
     fn heading(&mut self, n: usize, title: &str) -> std::io::Result<()> {
@@ -224,10 +224,19 @@ impl Tour<'_, '_> {
             .map(|(c, _)| c.chars().count())
             .max()
             .unwrap_or(0);
+        // The second column wraps within itself, lined up under its start.
+        let indent = " ".repeat(2 + width + 2);
         for (c, what) in rows {
             let pad = " ".repeat(width - c.chars().count());
             let c = self.cmd(c);
-            writeln!(self.out, "  {c}{pad}  {what}")?;
+            let lines = wrap(what, WIDTH.saturating_sub(indent.len()).max(20));
+            for (i, line) in lines.iter().enumerate() {
+                if i == 0 {
+                    writeln!(self.out, "  {c}{pad}  {line}")?;
+                } else {
+                    writeln!(self.out, "{indent}{line}")?;
+                }
+            }
         }
         Ok(())
     }
@@ -348,7 +357,7 @@ impl Tour<'_, '_> {
 }
 
 /// Words joined into lines no wider than `width` (marks don't count).
-fn wrap(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
     for word in text.split(' ') {
@@ -450,8 +459,8 @@ mod tests {
         assert!(out.contains("They're in flowbuddy setup whenever you like."));
         assert!(out.contains("── 7 of 7 · Quieter, or louder ──"));
         assert!(out.ends_with("Try a drill now, two minutes: flowbuddy practice\n"));
-        // No line is too wide, and no marks are left.
-        for line in out.lines().filter(|l| !l.starts_with("  ")) {
+        // No line is too wide, tables included, and no marks are left.
+        for line in out.lines() {
             assert!(line.chars().count() <= WIDTH, "too wide: {line}");
         }
         assert!(!out.contains("`flowbuddy"), "{out}");

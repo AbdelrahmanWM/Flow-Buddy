@@ -83,7 +83,7 @@ struct Context {
 | Focused app (from extension) | Terminal report (from hook) | Context |
 |---|---|---|
 | VS Code, companion says a panel has focus | — | `Unsupported` |
-| VS Code (`code`, `code_code` for the snap) | — | `VsCodeVim` |
+| VS Code (`code`, `code_code` for the snap, `com.microsoft.VSCode` for the .deb and .rpm) | — | `VsCodeVim` |
 | Terminal emulator, Vim plugin inside it (see below) | — | `TerminalVim` |
 | Terminal emulator | foreground `vim`/`vi`/`nvim` | `TerminalVim` |
 | Terminal emulator | at prompt (`ctx prompt`) | `BashVi` |

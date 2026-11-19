@@ -497,6 +497,15 @@ function! Test_a_tip_is_answered_once() abort
   call assert_true(empty(s:floats()))
 endfunction
 
+function! Test_practice_panel_wraps_to_the_window() abort
+  let how = 'How    a count (5j, 12k: the line numbers say how far), or } and { to the next blank line'
+  let lines = flowbuddy#practice#wrap(how, 60)
+  call assert_equal(['How    a count (5j, 12k: the line numbers say how far), or',
+        \ '       } and { to the next blank line'], lines)
+  call assert_true(max(map(copy(lines), 'strdisplaywidth(v:val)')) <= 60)
+  call assert_equal([how], flowbuddy#practice#wrap(how, 200))
+endfunction
+
 function! Test_practice_shows_start_and_goal() abort
   " Lines 18 and 29 in a window 20 tall: both fit, centred.
   let top = flowbuddy#practice#topline(18, 29, 20)
@@ -541,6 +550,54 @@ function! Test_practice_counts_keys() abort
   call assert_equal([5, 4], map(copy(got.rounds), 'v:val.keys'))
   call assert_equal(['All done.'], flowbuddy#practice#panel())
   call assert_equal('false', json_encode(got.stopped))
+  call s:close_floats()
+  bwipe!
+endfunction
+
+function! Test_practice_q_goes_back_to_your_file() abort
+  let file = tempname()
+  call writefile(['mine'], file)
+  only!
+  execute 'edit! ' . fnameescape(file)
+  let mine = bufnr()
+  let drill = tempname()
+  call writefile([json_encode({'version': 1, 'family': 'vertical', 'title': 'T', 'about': 'a',
+        \ 'rounds': [{'lines': ['a', 'b', 'c'], 'cursor': [1, 1], 'ask': 'x',
+        \  'goal': {'line': 3}, 'mark': [3, 1, 0], 'par': 1, 'best': 'G'}]})], drill)
+  call flowbuddy#practice#run(drill, tempname(), 0)
+  call assert_notequal(mine, bufnr())
+  " :q in the drill: the drill and its panel go, and your file is back.
+  quit
+  call assert_equal(1, winnr('$'), string(map(range(1, winnr('$')), 'bufname(winbufnr(v:val))')))
+  call assert_equal(mine, bufnr())
+  call assert_equal(['mine'], getline(1, '$'))
+  call s:close_floats()
+  only
+  bwipe!
+endfunction
+
+function! Test_practice_goal_in_view_with_scrolloff() abort
+  " Fedora's vim sets scrolloff=5: with the start near the top it would
+  " pin line 1 there and push a far goal off the bottom.
+  set scrolloff=5
+  only!
+  enew!
+  let lines = map(range(1, 80), '"line " . v:val')
+  let Drill = {goal -> json_encode({'version': 1, 'family': 'vertical', 'title': 'T', 'about': 'a',
+        \ 'rounds': [{'lines': lines, 'cursor': [5, 1], 'ask': 'x',
+        \  'goal': {'line': goal}, 'mark': [goal, 1, 0], 'par': 3, 'best': 'x'}]})}
+  " Once to see how tall the drill's window is,
+  let drill = tempname()
+  call writefile([Drill(6)], drill)
+  call flowbuddy#practice#run(drill, tempname(), 0)
+  let height = winheight(0)
+  bwipe!
+  " then a goal that fits only if the drill's view is kept.
+  let goal = 5 + height - 3
+  call writefile([Drill(goal)], drill)
+  call flowbuddy#practice#run(drill, tempname(), 0)
+  call assert_true(line('w0') <= 5 && line('w$') >= goal, [line('w0'), line('w$'), goal, height])
+  set scrolloff=0
   call s:close_floats()
   bwipe!
 endfunction

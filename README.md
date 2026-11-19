@@ -28,7 +28,7 @@ On Linux with GNOME 50 (or any X11 desktop), with bash, zsh or fish:
 
 ```sh
 git clone https://github.com/AbdelrahmanWM/Flow-Buddy && cd Flow-Buddy
-scripts/install.sh --with-udev    # builds with Rust; a release download needs none
+scripts/install.sh --with-udev    # builds with Rust and a C compiler (docs/install.md); a release download needs neither
 # log out and back in, then:
 flowbuddy tour                    # how it works, a sample tip, and the settings that matter
 ```
@@ -119,6 +119,8 @@ Editor only is the quick way to try it: the plugins tell the daemon what you typ
 ## Where it runs
 
 Linux. The full install: GNOME on Wayland (with the top-bar indicator and the settings window), or any X11 desktop such as KDE, Xfce or i3 (tips as notifications). Editor only: any Linux desktop, including KDE on Wayland. Not yet macOS.
+
+Tested on fresh installs of Ubuntu 26.04 and Fedora 44 Workstation (GNOME 50, Wayland), from source and from a release download, with Vim, Neovim, VS Code (vscodevim), bash, zsh and fish.
 
 ## Contributing
 

@@ -128,7 +128,9 @@ pub fn ask(
         let now = current(text, q).unwrap_or(0);
         writeln!(out, "\n{}", q.ask)?;
         if let Some(about) = q.about {
-            writeln!(out, "{about}")?;
+            for line in crate::tour::wrap(about, crate::tour::WIDTH) {
+                writeln!(out, "{line}")?;
+            }
         }
         for (i, (_, what)) in q.choices.iter().enumerate() {
             let mark = if i == now { "*" } else { " " };
@@ -200,6 +202,7 @@ mod tests {
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains(" *2. as you work"));
         assert!(out.contains("Type a number from 1 to"));
+        assert!(out.lines().all(|l| l.chars().count() <= 79), "{out}");
         assert!(out.contains("the text never leaves the editor"));
         assert!(
             out.contains(" *1. no, tips from keys only"),

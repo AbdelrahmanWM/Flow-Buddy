@@ -663,6 +663,16 @@ pub fn plans_for(m: &Motion, known: &Known) -> Vec<Plan> {
         }
     }
     plans.retain(|p| p.cost > 0 && known.ready(p.skill()));
+    // Without punctuation, a blank line is where a sentence ends too: `)`
+    // only lands there because `}` does, so don't offer it.
+    let paragraph = plans
+        .iter()
+        .filter(|p| p.category == Category::Paragraph)
+        .map(|p| effort(&p.keys, p.cost))
+        .min();
+    if let Some(e) = paragraph {
+        plans.retain(|p| p.category != Category::Sentence || effort(&p.keys, p.cost) < e);
+    }
     plans.sort_by(|a, b| {
         let (ea, eb) = (effort(&a.keys, a.cost), effort(&b.keys, b.cost));
         if better(ea, a.category, eb, b.category) {
@@ -1473,6 +1483,22 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(plan(14, 0, f), (Category::Paragraph, "}}".into(), 2));
+    }
+
+    #[test]
+    fn a_blank_line_is_a_paragraph_not_a_sentence() {
+        // Lines without full stops: `)` stops at the blank line, as `}` does.
+        let f = MotionFacts {
+            paragraph_hops: Some(1),
+            sentence_hops: Some(1),
+            ..Default::default()
+        };
+        let all = plans(&motion(7, 0, f));
+        assert_eq!(all[0].keys, "}");
+        assert!(
+            all.iter().all(|p| p.category != Category::Sentence),
+            "{all:?}"
+        );
     }
 
     #[test]

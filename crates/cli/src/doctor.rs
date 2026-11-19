@@ -157,15 +157,18 @@ pub fn checks(env: &Env) -> Vec<Check> {
         )),
         None => {}
     }
+    // Over ssh there's no XDG_CURRENT_DESKTOP, but a connected extension
+    // still says this is GNOME.
+    let gnome_connected = env
+        .status
+        .as_ref()
+        .is_ok_and(|s| s.clients.contains(&ClientKind::GnomeExtension));
     if editor_only {
         out.push(ok(
             "editor only: coaching and tips in Vim, Neovim and VS Code (scripts/install.sh --with-udev adds the shell, Claude Code and the desktop)",
         ));
-    } else if env.desktop.to_uppercase().contains("GNOME") {
-        let connected = env
-            .status
-            .as_ref()
-            .is_ok_and(|s| s.clients.contains(&ClientKind::GnomeExtension));
+    } else if gnome_connected || env.desktop.to_uppercase().contains("GNOME") {
+        let connected = gnome_connected;
         out.push(match (env.gnome_extension_installed, connected) {
             (_, true) => ok("the GNOME extension is connected (focus and tips in the top bar)"),
             (true, false) => bad(
@@ -460,6 +463,18 @@ mod tests {
         let c = checks(&env());
         assert!(c.iter().all(|c| c.ok), "{}", report(&c));
         assert!(report(&c).ends_with("All good.\n"));
+    }
+
+    #[test]
+    fn over_ssh_a_connected_extension_is_still_gnome() {
+        let mut e = env();
+        e.desktop = String::new();
+        let text = report(&checks(&e));
+        assert!(
+            text.contains("✓ the GNOME extension is connected"),
+            "{text}"
+        );
+        assert!(!text.contains("not GNOME"), "{text}");
     }
 
     #[test]

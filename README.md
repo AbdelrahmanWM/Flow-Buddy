@@ -96,12 +96,13 @@ flowbuddy tour                    # how it works, a sample tip, and the settings
 
 | | |
 |---|---|
-| <img src="docs/images/card.png" alt="A tip card under the GNOME top bar" width="400"> | Everywhere else, a tip shows as a card under the top bar for a few seconds. |
+| <img src="docs/images/vscode-tip.png" alt="VS Code with the Vim extension: after seven presses of j, Flow Buddy's notification says that took 8 keys and } gets there in 1" width="460"> | In VS Code, a tip shows as a notification, with its answers, and in the status bar. |
+| <img src="docs/images/card.png" alt="A tip card under the GNOME top bar" width="400"> | With the full install on GNOME, a tip shows as a card under the top bar for a few seconds. |
 | <img src="docs/images/menu.png" alt="Flow Buddy's top-bar menu: the tip, what it does, Got it, Not helpful, the modes and the tour" width="300"> | The top-bar menu keeps the tip, what it does, and its answers, with keyboard shortcuts. |
 | <img src="docs/images/practice.png" alt="A practice drill in Vim: the goal, the fewest keys, your keys so far, and the marked line" width="460"> | `flowbuddy practice`: reach the marked line, delete the marked words, in as few keys as you can. |
 | <img src="docs/images/welcome.png" alt="The Welcome dialog in Flow Buddy's settings window" width="400"> | The tour, in the settings window or in a terminal (`flowbuddy tour`). |
 
-The pictures are made by `scripts/screenshots/shoot.sh`, in a throwaway GNOME session.
+The GNOME and Vim pictures are made by `scripts/screenshots/shoot.sh`, in a throwaway GNOME session; the VS Code one is from a fresh install.
 
 ## Your progress
 

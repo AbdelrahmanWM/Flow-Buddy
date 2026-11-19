@@ -6,6 +6,8 @@ Flow Buddy is an adaptive tutor that lives inside your work. It watches how you 
 
 Vim is the first subject, in Vim and Neovim, VS Code with vscodevim, vi-mode shells and Claude Code's Vim mode. It runs on your machine, and your keys never leave it.
 
+Think of `vimtutor` that never ends: instead of exercises, it uses your own habits, at the moment you have them.
+
 <p align="center"><img src="docs/images/tip.gif" alt="In Vim, j pressed seven times to reach a blank line; Flow Buddy's tip says that took 7 keys and } gets there in 1" width="613"></p>
 
 ## How it teaches

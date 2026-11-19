@@ -17,14 +17,20 @@ The binaries use `libxkbcommon` to read keys in your keyboard layout; every GNOM
 
 ## From source
 
-With Rust (via [rustup](https://rustup.rs), 1.89 or newer):
+It needs Rust ([rustup](https://rustup.rs), 1.89 or newer), a C compiler, and, for keyboard layouts other than US, libxkbcommon's headers. On a fresh machine:
+
+```sh
+sudo apt install build-essential pkg-config libxkbcommon-dev      # Ubuntu, Debian
+sudo dnf install gcc pkgconf-pkg-config libxkbcommon-devel        # Fedora
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust; then open a new terminal
+```
+
+Then:
 
 ```sh
 git clone https://github.com/AbdelrahmanWM/Flow-Buddy && cd Flow-Buddy
 scripts/install.sh --with-udev
 ```
-
-For keyboard layouts other than US, install `libxkbcommon-dev` first.
 
 ## Editor only
 

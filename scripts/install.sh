@@ -65,6 +65,14 @@ run() {
         "$@"
     fi
 }
+# How to install a package here: install_hint DEBIAN_NAMES FEDORA_NAMES.
+install_hint() {
+    if command -v apt-get >/dev/null; then echo "sudo apt install $1"
+    elif command -v dnf >/dev/null; then echo "sudo dnf install $2"
+    else echo "install $1 (Fedora: $2) with your package manager"
+    fi
+}
+
 ask() {
     ((yes)) && return 0
     local reply
@@ -78,6 +86,7 @@ if [[ -x $repo/bin/flowbuddyd && -x $repo/bin/flowbuddy ]]; then
     say "Using the prebuilt binaries in bin/"
 else
     command -v cargo >/dev/null || { echo "cargo not found: install Rust from https://rustup.rs, or download a release, which needs no Rust" >&2; exit 1; }
+    command -v cc >/dev/null || { echo "no C compiler, which Rust needs to build: $(install_hint build-essential gcc)" >&2; exit 1; }
     say "Building release binaries"
     # libxkbcommon reads keys in your layout (German, French, ...); without
     # it, keys are read as US.
@@ -86,7 +95,7 @@ else
         features=(--features flowbuddy-daemon/xkb)
     else
         echo "    note: libxkbcommon-dev isn't installed, so keys are read as US."
-        echo "    For other layouts: sudo apt install libxkbcommon-dev, then run this again."
+        echo "    For other layouts: $(install_hint 'pkg-config libxkbcommon-dev' 'pkgconf-pkg-config libxkbcommon-devel'), then run this again."
     fi
     run cargo build --release --manifest-path "$repo/Cargo.toml" -p flowbuddy-daemon -p flowbuddy-cli "${features[@]}"
     built=${CARGO_TARGET_DIR:-$repo/target}/release
@@ -97,7 +106,15 @@ run install -Dm755 "$built/flowbuddyd" "$bin_dir/flowbuddyd"
 run install -Dm755 "$built/flowbuddy" "$bin_dir/flowbuddy"
 case :$PATH: in
     *:"$bin_dir":*) ;;
-    *) echo "    note: $bin_dir is not on your PATH" ;;
+    *)
+        # Ubuntu's ~/.profile and Fedora's ~/.bashrc add it once it exists,
+        # after the log-out-and-in below; otherwise say how.
+        if grep -qs '\.local/bin' "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc"; then
+            echo "    note: $bin_dir is on your PATH after you log out and back in (until then: $bin_dir/flowbuddy)"
+        else
+            echo "    note: $bin_dir is not on your PATH; add it in ~/.profile: export PATH=\"\$HOME/.local/bin:\$PATH\""
+        fi
+        ;;
 esac
 
 # Source a hook from a shell's rc file, between markers, after asking.
@@ -133,9 +150,18 @@ if command -v zsh >/dev/null; then
     add_hook "${ZDOTDIR:-$HOME}/.zshrc" "bindkey -v" "$share_dir/flowbuddy.zsh"
 fi
 if command -v fish >/dev/null; then
-    # fish loads conf.d by itself; vi bindings stay your choice.
-    run install -Dm644 /dev/stdin "$fish_conf" <<<"source \"$share_dir/flowbuddy.fish\""
-    echo "    for fish vi-mode, add fish_vi_key_bindings to config.fish"
+    # fish loads conf.d by itself. Vi bindings go in the same file, after
+    # asking, as for bash and zsh, unless fish already has them.
+    fish_dir=${XDG_CONFIG_HOME:-$HOME/.config}/fish
+    fish_vi=""
+    if grep -qs fish_vi_key_bindings "$fish_dir/config.fish" "$fish_dir/fish_variables"; then
+        :
+    elif grep -qs fish_vi_key_bindings "$fish_conf" || ask "Turn on vi key bindings in fish? Flow Buddy coaches the shell in vi mode"; then
+        fish_vi=$'\nset -g fish_key_bindings fish_vi_key_bindings'
+    else
+        echo "    fish is coached in vi mode: add fish_vi_key_bindings to config.fish to turn it on"
+    fi
+    run install -Dm644 /dev/stdin "$fish_conf" <<<"source \"$share_dir/flowbuddy.fish\"$fish_vi"
 fi
 
 say "Installing the GNOME Shell extension"

@@ -28,7 +28,7 @@ On Linux with GNOME 50 (or any X11 desktop), with bash, zsh or fish:
 
 ```sh
 git clone https://github.com/AbdelrahmanWM/Flow-Buddy && cd Flow-Buddy
-scripts/install.sh --with-udev    # builds with Rust; a release download needs none
+scripts/install.sh --with-udev    # builds with Rust and a C compiler (docs/install.md); a release download needs neither
 # log out and back in, then:
 flowbuddy tour                    # how it works, a sample tip, and the settings that matter
 ```

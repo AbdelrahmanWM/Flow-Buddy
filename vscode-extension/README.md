@@ -1,21 +1,44 @@
 # Flow Buddy for VS Code
 
-A companion extension for [Flow Buddy](../README.md). The daemon only knows which *window* is focused, so inside VS Code it can't tell the editor from the integrated terminal or a chat panel (such as Claude Code's), and it has to guess vscodevim's mode from your keys. This extension tells it:
+**Learn Vim's faster commands while you work, in VS Code with the Vim extension.**
+
+Flow Buddy notices habits like pressing `j` seven times to reach a blank line, and right after, shows the shorter way: `}` gets there in 1. It learns which commands you already use, so the tips move on as you do, and once a day it brings one new thing to try.
+
+![Seven presses of j in VS Code, and Flow Buddy's tip: That took 8 keys. } gets there in 1, or 7j in 2.](https://raw.githubusercontent.com/AbdelrahmanWM/Flow-Buddy/main/docs/images/vscode-tip.png)
+
+## Getting started
+
+1. Install the [Vim extension](https://marketplace.visualstudio.com/items?itemName=vscodevim.vim) (vscodevim), if you haven't.
+2. Install Flow Buddy.
+3. Open a file and move around in Normal mode.
+
+That's all on Linux and macOS: this extension comes with Flow Buddy's daemon and starts it when VS Code opens (it stops by itself ten minutes after the last editor closes). Nothing reads your keyboard; the extension counts your cursor's moves. On other systems it says it can't run there yet.
+
+Answer a tip with **Got it**, **Not helpful** or **What does it do?**. The Command Palette has **Flow Buddy: Settings…**, **Progress**, **Skill map**, **Practice** and more, and the **Get started with Flow Buddy** walkthrough shows them.
+
+Flow Buddy also coaches Vim and Neovim, and on Linux your shell's vi mode and Claude Code's Vim mode: see [the project](https://github.com/AbdelrahmanWM/Flow-Buddy#install).
+
+## What it sends, and to where
+
+Only counts and facts about cursor moves, to the Flow Buddy daemon on your own machine, over a local socket. Never text, file names or paths, and nothing over the network. The daemon keeps habits and counts in a local database. Details below and in [docs/privacy.md](https://github.com/AbdelrahmanWM/Flow-Buddy/blob/main/docs/privacy.md).
+
+## How it works
+
+The daemon only knows which *window* is focused, so inside VS Code it can't tell the editor from the integrated terminal or a chat panel (such as Claude Code's), and it has to guess vscodevim's mode from your keys. This extension tells it:
 
 - whether a text editor has focus (`editor_focus`),
 - vscodevim's real mode (`editor_mode`),
 - how the cursor moved in Normal and Visual mode (`motion`), with facts such as "`}` twice lands here".
 
-Plain JavaScript, no build step and no dependencies. `scripts/install.sh` installs it; it does nothing until the daemon is running, and reconnects when the daemon restarts.
+Plain JavaScript, no build step and no dependencies. It does nothing until the daemon is running, and reconnects when the daemon restarts. With the full Linux install (`scripts/install.sh`), the installed daemon is used instead of this extension's copy.
 
+With no keyboard access (this extension on its own, or `scripts/install.sh --editor-only`), the extension starts the daemon itself when none is running (the `flowbuddy.startDaemon` setting turns that off), shows tips as VS Code notifications, and reports single cursor steps (a line down, a character right) as `j`, `k`, `h` and `l`, because an extension can't see keys while vscodevim has them. Keys that don't move the cursor one step go uncounted.
 
-With an editor-only install (`scripts/install.sh --editor-only`), nothing reads your keyboard. The companion then starts the daemon itself when none is running (the `flowbuddy.startDaemon` setting turns that off), shows tips as VS Code notifications, and reports single cursor steps (a line down, a character right) as `j`, `k`, `h` and `l`, because an extension can't see keys while vscodevim has them. Keys that don't move the cursor one step go uncounted.
-
-## Privacy
+### Privacy
 
 The extension sends only the fields in `crates/core/src/editor.rs`: flags, modes, counts and deltas. It never sends text, characters, file names, paths or absolute positions. Motion facts are computed here from the text, and only their numbers leave the extension (for example "`f` plus the character at the end, then `;` twice", without the character). The daemon rejects any field it doesn't know, and it is on the same machine: nothing goes over the network.
 
-## Editor focus
+### Editor focus
 
 VS Code has no API for "the editor has keyboard focus", so this is a heuristic.
 
@@ -40,7 +63,7 @@ Limits:
 - Another extension that opens an editor, or moves its cursor with a command, while you type elsewhere looks like activity. The heartbeat then stops, and the daemon falls back as above.
 - Normal-mode keys that move nothing (`j` on the last line, `:`) send no heartbeat.
 
-## Mode
+### Mode
 
 vscodevim exports no API, but it sets the cursor style on every mode change: your `vim.cursorStylePerMode.<mode>` setting if there is one, otherwise a fixed style per mode (vscodevim 1.32):
 
@@ -56,15 +79,15 @@ The extension reads the active editor's cursor style and your settings, and find
 
 Limits: a charwise selection of exactly whole lines reads as Visual Line, a one-line Visual Block reads as Visual, and on an empty line the previous Visual kind is kept. vscodevim's EasyMotion mode looks like Normal, and "Vim disabled" via its toggle command looks like Insert.
 
-## UI events
+### UI events
 
 For the VS Code pack (`flowbuddy rules` lists `vscode.*`), the companion reports when a file opens in a new tab, as the bare event `file_opened`: never which file. The daemon adds whether a click or `Ctrl-P` came just before, and the same for the terminal panel taking focus.
 
-## Text objects
+### Text objects
 
 After a delete or change in Normal or Visual mode, the companion works out which text objects (`iw`, `aw`, `i(`, `a"`, `ip`, `ap`…) the removed range was exactly, and sends only their names. VS Code doesn't say what an edit removed, so while you're in Normal or Visual mode it keeps a copy of the active document's lines (documents over 20 000 lines are skipped). The copy stays in the extension and is dropped when you start typing in Insert mode. Yanks don't change the document, so they aren't seen; the Vim plugin sees them.
 
-## Motions
+### Motions
 
 In Normal, Visual and Visual Line mode, a movement starts at the first cursor move and ends when the cursor has rested for a second, the mode changes or you click. Edits and switching editors drop it without sending anything, and nothing is sent in Insert mode or Visual Block.
 
@@ -72,7 +95,7 @@ Each movement sends its start and end time (Unix ms), the number of cursor moves
 
 The facts are computed in `facts.js`, which follows Vim's own code for `w`/`b`/`e`/`ge`/`W`/`B`, `}`/`{`, `f`/`t` with `;`, `%` and `*`/`#`, and the semantics in `crates/core/src/editor.rs`. A fact is left out rather than guessed: word facts next to characters outside Latin-1, `%` on preprocessor lines, in C comments or with unpaired quotes, and anything that would need the last search (`search_hops`) or the jump list (`jump_back`). `*`/`#` honour `vim.ignorecase` and don't wrap around the file.
 
-## Tests
+### Tests
 
 ```sh
 gjs vscode-extension/test/facts.test.js
@@ -83,8 +106,8 @@ The tests run `facts.js` on small hand-written buffers. No node needed.
 
 ## Tips
 
-Tips for what you do in VS Code show on Flow Buddy's desktop card, with the whole tip, what it does and the answers. The **Flow Buddy: Tips** setting (`flowbuddy.tips`) changes that: `notification` shows them in VS Code, as a notification at the bottom right with **Got it**, **Not helpful** and **What does it do?** (the explanation, and an example for lessons), and highlighted in the status bar for a few seconds (hover for all of it, click to answer); `statusBar` shows only the status bar. The change takes effect right away.
+Tips show as a VS Code notification at the bottom right, with **Got it**, **Not helpful** and **What does it do?** (the explanation, and an example for lessons), and highlighted in the status bar for a few seconds (hover for all of it, click to answer). With the full install on GNOME, they show on Flow Buddy's desktop card instead. The **Flow Buddy: Tips** setting (`flowbuddy.tips`) chooses: `desktop` (the card when there is one, else a notification), `notification`, or `statusBar` (only the status bar). The change takes effect right away.
 
 ## Settings and tools
 
-In the Command Palette: **Flow Buddy: Settings…** (the basics, then everything else and each rule), **Check setup**, **Progress**, **Today**, **Recent tips**, **Skill map** (every skill as a coloured tile) and **Practice** (a drill in Vim, in a terminal). They run the `flowbuddy` command, so it needs to be installed (`scripts/install.sh`).
+In the Command Palette: **Flow Buddy: Settings…** (the basics, then everything else and each rule), **Check setup**, **Progress**, **Today**, **Recent tips**, **Skill map** (every skill as a coloured tile) and **Practice** (a drill in Vim, in a terminal). They run the `flowbuddy` command: this extension's own copy, or the installed one.

@@ -108,6 +108,9 @@ pub struct Coach {
     recent: VecDeque<u64>,
     queue: HashMap<&'static str, Queued>,
     last_batch_ms: Option<u64>,
+    /// Balanced mode shows its first tip at once, so you see it works
+    /// (a new install would otherwise wait half an hour); then batches.
+    first_shown: bool,
 }
 
 impl Coach {
@@ -118,6 +121,7 @@ impl Coach {
             recent: VecDeque::new(),
             queue: HashMap::new(),
             last_batch_ms: None,
+            first_shown: false,
         }
     }
 
@@ -178,6 +182,13 @@ impl Coach {
                 }
                 self.last_per_rule.insert(finding.rule_id, now_ms);
                 self.recent.push_back(now_ms);
+                Some(finding.clone())
+            }
+            CoachingMode::Balanced if !self.first_shown && self.open(gate) => {
+                self.first_shown = true;
+                // The next batch is a full interval after this one.
+                self.last_batch_ms = Some(now_ms);
+                self.last_per_rule.insert(finding.rule_id, now_ms);
                 Some(finding.clone())
             }
             CoachingMode::Balanced => {
@@ -291,7 +302,7 @@ mod tests {
 
     #[test]
     fn mistakes_come_right_away_in_balanced_mode_too() {
-        let mut c = Coach::new(cfg());
+        let mut c = batching(cfg());
         let g = gate(CoachingMode::Balanced);
         assert!(
             c.on_finding(&finding("vim.repeat-jk"), NEW, &g, 0)
@@ -365,9 +376,35 @@ mod tests {
         assert!(c.on_finding(&finding("a"), NEW, &night, 0).is_none());
     }
 
+    /// A coach past its first tip: balanced mode batches from here.
+    fn batching(cfg: PolicyConfig) -> Coach {
+        let mut c = Coach::new(cfg);
+        c.first_shown = true;
+        c
+    }
+
+    #[test]
+    fn balanced_shows_the_first_tip_at_once_then_batches() {
+        let mut c = Coach::new(cfg());
+        let g = gate(CoachingMode::Balanced);
+        assert!(c.on_tick(&g, 0).is_empty());
+        let first = c.on_finding(&finding("a"), NEW, &g, MINUTE_MS);
+        assert_eq!(first.map(|f| f.rule_id), Some("a"), "you see it works");
+        assert!(
+            c.on_finding(&finding("b"), NEW, &g, 2 * MINUTE_MS)
+                .is_none(),
+            "then batched"
+        );
+        assert!(
+            c.on_tick(&g, 30 * MINUTE_MS).is_empty(),
+            "a full interval after the first"
+        );
+        assert_eq!(c.on_tick(&g, 31 * MINUTE_MS).len(), 1);
+    }
+
     #[test]
     fn balanced_batches_top_findings_per_interval() {
-        let mut c = Coach::new(cfg());
+        let mut c = batching(cfg());
         let g = gate(CoachingMode::Balanced);
         assert!(c.on_tick(&g, 0).is_empty(), "first tick starts the clock");
         for _ in 0..5 {
@@ -414,7 +451,7 @@ mod tests {
 
     #[test]
     fn balanced_puts_the_focus_habit_first() {
-        let mut c = Coach::new(PolicyConfig {
+        let mut c = batching(PolicyConfig {
             batch_size: 1,
             ..cfg()
         });

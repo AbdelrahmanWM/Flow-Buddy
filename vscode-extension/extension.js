@@ -8,7 +8,7 @@
 
 'use strict';
 
-const {DaemonLink} = require('./daemon');
+const {DaemonLink, socketPath} = require('./daemon');
 const {FocusReporter} = require('./focus');
 const {ModeTracker} = require('./mode');
 const {MotionTracker} = require('./motion');
@@ -20,6 +20,73 @@ const tools = require('./tools');
 const tips = require('./tips');
 
 let link = null;
+// This extension's own copies of flowbuddyd and flowbuddy, in the
+// Marketplace's Linux and macOS builds: <extension>/bin.
+let bundled = null;
+
+const INSTALL_URL = 'https://github.com/AbdelrahmanWM/Flow-Buddy#install';
+
+function executable(path) {
+    const fs = require('fs');
+    try {
+        fs.accessSync(path, fs.constants.X_OK);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+// The bundled programs, made runnable: unpacking a .vsix may drop the
+// executable bit. Only files inside this extension's own folder.
+function prepareBundled(extensionPath) {
+    const fs = require('fs');
+    const dir = require('path').join(extensionPath, 'bin');
+    if (!fs.existsSync(dir))
+        return null;
+    for (const name of ['flowbuddyd', 'flowbuddy']) {
+        const p = `${dir}/${name}`;
+        try {
+            if (fs.existsSync(p) && !executable(p))
+                fs.chmodSync(p, 0o755);
+        } catch (e) {
+            console.warn(`flowbuddy: couldn't make ${p} runnable: ${e}`);
+        }
+    }
+    return dir;
+}
+
+function daemonFacts() {
+    const fs = require('fs');
+    const os = require('os');
+    const config = process.env.XDG_CONFIG_HOME || `${os.homedir()}/.config`;
+    return {
+        socketExists: fs.existsSync(socketPath()),
+        serviceExists: fs.existsSync(`${config}/systemd/user/flowbuddyd.service`),
+        pathVar: process.env.PATH,
+        home: os.homedir(),
+        exists: executable,
+        bundled,
+    };
+}
+
+// Nothing to talk to and nothing to start, a few seconds in: say why the
+// extension does nothing, with a way to fix it, until told not to.
+function checkDaemon(context) {
+    const vscode = require('vscode');
+    if (link?.connected || context.globalState.get('flowbuddy.missingDaemonHidden'))
+        return;
+    if (!tools.missingDaemon(daemonFacts()))
+        return;
+    const where = process.platform === 'linux' || process.platform === 'darwin'
+        ? 'Flow Buddy needs its daemon, which isn\'t on this computer.'
+        : 'Flow Buddy runs on Linux and macOS; it can\'t coach here yet.';
+    vscode.window.showInformationMessage(where, 'How to install', 'Don\'t show again').then(choice => {
+        if (choice === 'How to install')
+            vscode.env.openExternal(vscode.Uri.parse(INSTALL_URL));
+        else if (choice === 'Don\'t show again')
+            context.globalState.update('flowbuddy.missingDaemonHidden', true);
+    });
+}
 
 // With no daemon and no service to run one (an editor-only install),
 // start one that reads no keyboard. It runs on its own, serves the next
@@ -27,25 +94,9 @@ let link = null;
 // with the setting flowbuddy.startDaemon.
 function startDaemon() {
     const vscode = require('vscode');
-    const fs = require('fs');
-    const os = require('os');
-    const exists = p => {
-        try {
-            fs.accessSync(p, fs.constants.X_OK);
-            return true;
-        } catch {
-            return false;
-        }
-    };
-    const config = process.env.XDG_CONFIG_HOME || `${os.homedir()}/.config`;
-    const socket = process.env.FLOWBUDDY_SOCKET || `/run/user/${process.getuid()}/flowbuddy.sock`;
     const bin = tools.daemonToStart({
         enabled: vscode.workspace.getConfiguration('flowbuddy').get('startDaemon', true),
-        socketExists: fs.existsSync(socket),
-        serviceExists: fs.existsSync(`${config}/systemd/user/flowbuddyd.service`),
-        pathVar: process.env.PATH,
-        home: os.homedir(),
-        exists,
+        ...daemonFacts(),
     });
     if (!bin)
         return false;
@@ -60,6 +111,7 @@ function startDaemon() {
 }
 
 function activate(context) {
+    bundled = prepareBundled(context.extensionPath);
     let focus = null;
     let modes = null;
     let motions = null;
@@ -102,29 +154,23 @@ function activate(context) {
     mappings.enable(context.subscriptions);
     link.start();
     registerTools(context.subscriptions);
+    const check = setTimeout(() => checkDaemon(context), 5000);
+    context.subscriptions.push({dispose: () => clearTimeout(check)});
 }
 
 // Settings and tools in the Command Palette, through the flowbuddy command.
 function registerTools(subscriptions) {
     const vscode = require('vscode');
-    const fs = require('fs');
     const os = require('os');
     const {execFile} = require('child_process');
-    const exists = path => {
-        try {
-            fs.accessSync(path, fs.constants.X_OK);
-            return true;
-        } catch {
-            return false;
-        }
-    };
+    const cli = () => tools.cliPath(process.env.PATH, os.homedir(), executable, bundled);
     const run = args => new Promise((resolve, reject) => {
-        const cli = tools.cliPath(process.env.PATH, os.homedir(), exists);
-        if (!cli) {
-            reject(new Error('the flowbuddy command isn\'t installed: run scripts/install.sh from the Flow Buddy folder'));
+        const path = cli();
+        if (!path) {
+            reject(new Error(`the flowbuddy command isn't installed: see ${INSTALL_URL}`));
             return;
         }
-        execFile(cli, args, {timeout: 30000}, (error, out, err) => {
+        execFile(path, args, {timeout: 30000}, (error, out, err) => {
             // An exit code is an answer; anything else (not found, timed
             // out) is a failure to run.
             if (error && typeof error.code !== 'number') {
@@ -134,7 +180,7 @@ function registerTools(subscriptions) {
             resolve({ok: !error, out: out ?? '', err: err ?? ''});
         });
     });
-    tools.register(vscode, run, subscriptions, () => tools.cliPath(process.env.PATH, os.homedir(), exists));
+    tools.register(vscode, run, subscriptions, cli);
 }
 
 function deactivate() {

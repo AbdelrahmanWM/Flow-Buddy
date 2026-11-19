@@ -1,71 +1,112 @@
 name: Release
 
-# Push a tag like v0.1.0: both binaries are built for Linux x86_64 and
-# aarch64, packed with everything scripts/install.sh needs, and published
+# Push a tag like v0.1.0: both binaries are built for Linux and macOS,
+# x86_64 and aarch64, packed with everything scripts/install.sh needs
+# (macOS: the editor-only parts, for the plugins), and published
 # as a release with the CHANGELOG's notes. Installing from it needs no Rust.
+# The VS Code companion comes as one .vsix per platform, with the daemon
+# inside, and one without for the rest.
+#
+# Run it by hand (Actions -> Release -> Run workflow) to build everything
+# as "dev" without publishing: the files are the run's artifacts.
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+env:
+  TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'dev' }}
 
 jobs:
   build:
     strategy:
       matrix:
         include:
-          - arch: x86_64
-            runner: ubuntu-24.04
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
+          - {os: linux, arch: x86_64, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu}
+          - {os: linux, arch: aarch64, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu}
+          # macOS: editor-only (no keyboard reading), for the editor plugins.
+          - {os: macos, arch: aarch64, runner: macos-latest, target: aarch64-apple-darwin}
+          - {os: macos, arch: x86_64, runner: macos-latest, target: x86_64-apple-darwin}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: The tag matches every piece's version
-        run: scripts/check-versions.sh "${GITHUB_REF_NAME#v}"
+        if: startsWith(github.ref, 'refs/tags/')
+        run: scripts/check-versions.sh "${TAG#v}"
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update -q && sudo apt-get install -yq libxkbcommon-dev
-      - run: cargo build --release --locked -p flowbuddy-daemon -p flowbuddy-cli --features flowbuddy-daemon/xkb
+        with:
+          targets: ${{ matrix.target }}
+      - if: matrix.os == 'linux'
+        run: sudo apt-get update -q && sudo apt-get install -yq libxkbcommon-dev
+      - name: Build
+        run: |
+          features=()
+          [ "${{ matrix.os }}" = linux ] && features=(--features flowbuddy-daemon/xkb)
+          cargo build --release --locked --target ${{ matrix.target }} -p flowbuddy-daemon -p flowbuddy-cli "${features[@]}"
       - name: Pack
         run: |
-          name=flowbuddy-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}
+          name=flowbuddy-${TAG}-${{ matrix.os }}-${{ matrix.arch }}
           mkdir -p "dist/$name/bin"
           git archive HEAD gnome-extension vim-plugin vscode-extension shell scripts packaging docs \
             README.md LICENSE CHANGELOG.md | tar -x -C "dist/$name"
-          install -m755 target/release/flowbuddyd target/release/flowbuddy "dist/$name/bin/"
+          install -m755 target/${{ matrix.target }}/release/flowbuddyd target/${{ matrix.target }}/release/flowbuddy "dist/$name/bin/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
-          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
       - name: The GNOME extension as extensions.gnome.org takes it
-        if: matrix.arch == 'x86_64'
+        if: matrix.os == 'linux' && matrix.arch == 'x86_64'
         run: |
           cd gnome-extension
           zip -r "../dist/flowbuddy@abdelrahmanwm.github.io.shell-extension.zip" \
             metadata.json stylesheet.css schemas/*.xml $(ls *.js)
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.arch }}
+          name: ${{ matrix.os }}-${{ matrix.arch }}
           path: |
             dist/*.tar.gz*
             dist/*.zip
 
   vsix:
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: The VS Code companion as a .vsix
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: The VS Code companion, a .vsix per platform with the daemon inside
         run: |
           cp LICENSE vscode-extension/
-          cd vscode-extension && npx --yes @vscode/vsce@3 package --no-dependencies --allow-missing-repository
+          cd vscode-extension
+          vsce="npx --yes @vscode/vsce@3"
+          mkdir -p ../vsix
+          # Without programs, for every other system: it says what's missing.
+          $vsce package --no-dependencies -o ../vsix/
+          for pair in linux-x86_64:linux-x64 linux-aarch64:linux-arm64 macos-x86_64:darwin-x64 macos-aarch64:darwin-arm64; do
+            from=flowbuddy-${TAG}-${pair%%:*}
+            rm -rf bin && mkdir bin
+            tar -xzf "../dist/$from.tar.gz" -C bin --strip-components=2 "$from/bin/flowbuddyd" "$from/bin/flowbuddy"
+            test -x bin/flowbuddyd && test -x bin/flowbuddy
+            $vsce package --no-dependencies --target "${pair#*:}" -o ../vsix/
+          done
+          rm -rf bin
+          ls -l ../vsix
       - uses: actions/upload-artifact@v4
         with:
           name: vsix
-          path: vscode-extension/*.vsix
+          path: vsix/*.vsix
 
   publish:
     needs: [build, vsix]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -74,9 +115,17 @@ jobs:
           merge-multiple: true
       - name: Notes from the CHANGELOG
         run: |
-          version=${GITHUB_REF_NAME#v}
+          version=${TAG#v}
           awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {on=1; next} /^## \[/ {on=0} on' CHANGELOG.md > notes.md
           test -s notes.md || { echo "no CHANGELOG entry for $version" >&2; exit 1; }
-      - run: gh release create "$GITHUB_REF_NAME" dist/* --title "Flow Buddy $GITHUB_REF_NAME" --notes-file notes.md
+      - run: gh release create "$TAG" dist/* --title "Flow Buddy $TAG" --notes-file notes.md
         env:
           GH_TOKEN: ${{ github.token }}
+      # With the repository secrets VSCE_PAT and OVSX_PAT set, the stores get
+      # every .vsix too; without them, upload by hand (docs/publishing.md).
+      - name: To the VS Code Marketplace
+        if: env.VSCE_PAT != ''
+        run: npx --yes @vscode/vsce@3 publish --packagePath dist/*.vsix -p "$VSCE_PAT"
+      - name: To Open VSX
+        if: env.OVSX_PAT != ''
+        run: for f in dist/*.vsix; do npx --yes ovsx@0 publish "$f" -p "$OVSX_PAT"; done

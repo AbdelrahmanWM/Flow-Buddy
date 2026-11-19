@@ -13,7 +13,20 @@ const MAX_BACKOFF_S = 30;
 
 // $XDG_RUNTIME_DIR isn't trusted: the VS Code snap can rewrite it.
 function socketPath() {
-    return process.env.FLOWBUDDY_SOCKET || `/run/user/${process.getuid()}/flowbuddy.sock`;
+    const fs = require('fs');
+    const isDir = p => {
+        try {
+            return fs.statSync(p).isDirectory();
+        } catch {
+            return false;
+        }
+    };
+    return require('./tools').socketPath({
+        env: process.env,
+        uid: process.getuid?.() ?? null,
+        home: require('os').homedir(),
+        isDir,
+    });
 }
 
 class DaemonLink {
@@ -163,4 +176,4 @@ class DaemonLink {
     }
 }
 
-module.exports = {DaemonLink};
+module.exports = {DaemonLink, socketPath};

@@ -25,7 +25,7 @@ const FIELDS = [
     'line_start', 'first_nonblank', 'line_end', 'bracket_match', 'star_hops',
     'jump_back', 'last_change', 'search_hops', 'relative_numbers', 'view_scrolled',
     'revisits', 'line_number_digits', 'paragraph_lines', 'section_hops', 'unmatched_paren',
-    'sentence_hops', 'screen_line_hops', 'search_chars',
+    'sentence_hops', 'screen_line_hops', 'search_chars', 'column_kept',
 ];
 
 const LATER = ['paragraph_lines', 'search_chars', 'section_hops', 'unmatched_paren'];
@@ -101,7 +101,9 @@ walk('e skips the empty line', gap, [0, 0], c => wordEndForward(c, false), [[0, 
 // Within-line facts start from the start column clamped on the end line.
 const clamp = ['abcdefgh', 'xy z'];
 facts('j onto a shorter line is } to the end of the file', clamp, [0, 6], [1, 3], {},
-    {paragraph_hops: 1, file_end: true});
+    {paragraph_hops: 1, file_end: true, column_kept: true});
+facts('down from mid-line to a blank line: the column is only cut', ['    let x = 1;', 'a', ''], [0, 10], [2, 0], {},
+    {paragraph_hops: 1, file_end: true, column_kept: true, paragraph_lines: [2]});
 facts('then b to the line start', clamp, [0, 6], [1, 0], {},
     {word_hops: 1, bigword_hops: 1, find_hops: 1, line_start: true, first_nonblank: true, file_end: true});
 

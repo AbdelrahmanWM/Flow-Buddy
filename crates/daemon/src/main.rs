@@ -60,7 +60,14 @@ pub fn now_ms() -> u64 {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    #[cfg_attr(target_os = "linux", allow(unused_mut))]
+    let mut args = Args::parse();
+    // Reading the keyboard is Linux's evdev: elsewhere (macOS), the editor
+    // plugins are the only source, as with --editor-only.
+    #[cfg(not(target_os = "linux"))]
+    {
+        args.editor_only = true;
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),

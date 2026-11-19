@@ -220,6 +220,11 @@ pub struct MotionFacts {
     /// `n` or `N` presses: the end is that many matches of the last search
     /// away, in the movement's direction. The pattern is never sent.
     pub search_hops: Option<u32>,
+    /// A vertical move alone ends in this column: the start's column, cut
+    /// to the end line's length (`j` onto a blank or shorter line). Then
+    /// nothing has to move the cursor sideways, whatever `cols` says.
+    #[serde(default)]
+    pub column_kept: bool,
     /// 'relativenumber' is on, so line counts on screen can be read off.
     pub relative_numbers: bool,
     /// Absolute line numbers are shown ('number' without

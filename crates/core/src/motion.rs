@@ -629,9 +629,9 @@ pub fn plans_for(m: &Motion, known: &Known) -> Vec<Plan> {
     } else {
         vec![none()]
     };
-    // Vertical motions keep the column, so no horizontal part is needed
-    // when it didn't change.
-    let h = if m.cols != 0 {
+    // Vertical motions keep the column (cut to the line's length), so no
+    // horizontal part is needed when it didn't change or only by that cut.
+    let h = if m.cols != 0 && !(m.lines != 0 && f.column_kept) {
         cheapest_part(
             horizontal(m.lines, m.cols, f)
                 .into_iter()
@@ -641,6 +641,20 @@ pub fn plans_for(m: &Motion, known: &Known) -> Vec<Plan> {
     } else {
         Some(none())
     };
+    // `}` and `{` land in column 0, unlike `j` and `k`: when that's where
+    // the movement ended, they need nothing after them.
+    if m.cols != 0 && f.line_start {
+        for v in verticals
+            .iter()
+            .filter(|v| v.category == Category::Paragraph)
+        {
+            plans.push(Plan {
+                category: v.category,
+                keys: v.keys.clone(),
+                cost: v.cost,
+            });
+        }
+    }
     if let Some(h) = h {
         for v in verticals {
             // Name the plan after its most specific part.
@@ -1483,6 +1497,35 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(plan(14, 0, f), (Category::Paragraph, "}}".into(), 2));
+    }
+
+    #[test]
+    fn down_onto_a_blank_line_needs_no_sideways_move() {
+        // From column 10 down seven lines to a blank line: the column
+        // changed, but only because the line is empty.
+        let f = MotionFacts {
+            paragraph_hops: Some(1),
+            column_kept: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            plan(7, -10, f.clone()),
+            (Category::Paragraph, "}".into(), 1)
+        );
+        let all = plans(&motion(7, -10, f));
+        assert!(all.iter().any(|p| p.keys == "7j"), "{all:?}");
+    }
+
+    #[test]
+    fn a_paragraph_lands_in_column_0() {
+        // From the middle of a line down to the blank line: } goes to its
+        // column 0, nothing more to type.
+        let f = MotionFacts {
+            paragraph_hops: Some(1),
+            line_start: true,
+            ..Default::default()
+        };
+        assert_eq!(plan(7, -10, f), (Category::Paragraph, "}".into(), 1));
     }
 
     #[test]

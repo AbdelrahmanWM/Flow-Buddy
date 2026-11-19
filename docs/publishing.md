@@ -18,13 +18,16 @@ A release (push a `v*` tag; see `.github/workflows/release.yml`) builds everythi
 
 ## VS Code Marketplace and Open VSX
 
-1. Create a publisher named `flowbuddy` at <https://marketplace.visualstudio.com/manage> (or change `publisher` in `vscode-extension/package.json` to yours), and an Open VSX namespace at <https://open-vsx.org>.
+A release has five `.vsix` files: one per platform with the daemon and the `flowbuddy` command inside (`linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`), and one without, for every other system. Upload all five: the stores give each system its own, and the one without to the rest.
+
+1. The publisher is `flowbuddy` (`publisher` in `vscode-extension/package.json`), and the Open VSX namespace `flowbuddy`.
 2. The icon is `vscode-extension/icon.png` (from `docs/images/icon.svg`).
-3. Publish the `.vsix` from the release: `npx @vscode/vsce publish --packagePath flowbuddy-vscode-X.Y.Z.vsix` and `npx ovsx publish flowbuddy-vscode-X.Y.Z.vsix -p <token>`.
+3. By hand: on the Marketplace, your publisher page, then the extension's **⋯** → **Update**, once per file. On Open VSX, `npx ovsx publish <file> -p <token>` for each.
+4. Or let the release do it: add the repository secrets `VSCE_PAT` (an Azure DevOps token with **Marketplace → Manage**, for all accessible organizations) and `OVSX_PAT` (an Open VSX access token). The release workflow then publishes every `.vsix` to both.
 
 ## Vim and Neovim
 
-Nothing to publish: plugin managers install it straight from this repository (see [vim-plugin/README.md](../vim-plugin/README.md)).
+Nothing to publish: plugin managers install it straight from this repository (see [vim-plugin/README.md](../vim-plugin/README.md)), and `scripts/get-daemon.sh` downloads the daemon from the release whose version matches the plugin's. So the version in `vim-plugin/autoload/flowbuddy.vim` must have its release published before people update to it: bump it in the release PR, as the other versions.
 
 ## Names
 

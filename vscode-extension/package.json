@@ -2,10 +2,14 @@
   "name": "flowbuddy-vscode",
   "displayName": "Flow Buddy",
   "icon": "icon.png",
-  "description": "Tells the local Flow Buddy daemon whether the editor has focus, vscodevim's mode and how the cursor moved. Numbers and flags only; nothing leaves your machine.",
+  "description": "Learn Vim's faster commands while you work: after a habit like jjjjjjj, the shorter way (}). For the Vim extension (vscodevim). Runs locally; nothing leaves your machine.",
   "version": "0.1.2",
   "publisher": "flowbuddy",
   "license": "MIT",
+  "homepage": "https://github.com/AbdelrahmanWM/Flow-Buddy#readme",
+  "bugs": {
+    "url": "https://github.com/AbdelrahmanWM/Flow-Buddy/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/AbdelrahmanWM/Flow-Buddy"
@@ -14,7 +18,17 @@
     "vscode": "^1.90.0"
   },
   "categories": [
+    "Education",
     "Other"
+  ],
+  "keywords": [
+    "vim",
+    "vscodevim",
+    "learn vim",
+    "vim motions",
+    "tips",
+    "productivity",
+    "keyboard"
   ],
   "extensionKind": [
     "ui"

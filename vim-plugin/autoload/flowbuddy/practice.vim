@@ -352,11 +352,12 @@ endfunction
 
 " The flowbuddy command: on the PATH, or where the installer puts it.
 function! flowbuddy#practice#cli() abort
-  let cli = exepath('flowbuddy')
-  if empty(cli) && executable(expand('~/.local/bin/flowbuddy'))
-    let cli = expand('~/.local/bin/flowbuddy')
-  endif
-  return cli
+  for cli in [exepath('flowbuddy'), expand('~/.local/bin/flowbuddy'), flowbuddy#root() . '/bin/flowbuddy']
+    if !empty(cli) && executable(cli)
+      return cli
+    endif
+  endfor
+  return ''
 endfunction
 
 " :FlowBuddyPractice [drill]: a drill here, in this Vim.

@@ -67,6 +67,8 @@ const CHALLENGE_RULE: &str = "learn.challenge";
 const EXTRA_LESSONS: u8 = 3;
 /// A tip still waiting for a pause after this long is stale: dropped.
 const PAUSE_GIVE_UP_MS: u64 = 120_000;
+/// Today's lesson waits this long after your last key.
+const LESSON_AFTER_REST_MS: u64 = 5_000;
 
 /// Recent tips kept for snippets: this many, at most.
 const RECENT_TIPS: usize = 8;
@@ -666,6 +668,7 @@ impl App {
                 .memory
                 .filter_allows(f.rule_id, self.mode.as_str(), hour, now_ms)
         {
+            tracing::debug!(rule = f.rule_id, "not shown: the learned filter");
             return;
         }
         // A few held back at random: comparing them with the ones shown
@@ -673,6 +676,7 @@ impl App {
         if held_back(self.config.learn.holdout, f.rule_id, now_ms) {
             self.memory
                 .tip_held(f.rule_id, self.mode.as_str(), hour, now_ms);
+            tracing::debug!(rule = f.rule_id, "not shown: held back to measure tips");
             return;
         }
         // The model's sentence too must only name what works where the
@@ -905,6 +909,12 @@ impl App {
             || self.last_nudge_ms.is_some_and(|t| {
                 now_ms.saturating_sub(t) < u64::from(self.config.learn.gap_minutes) * 60_000
             })
+            // Your own habit first: not before a key, and not while you're
+            // moving, so the tip for what you just did (it comes when you
+            // stop) isn't beaten to the screen by today's lesson.
+            || self
+                .last_key_ms
+                .is_none_or(|t| now_ms.saturating_sub(t) < LESSON_AFTER_REST_MS)
         {
             return;
         }
@@ -1333,8 +1343,11 @@ impl App {
             focus: self.memory.is_focus(f.rule_id),
             check_in: self.memory.check_in_due(f.rule_id, ctx),
         };
-        if let Some(f) = self.coach.on_finding(f, facts, &gate, now_ms) {
-            self.deliver(&f, now_ms);
+        match self.coach.on_finding(f, facts, &gate, now_ms) {
+            Some(f) => self.deliver(&f, now_ms),
+            None => {
+                tracing::debug!(rule = f.rule_id, mode = ?gate.mode, stage = ?facts.stage, "not now: the policy holds it")
+            }
         }
     }
 
@@ -2122,6 +2135,14 @@ impl App {
                     })
                 });
                 let best = motion::best_for_motion(&ev, self.engine.known());
+                tracing::debug!(
+                    lines = ev.motion.lines,
+                    cols = ev.motion.cols,
+                    moves = ev.motion.moves,
+                    keys = ev.keys_used,
+                    best = ?best.first(),
+                    "motion"
+                );
                 self.note_slow("move", ev.motion.end_ms, ev.keys_used, best);
                 let events = self.engine.on_motion(self.resolved.kind, &ev);
                 self.on_rule_events(&events, now_ms);
@@ -2850,9 +2871,17 @@ pub(crate) mod tests {
         let mut ext = ext_hello(&mut app, 1);
         focus(&mut app, "code_code", 500);
         app.tick(0);
+        // The first tip at once, so you see it works.
         keys(&mut app, "<Esc>jjjjjjjw");
+        assert_eq!(nudges(&mut ext).len(), 1, "the first, right away");
+        // Then batches: nothing in the moment, the batch a while later.
+        let later = 5 * 60 * 1000;
+        for s in strokes("<Esc>xxxxxxi", later) {
+            app.on_key(s, s.at_ms);
+        }
+        app.tick(later + 60_000);
         assert!(nudges(&mut ext).is_empty(), "nothing in the moment");
-        app.tick(31 * 60 * 1000);
+        app.tick(later + 31 * 60 * 1000);
         assert_eq!(nudges(&mut ext).len(), 1);
     }
 
@@ -3518,6 +3547,85 @@ pub(crate) mod tests {
 
     /// With no keyboard read, the Vim plugin's keys feed the rules; with
     /// one, they're ignored, so nothing is counted twice.
+    #[test]
+    fn vscode_steps_one_at_a_time_still_get_a_tip() {
+        // The companion sends each cursor step as it comes, when they're
+        // more than 150 ms apart: seven messages of one `j`, then the motion.
+        let mut app = test_app(CoachingMode::Active);
+        app.set_editor_only(true);
+        let mut code = tipping_editor(&mut app, 3, EditorKind::Vscode, 210);
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorMode {
+                mode: EditorMode::Normal,
+            },
+            0,
+        );
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            100,
+        );
+        assert_eq!(app.context().kind, ContextKind::VsCodeVim);
+        for i in 0..7u64 {
+            let at = 10_000 + i * 200;
+            send(
+                &mut app,
+                3,
+                ClientMsg::EditorKeys {
+                    keys: "j".into(),
+                    start_ms: at,
+                    end_ms: at,
+                },
+                at + 150,
+            );
+        }
+        let motion = Motion {
+            start_ms: 10_000,
+            end_ms: 11_200,
+            moves: 7,
+            mode: EditorMode::Normal,
+            lines: 7,
+            // From the middle of a line down to a blank one, as typed.
+            cols: -10,
+            facts: flowbuddy_core::editor::MotionFacts {
+                paragraph_hops: Some(1),
+                column_kept: true,
+                ..Default::default()
+            },
+        };
+        // The companion's heartbeat comes with the cursor moves (the keys
+        // reached the editor), then the motion once the cursor rests.
+        send(
+            &mut app,
+            3,
+            ClientMsg::EditorFocus {
+                focused: true,
+                panel: None,
+            },
+            11_300,
+        );
+        send(&mut app, 3, ClientMsg::Motion(motion), 12_800);
+        app.tick(13_000);
+        app.tick_tips(16_000);
+        let tips: Vec<Nudge> = std::iter::from_fn(|| code.try_recv().ok())
+            .filter_map(|m| match m {
+                ServerMsg::Nudge(n) => Some(n),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tips.len(), 1, "{tips:?}");
+        assert!(
+            glossary::plain(&tips[0].text).contains("} gets there in 1"),
+            "{tips:?}"
+        );
+    }
+
     #[test]
     fn editor_keys_stand_in_for_the_keyboard() {
         let paragraph = |at: u64| Motion {
@@ -4186,6 +4294,25 @@ pub(crate) mod tests {
             n[0].text
         );
         assert_eq!(app.state.recent_lessons, vec![(1, true)]);
+    }
+
+    #[test]
+    fn todays_lesson_waits_for_your_own_habit() {
+        let (mut app, _) = app_with_store(CoachingMode::Active);
+        let mut ext = ext_hello(&mut app, 1);
+        let t = flowbuddy_core::time::local_ms(2026, 10, 20, 10, 0);
+        focus(&mut app, "code_code", 500);
+        // In the editor, but no key yet: nothing.
+        app.tick(t);
+        assert!(nudges(&mut ext).is_empty());
+        // Moving: still nothing; a moment after you stop, the lesson.
+        type_at(&mut app, "<Esc>wb", t + 1_000);
+        app.tick(t + 2_000);
+        assert!(nudges(&mut ext).is_empty());
+        app.tick(t + 61_000);
+        let n = nudges(&mut ext);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].rule_id, "learn.daily");
     }
 
     #[test]

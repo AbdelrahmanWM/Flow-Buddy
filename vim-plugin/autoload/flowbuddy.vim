@@ -1248,6 +1248,12 @@ function! s:facts(start, end, jump) abort
     if n
       let f.paragraph_hops = n
     endif
+    " The column changed, but j or k alone lands here: the start's column,
+    " cut to the end line (a blank or shorter line).
+    if a:end[1] != a:start[1]
+      let last = max([1, strlen(text) - strlen(matchstr(text, '.$')) + 1])
+      let f.column_kept = a:end[1] == min([a:start[1], last]) ? v:true : v:false
+    endif
     let top = line('w0')
     let bottom = line('w$')
     if a:end[0] == top

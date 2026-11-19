@@ -758,6 +758,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn procfs_parent_of_self() {
         let me = std::process::id();
         assert!(Procfs.parent(me).is_some());

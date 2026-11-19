@@ -40,6 +40,19 @@ function! Test_paragraphs() abort
   call assert_equal(1, s:facts([7, 1], [6, 1]).paragraph_hops)
 endfunction
 
+function! Test_down_onto_a_blank_line_keeps_the_column() abort
+  call s:buf(['    let x = 1;', 'ab', ''])
+  " From column 11 down to the blank line: only cut to the line.
+  let f = s:facts([1, 11], [3, 1])
+  call assert_true(f.column_kept)
+  call assert_equal(1, f.paragraph_hops)
+  " Onto a shorter line, at its last character: kept; elsewhere: not.
+  call assert_true(s:facts([1, 11], [2, 2]).column_kept)
+  call assert_false(s:facts([1, 11], [2, 1]).column_kept)
+  " The column didn't change: nothing to say.
+  call assert_false(has_key(s:facts([1, 1], [2, 1]), 'column_kept'))
+endfunction
+
 function! Test_words() abort
   call s:buf(['foo bar.baz qux'])
   let f = s:facts([1, 1], [1, 9])

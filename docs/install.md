@@ -34,6 +34,15 @@ scripts/install.sh --with-udev
 
 ## Editor only
 
+On Linux and macOS, the quickest way is from the editor itself (the [README](../README.md#install) has the lines to copy):
+
+- **VS Code:** the Marketplace extension. Its Linux and macOS builds come with the daemon (`flowbuddyd`) and the `flowbuddy` command inside, and start the daemon themselves. On other systems it says it can't run there yet.
+- **Neovim and Vim:** the plugin from this repository with a plugin manager, with `scripts/get-daemon.sh` as its build step. The script downloads the release whose version matches the plugin, for your system, checks the archive against its SHA-256 checksum from the same release, and puts `flowbuddyd` and `flowbuddy` in the plugin's `bin/` folder. It installs nothing else and changes nothing outside that folder. Without the build step, the plugin says it has no daemon yet, and `:FlowBuddyGetDaemon` runs the script.
+
+Either way, the daemon found first is used: one on your `PATH`, then `~/.local/bin` (where `scripts/install.sh` puts it), then the editor's own copy.
+
+From a clone or a release download (Linux):
+
 ```sh
 scripts/install.sh --editor-only
 ```
@@ -42,7 +51,7 @@ This installs the two programs and the plugins for Vim, Neovim and VS Code, and 
 
 Coaching then covers Vim, Neovim and VS Code: the README's table says what each level has. Tips show in the editor. In VS Code an extension can't see keys while vscodevim has them, so repeats (`jjjj`, `llll`) are counted from single cursor steps, and keys that don't move the cursor go uncounted.
 
-To move up, run `scripts/install.sh --with-udev`: the service takes over, with the same database and settings. `flowbuddyd --editor-only` also works as your own service, if you'd rather it always ran.
+To move up on Linux, run `scripts/install.sh --with-udev`: the service takes over, with the same database and settings. macOS has editor-only coaching only. `flowbuddyd --editor-only` also works as your own service, if you'd rather it always ran.
 
 ## After installing
 

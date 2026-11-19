@@ -464,6 +464,10 @@ function computeFacts(lines, start, end, opts = {}) {
         // The number is in the margin: only how long it is.
         if (opts.lineNumbers)
             set('line_number_digits', String(end.line + 1).length);
+        // The column changed, but j or k alone lands here: the start's
+        // column, cut to the end line's length.
+        if (start.col !== null && end.col !== null && end.col !== start.col)
+            set('column_kept', end.col === Math.min(start.col, Math.max(lines[end.line].length - 1, 0)));
         set('file_start', end.line === 0);
         set('file_end', end.line === lines.length - 1);
         // How far the next few blank-line boundaries are, for }} then 2j.

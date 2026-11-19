@@ -22,9 +22,37 @@ Each of these choices rests on published research on memory and skill learning, 
 
 > **Status:** 0.1, early. Built and used on GNOME 50. See [what's coached where](docs/coverage.md) and the [changelog](CHANGELOG.md).
 
-## Quick start
+## Install
 
-On Linux with GNOME 50 (or any X11 desktop), with bash, zsh or fish:
+### In your editor: VS Code, Neovim or Vim (Linux and macOS)
+
+Nothing reads your keyboard: the editor says what you do in its moving modes (never what you type), and starts Flow Buddy's daemon when it needs it.
+
+- **VS Code** with the Vim extension (vscodevim): install [Flow Buddy from the Marketplace](https://marketplace.visualstudio.com/items?itemName=flowbuddy.flowbuddy-vscode). That's all; it comes with its daemon.
+- **Neovim**, with [lazy.nvim](https://github.com/folke/lazy.nvim):
+
+  ```lua
+  {
+    "AbdelrahmanWM/Flow-Buddy",
+    build = "scripts/get-daemon.sh",
+    config = function(plugin)
+      vim.opt.rtp:append(plugin.dir .. "/vim-plugin")
+      vim.cmd.source(plugin.dir .. "/vim-plugin/plugin/flowbuddy.vim")
+    end,
+  }
+  ```
+
+- **Vim**, with [vim-plug](https://github.com/junegunn/vim-plug):
+
+  ```vim
+  Plug 'AbdelrahmanWM/Flow-Buddy', { 'rtp': 'vim-plugin', 'do': 'scripts/get-daemon.sh' }
+  ```
+
+Then open a file and move around. `scripts/get-daemon.sh` downloads the daemon that matches the plugin from this repository's releases and checks its checksum; nothing else is installed. Without it, the plugin says so and `:FlowBuddyGetDaemon` does the same. Other plugin managers: [vim-plugin/README.md](vim-plugin/README.md).
+
+### Everything (Linux)
+
+The full install also coaches your shell's vi mode, shell commands and Claude Code's Vim mode, shows tips under GNOME's top bar, and counts every key in VS Code. It reads the keyboard (see [privacy](docs/privacy.md#keyboard-access)). On GNOME 50 or any X11 desktop, with bash, zsh or fish:
 
 ```sh
 git clone https://github.com/AbdelrahmanWM/Flow-Buddy && cd Flow-Buddy
@@ -33,13 +61,7 @@ scripts/install.sh --with-udev    # builds with Rust and a C compiler (docs/inst
 flowbuddy tour                    # how it works, a sample tip, and the settings that matter
 ```
 
-Or, to try it in Vim, Neovim and VS Code without giving it your keyboard:
-
-```sh
-scripts/install.sh --editor-only  # then open your editor; see "Two ways to install"
-```
-
-[docs/install.md](docs/install.md) has release downloads, keyboard access, the editor plugins, updating and uninstalling.
+[docs/install.md](docs/install.md) has release downloads, keyboard access, updating and uninstalling.
 
 ## Privacy, in three lines
 
@@ -104,7 +126,7 @@ The parts that teach (the habit rules, the skill model, the reviews, the measure
 
 | | Editor only | Full |
 |---|---|---|
-| Install | `scripts/install.sh --editor-only` | `scripts/install.sh --with-udev`, then log out and back in |
+| Install | the VS Code extension, or the plugin with a plugin manager ([above](#install)) | `scripts/install.sh --with-udev`, then log out and back in |
 | Keyboard access | none | reads the keyboard (see [privacy](docs/privacy.md#keyboard-access)) |
 | Vim and Neovim: motions, text objects, operators, repeats, mistakes | ✓ | ✓ |
 | VS Code with vscodevim | motions and repeats, counted from single cursor steps | everything |
@@ -113,12 +135,13 @@ The parts that teach (the habit rules, the skill model, the reviews, the measure
 | Tips | in the editor | in the editor, the top bar, notifications |
 | Lessons, reviews, practice, the skill map, summaries, `coach` | ✓ | ✓ |
 | Runs as | started by the editor plugins; stops when the last editor has been closed for ten minutes | a service |
+| Systems | Linux and macOS | Linux |
 
 Editor only is the quick way to try it: the plugins tell the daemon what you type in Vim's moving modes (never Insert or the command line), and nothing reads your keyboard. Both use the same database, so moving up to the full install later keeps everything.
 
 ## Where it runs
 
-Linux. The full install: GNOME on Wayland (with the top-bar indicator and the settings window), or any X11 desktop such as KDE, Xfce or i3 (tips as notifications). Editor only: any Linux desktop, including KDE on Wayland. Not yet macOS.
+In your editor: Linux and macOS, x86_64 and ARM. The full install: Linux, on GNOME on Wayland (with the top-bar indicator and the settings window) or any X11 desktop such as KDE, Xfce or i3 (tips as notifications). Not yet Windows.
 
 Tested on fresh installs of Ubuntu 26.04 and Fedora 44 Workstation (GNOME 50, Wayland), from source and from a release download, with Vim, Neovim, VS Code (vscodevim), bash, zsh and fish.
 

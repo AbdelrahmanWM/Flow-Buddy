@@ -4,26 +4,36 @@ Tells the local `flowbuddyd` what Vim knows and keystrokes don't: the real mode,
 
 ## Install
 
-`scripts/install.sh` installs it as a package for both editors:
-
-- Vim 9 (`+channel`): `~/.vim/pack/flowbuddy/start/flowbuddy`
-- Neovim 0.9+: `~/.local/share/nvim/site/pack/flowbuddy/start/flowbuddy`
-
-With a plugin manager instead (the plugin is in the `vim-plugin` folder of the repository):
-
-```vim
-" vim-plug
-Plug 'AbdelrahmanWM/Flow-Buddy', {'rtp': 'vim-plugin'}
-```
+With a plugin manager, on Linux or macOS. The plugin is in the repository's `vim-plugin` folder, and `scripts/get-daemon.sh` fetches the daemon it needs (the release matching the plugin's version, checksum checked, into the plugin's `bin/` folder; nothing else is installed):
 
 ```lua
 -- lazy.nvim
-{ 'AbdelrahmanWM/Flow-Buddy', config = function(plugin) vim.opt.rtp:append(plugin.dir .. '/vim-plugin') end }
--- packer.nvim
-use { 'AbdelrahmanWM/Flow-Buddy', rtp = 'vim-plugin' }
+{
+  "AbdelrahmanWM/Flow-Buddy",
+  build = "scripts/get-daemon.sh",
+  config = function(plugin)
+    vim.opt.rtp:append(plugin.dir .. "/vim-plugin")
+    vim.cmd.source(plugin.dir .. "/vim-plugin/plugin/flowbuddy.vim")
+  end,
+}
 ```
 
-The plugin only reports to Flow Buddy's daemon, so the rest of Flow Buddy has to be installed too ([docs/install.md](../docs/install.md)).
+```vim
+" vim-plug
+Plug 'AbdelrahmanWM/Flow-Buddy', { 'rtp': 'vim-plugin', 'do': 'scripts/get-daemon.sh' }
+```
+
+```lua
+-- packer.nvim
+use { "AbdelrahmanWM/Flow-Buddy", rtp = "vim-plugin", run = "scripts/get-daemon.sh" }
+```
+
+Without the build step, the plugin says it has no daemon yet; `:FlowBuddyGetDaemon` downloads it then.
+
+Or `scripts/install.sh` (Linux) installs it as a package for both editors, with the rest of Flow Buddy:
+
+- Vim 9 (`+channel`): `~/.vim/pack/flowbuddy/start/flowbuddy`
+- Neovim 0.9+: `~/.local/share/nvim/site/pack/flowbuddy/start/flowbuddy`
 
 It does nothing when the daemon isn't running, and retries every few seconds. To turn it off: `let g:flowbuddy_enabled = 0`.
 
@@ -31,7 +41,7 @@ The facts are worked out by trying motions on the buffer, which stops after 15 m
 
 ## Without keyboard access (editor only)
 
-With `scripts/install.sh --editor-only` nothing reads your keyboard, and this plugin does two more things:
+Installed with a plugin manager, or with `scripts/install.sh --editor-only`, nothing reads your keyboard, and this plugin does two more things:
 
 - **It starts the daemon** when none is running and there's no service to run one: `flowbuddyd --editor-only --exit-when-idle`, which stops by itself ten minutes after the last editor closes. `let g:flowbuddy_start_daemon = 0` turns that off.
 - **It sends the keys you type in Normal, Visual and Operator-pending mode**, which are commands, so "that took 7 keys" still works. Keys typed in Insert, Replace, Command-line or Terminal mode are never sent, the character after `f`, `t` or `r` goes as `x`, and keys a mapping or script ran don't count. It only happens while the daemon says it reads no keyboard. `let g:flowbuddy_keys = 0` turns it off. Needs Vim 9.1.0563 or later (`KeyInputPre`) or Neovim; on an older Vim, motion tips without key counts aren't shown.

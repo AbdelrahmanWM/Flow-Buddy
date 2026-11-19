@@ -576,6 +576,32 @@ function! Test_practice_q_goes_back_to_your_file() abort
   bwipe!
 endfunction
 
+function! Test_practice_goal_in_view_with_scrolloff() abort
+  " Fedora's vim sets scrolloff=5: with the start near the top it would
+  " pin line 1 there and push a far goal off the bottom.
+  set scrolloff=5
+  only!
+  enew!
+  let lines = map(range(1, 80), '"line " . v:val')
+  let Drill = {goal -> json_encode({'version': 1, 'family': 'vertical', 'title': 'T', 'about': 'a',
+        \ 'rounds': [{'lines': lines, 'cursor': [5, 1], 'ask': 'x',
+        \  'goal': {'line': goal}, 'mark': [goal, 1, 0], 'par': 3, 'best': 'x'}]})}
+  " Once to see how tall the drill's window is,
+  let drill = tempname()
+  call writefile([Drill(6)], drill)
+  call flowbuddy#practice#run(drill, tempname(), 0)
+  let height = winheight(0)
+  bwipe!
+  " then a goal that fits only if the drill's view is kept.
+  let goal = 5 + height - 3
+  call writefile([Drill(goal)], drill)
+  call flowbuddy#practice#run(drill, tempname(), 0)
+  call assert_true(line('w0') <= 5 && line('w$') >= goal, [line('w0'), line('w$'), goal, height])
+  set scrolloff=0
+  call s:close_floats()
+  bwipe!
+endfunction
+
 " Runner
 let s:failed = 0
 for s:name in sort(filter(map(split(execute('function /^Test_'), "\n"), {_, l -> matchstr(l, 'Test_\w\+')}), '!empty(v:val)'))

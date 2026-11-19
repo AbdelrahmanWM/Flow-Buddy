@@ -81,6 +81,9 @@ function! flowbuddy#practice#run(drill_path, out_path, ...) abort
     silent tabnew
   endif
   setlocal buftype=nofile bufhidden=wipe noswapfile nolist nowrap nospell nobuflisted
+  " The drill picks what's in view; a scrolloff (Fedora's vim sets 5) would
+  " push a far goal off the screen.
+  setlocal scrolloff=0 sidescrolloff=0
   setlocal number signcolumn=yes
   let &l:relativenumber = get(s:drill, 'relative_numbers', v:false) is v:true
   silent! file [Flow\ Buddy\ practice]
